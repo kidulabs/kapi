@@ -1,7 +1,7 @@
 ## 1. Project Configuration
 
-- [ ] 1.1 Create `Cargo.toml` with package name `kapi`, edition `2021`, and all production dependencies (axum 0.8, tokio 1/full, serde 1/derive, serde_json 1, jsonschema 0.46, dashmap 6, tokio-stream 0.1, futures-util 0.3, tracing 0.1, tracing-subscriber 0.3/env-filter, utoipa 5, utoipa-swagger-ui 9, async-trait 0.1, chrono 0.4/serde, uuid 1/v4+serde, thiserror 2, tower 0.5, tower-http 0.6/trace+cors) and dev-dependencies (http-body-util 0.1)
-- [ ] 1.2 Verify `cargo build` succeeds with empty source files
+- [x] 1.1 Create `Cargo.toml` with package name `kapi`, edition `2021`, and all production dependencies (axum 0.8, tokio 1/full, serde 1/derive, serde_json 1, jsonschema 0.46, dashmap 6, tokio-stream 0.1, futures-util 0.3, tracing 0.1, tracing-subscriber 0.3/env-filter, utoipa 5, utoipa-swagger-ui 9, async-trait 0.1, chrono 0.4/serde, uuid 1/v4+serde, thiserror 2, tower 0.5, tower-http 0.6/trace+cors) and dev-dependencies (http-body-util 0.1)
+- [x] 1.2 Verify `cargo build` succeeds with empty source files
 
 ## 2. Module Tree
 
