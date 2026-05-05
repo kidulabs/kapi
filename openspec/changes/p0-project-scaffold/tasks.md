@@ -5,21 +5,21 @@
 
 ## 2. Module Tree
 
-- [ ] 2.1 Create `src/lib.rs` declaring modules: `error`, `event`, `middleware`, `object`, `openapi`, `routes`, `schema`, `store` with a `#[cfg(test)]` block containing a baseline `it_works` test
-- [ ] 2.2 Create `src/error.rs` with a `//! TODO` doc comment
-- [ ] 2.3 Create `src/routes.rs` with a `//! TODO` doc comment
-- [ ] 2.4 Create `src/openapi.rs` with a `//! TODO` doc comment
-- [ ] 2.5 Create `src/store/mod.rs` with `pub mod memory;` declaration and `ResourceKey` struct (fields: `group: String`, `version: String`, `kind: String`; derives: `Debug`, `Clone`, `Hash`, `Eq`, `PartialEq`)
-- [ ] 2.6 Create `src/store/memory.rs` with a `//! TODO` doc comment
-- [ ] 2.7 Create `src/schema/mod.rs` declaring submodules: `types`, `service`, `handler`
-- [ ] 2.8 Create `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs` each with a `//! TODO` doc comment
-- [ ] 2.9 Create `src/object/mod.rs` declaring submodules: `types`, `service`, `handler`
-- [ ] 2.10 Create `src/object/types.rs`, `src/object/service.rs`, `src/object/handler.rs` each with a `//! TODO` doc comment
-- [ ] 2.11 Create `src/event/mod.rs` declaring submodule: `bus`
-- [ ] 2.12 Create `src/event/bus.rs` with a `//! TODO` doc comment
-- [ ] 2.13 Create `src/middleware/mod.rs` declaring submodules: `auth`, `metrics`
-- [ ] 2.14 Create `src/middleware/auth.rs`, `src/middleware/metrics.rs` each with a `//! TODO` doc comment
-- [ ] 2.15 Verify `cargo build` succeeds with all modules declared
+- [x] 2.1 Create `src/lib.rs` declaring modules: `error`, `event`, `middleware`, `object`, `openapi`, `routes`, `schema`, `store` with a `#[cfg(test)]` block containing a baseline `it_works` test
+- [x] 2.2 Create `src/error.rs` with a `//! TODO` doc comment
+- [x] 2.3 Create `src/routes.rs` with a `//! TODO` doc comment
+- [x] 2.4 Create `src/openapi.rs` with a `//! TODO` doc comment
+- [x] 2.5 Create `src/store/mod.rs` with `pub mod memory;` declaration and `ResourceKey` struct (fields: `group: String`, `version: String`, `kind: String`; derives: `Debug`, `Clone`, `Hash`, `Eq`, `PartialEq`)
+- [x] 2.6 Create `src/store/memory.rs` with a `//! TODO` doc comment
+- [x] 2.7 Create `src/schema/mod.rs` declaring submodules: `types`, `service`, `handler`
+- [x] 2.8 Create `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs` each with a `//! TODO` doc comment
+- [x] 2.9 Create `src/object/mod.rs` declaring submodules: `types`, `service`, `handler`
+- [x] 2.10 Create `src/object/types.rs`, `src/object/service.rs`, `src/object/handler.rs` each with a `//! TODO` doc comment
+- [x] 2.11 Create `src/event/mod.rs` declaring submodule: `bus`
+- [x] 2.12 Create `src/event/bus.rs` with a `//! TODO` doc comment
+- [x] 2.13 Create `src/middleware/mod.rs` declaring submodules: `auth`, `metrics`
+- [x] 2.14 Create `src/middleware/auth.rs`, `src/middleware/metrics.rs` each with a `//! TODO` doc comment
+- [x] 2.15 Verify `cargo build` succeeds with all modules declared
 
 ## 3. Minimal Server
 
