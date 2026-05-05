@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Cargo.toml with all project dependencies
-The project SHALL have a `Cargo.toml` at the workspace root declaring the package name `kapi`, edition `2021`, and all dependencies listed in the roadmap: axum, tokio (full), serde (derive), serde_json, jsonschema, dashmap, tokio-stream, futures-util, tracing, tracing-subscriber (env-filter), utoipa, utoipa-swagger-ui, async-trait, chrono (serde), uuid (v4, serde), thiserror, tower, tower-http (trace, cors). Dev-dependencies SHALL include http-body-util.
+The project SHALL have a `Cargo.toml` at the workspace root declaring the package name `kapi`, edition `2024`, and all dependencies listed in the roadmap: axum, tokio (full), serde (derive), serde_json, jsonschema, dashmap, tokio-stream, futures-util, tracing, tracing-subscriber (env-filter), utoipa, utoipa-swagger-ui, async-trait, chrono (serde), uuid (v4, serde), thiserror, tower, tower-http (trace, cors). Dev-dependencies SHALL include http-body-util.
 
 #### Scenario: Dependencies resolve and compile
 - **WHEN** `cargo build` is run
