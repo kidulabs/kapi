@@ -236,11 +236,11 @@ GET /apis/example.io/v1/Widget?watch=true
 
 ### P0 — Project Scaffold
 
-- [ ] T1: Create `Cargo.toml` with all dependencies (axum, tokio, dashmap, jsonschema, utoipa, utoipa-swagger-ui, tower, tower-http, serde, serde_json, chrono, uuid, thiserror, async-trait, tracing, tracing-subscriber, tokio-stream, futures)
-- [ ] T2: Create module directory tree: `src/{store,schema,object,event,middleware}/` with `mod.rs` in each
-- [ ] T3: Create `src/lib.rs` declaring all modules
-- [ ] T4: Create `src/main.rs` with tokio `#[tokio::main]` stub that binds to `0.0.0.0:8080`
-- [ ] T5: Verify `cargo build` succeeds
+- [x] T1: Create `Cargo.toml` with all dependencies (axum, tokio, dashmap, jsonschema, utoipa, utoipa-swagger-ui, tower, tower-http, serde, serde_json, chrono, uuid, thiserror, async-trait, tracing, tracing-subscriber, tokio-stream, futures)
+- [x] T2: Create module directory tree: `src/{store,schema,object,event,middleware}/` with `mod.rs` in each
+- [x] T3: Create `src/lib.rs` declaring all modules
+- [x] T4: Create `src/main.rs` with tokio `#[tokio::main]` stub that binds to `0.0.0.0:8080`
+- [x] T5: Verify `cargo build` succeeds
 
 ### P1 — Core Types and Errors
 
