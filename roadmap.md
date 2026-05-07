@@ -70,31 +70,37 @@ Request → Auth Layer → Metrics Layer → Admission Validation → Handler �
 #[derive(Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
 struct ResourceKey { group: String, version: String, kind: String }
 
+struct UserData { value: serde_json::Value }
+
+struct ContinueToken(String);
+
 struct Schema {
     key: ResourceKey,
     json_schema: serde_json::Value,
     created_at: chrono::DateTime<chrono::Utc>,
 }
 
+struct ValidationError { path: String, message: String }
+
 struct StoredObject {
     key: ResourceKey,
     name: String,
-    data: serde_json::Value,
+    data: UserData,
     version: u64,  // resourceVersion, global monotonic
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
 
-struct ListOptions { limit: Option<usize>, continue_token: Option<String> }
-struct ListResponse { items: Vec<StoredObject>, continue_token: Option<String> }
+struct ListOptions { limit: Option<usize>, continue_token: Option<ContinueToken> }
+struct ListResponse { items: Vec<StoredObject>, continue_token: Option<ContinueToken> }
 
 enum WatchEventType { Added, Modified, Deleted }
 struct WatchEvent { event_type: WatchEventType, object: StoredObject }
 
 enum AppError {
-    NotFound,
+    NotFound { what: String, identifier: String },
     Conflict { expected: u64, actual: u64 },
-    SchemaValidation(Vec<String>),
+    SchemaValidation(Vec<ValidationError>),
     Internal(anyhow::Error),
 }
 ```
@@ -178,8 +184,8 @@ src/
 ```toml
 axum, tokio (full), serde, serde_json, jsonschema, dashmap,
 tokio-stream, futures, tracing, tracing-subscriber,
-utoipa, utoipa-swagger-ui, async-trait, chrono, uuid,
-thiserror, tower, tower-http (trace, cors)
+utoipa, utoipa-swagger-ui, async-trait, chrono,
+thiserror, anyhow, tower, tower-http (trace, cors)
 ```
 
 ---
@@ -244,13 +250,13 @@ GET /apis/example.io/v1/Widget?watch=true
 
 ### P1 — Core Types and Errors
 
-- [ ] T6: Define `AppError` in `src/error.rs` — variants: `NotFound`, `Conflict { expected, actual }`, `SchemaValidation(Vec<String>)`, `Internal(anyhow::Error)` — derive `thiserror::Error`
-- [ ] T7: Implement `IntoResponse` for `AppError` — map to 404, 409, 422, 500 with JSON body `{"error": "..."}`
-- [ ] T8: Define `ResourceKey { group, version, kind }` in `src/object/types.rs` with `Hash`, `Eq`, `Clone`, `Serialize`, `Deserialize`
-- [ ] T9: Define `StoredObject { key: ResourceKey, name, data, version, created_at, updated_at }` in `src/object/types.rs`
-- [ ] T10: Define `ListOptions { limit, continue_token }` and `ListResponse { items, continue_token }` in `src/object/types.rs`
-- [ ] T11: Define `WatchEventType { Added, Modified, Deleted }` and `WatchEvent { event_type, object }` in `src/object/types.rs`
-- [ ] T12: Define `Schema { key: ResourceKey, json_schema, created_at }` in `src/schema/types.rs`
+- [x] T6: Define `AppError` in `src/error.rs` — variants: `NotFound { what, identifier }`, `Conflict { expected, actual }`, `SchemaValidation(Vec<ValidationError>)`, `Internal(anyhow::Error)` — derive `thiserror::Error`
+- [x] T7: Implement `IntoResponse` for `AppError` — map to 404, 409, 422, 500 with rich JSON body `{"error", "code", "details"}`
+- [x] T8: Complete `ResourceKey { group, version, kind }` in `src/store/mod.rs` with `Hash`, `Eq`, `Clone`, `Serialize`, `Deserialize`
+- [x] T9: Define `StoredObject { key: ResourceKey, name, data: UserData, version, created_at, updated_at }` in `src/object/types.rs`
+- [x] T10: Define `ListOptions { limit, continue_token: Option<ContinueToken> }` and `ListResponse { items, continue_token: Option<ContinueToken> }` in `src/object/types.rs`
+- [x] T11: Define `WatchEventType { Added, Modified, Deleted }` and `WatchEvent { event_type, object }` in `src/object/types.rs`
+- [x] T12: Define `Schema { key: ResourceKey, json_schema, created_at }` in `src/schema/types.rs`
 
 ### P2 — Storage Traits and In-Memory Implementation
 
