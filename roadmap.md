@@ -15,13 +15,12 @@ Request → Auth Layer → Metrics Layer → Admission Validation → Handler �
                                                                         │
                                                                         └→ EventBus → SSE Watchers
 
-                                   ┌─────────────┐
-                                   │  AppState   │
-                                   │             │
-                                   │ SchemaStore │  (trait)
-                                   │ ObjectStore │  (trait)
-                                   │ EventBus    │
-                                   └─────────────┘
+                                    ┌─────────────┐
+                                    │  AppState   │
+                                    │             │
+                                    │ ObjectStore │  (trait — all objects, including schemas)
+                                    │ EventBus    │
+                                    └─────────────┘
 ```
 
 **Layers:**
@@ -29,7 +28,7 @@ Request → Auth Layer → Metrics Layer → Admission Validation → Handler �
 1. **Tower middleware** — composable chain (auth, metrics, trace, future: admission webhook)
 2. **Handlers** — thin Axum extractors + response, no business logic
 3. **Services** — orchestrate store + event bus; guarantee publish on every mutation
-4. **Store** — pluggable via `SchemaStore` + `ObjectStore` async traits; v1 = in-memory (DashMap)
+4. **Store** — pluggable via a single `ObjectStore` async trait; v1 = in-memory (DashMap). Schema are objects too, stored in the same store (kind `"Schema"` in group `kapi.io`).
 5. **EventBus** — per-kind `tokio::broadcast` channels; subscribers watch a specific kind and receive all CUD events for that kind
 
 ---
@@ -38,12 +37,14 @@ Request → Auth Layer → Metrics Layer → Admission Validation → Handler �
 
 ### Schema Registry (`/apis/kapi.io/v1/`)
 
+Schema is itself an object kind. Schemas live at the same paths as any other object.
+
 | Method | Path | Action |
 |--------|------|--------|
-| GET | `/schemas` | List all registered schemas |
-| POST | `/schemas` | Register a new JSON Schema (validated on admission) |
-| GET | `/schemas/{group}/{version}/{kind}` | Get a specific schema |
-| DELETE | `/schemas/{group}/{version}/{kind}` | Delete a schema |
+| GET | `/Schema` | List all registered schemas (object-style list) |
+| POST | `/Schema` | Register a new JSON Schema (validated against meta-schema) |
+| GET | `/Schema/{name}` | Get a specific schema by name (e.g. `Widget.example.io`) |
+| DELETE | `/Schema/{name}` | Delete a schema (409 if objects of that kind exist) |
 
 ### Object CRUD (`/apis/{group}/{version}/`)
 
@@ -74,14 +75,13 @@ struct UserData { value: serde_json::Value }
 
 struct ContinueToken(String);
 
-struct Schema {
-    key: ResourceKey,
-    json_schema: serde_json::Value,
-    created_at: chrono::DateTime<chrono::Utc>,
-}
-
 struct ValidationError { path: String, message: String }
 
+// Schema is not a separate struct. It is a StoredObject
+// with kind="Schema" in group "kapi.io" and a name like
+// "{TargetKind}.{TargetGroup}" (e.g. "Widget.example.io").
+// The data field contains targetGroup, targetVersion,
+// targetKind, and jsonSchema.
 struct StoredObject {
     key: ResourceKey,
     name: String,
@@ -111,14 +111,6 @@ enum AppError {
 
 ```rust
 #[async_trait]
-trait SchemaStore: Send + Sync {
-    async fn register(&self, schema: Schema) -> Result<Schema, AppError>;
-    async fn get(&self, key: &ResourceKey) -> Result<Schema, AppError>;
-    async fn list(&self) -> Result<Vec<Schema>, AppError>;
-    async fn delete(&self, key: &ResourceKey) -> Result<Schema, AppError>;
-}
-
-#[async_trait]
 trait ObjectStore: Send + Sync {
     async fn create(&self, key: &ResourceKey, name: &str, data: Value) -> Result<StoredObject, AppError>;
     async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
@@ -135,13 +127,15 @@ trait ObjectStore: Send + Sync {
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
 | Framework | Axum | Tower composability for middleware chain, SSE support, nested routers |
-| Storage abstraction | Split traits (SchemaStore + ObjectStore) | Type safety at handler level; schema handlers can't accidentally call object operations |
+| Storage abstraction | Single ObjectStore trait | Schema is also an object (kind `"Schema"`); one store for everything simplifies backends |
 | Event publishing | Service layer publishes, store is pure data | Impossible to "forget to publish" — handlers only call service, never store directly |
 | v1 storage | In-memory (DashMap) | Zero ops overhead, perfect for dev; trait abstraction makes swapping trivial later |
 | API paths | Kube-style `/apis/{group}/{version}/{kind}` | Familiar to kube users, supports multiple API groups naturally |
 | Watch semantics | `?watch=true` on list endpoint | Kube-native pattern, single URL, handler branches on query param |
 | Event bus | Per-resource-kind broadcast channels | Each kind gets its own channel; `?watch=true` subscribes to all CUD events for that specific kind |
 | Concurrency | Global monotonic `AtomicU64` counter | Enables "give me events since version N" for watch resume; sufficient for in-memory |
+| Schema validation | Builtin meta-schema compiled at startup | Schema objects validated against hardcoded meta-schema; avoids infinite recursion of Schema validating Schema |
+| Schema deletion | Block if objects exist (409 Conflict) | Prevent accidental data loss — user must delete all objects of a kind before removing its schema |
 | Schema validation on registration | Compile JSON Schema via `jsonschema` crate | Reject invalid schemas at registration time with 422 |
 
 ---
@@ -155,13 +149,11 @@ src/
 ├── error.rs               # AppError enum + IntoResponse impl
 ├── routes.rs               # Router composition (all route definitions)
 ├── store/
-│   ├── mod.rs             # SchemaStore + ObjectStore trait definitions
+│   ├── mod.rs             # ObjectStore trait definition (single trait)
 │   └── memory.rs          # InMemoryStore (DashMap, AtomicU64)
 ├── schema/
 │   ├── mod.rs
-│   ├── types.rs           # Schema struct
-│   ├── service.rs         # SchemaService<SchemaStore>
-│   └── handler.rs         # Axum route handlers for /schemas
+│   └── meta_schema.rs     # Builtin meta-schema constant + validator
 ├── object/
 │   ├── mod.rs
 │   ├── types.rs           # StoredObject, ResourceKey, WatchEvent, etc.
@@ -202,10 +194,23 @@ POST /apis/example.io/v1/Widget/my-widget
   ▼ Handler: extract path params into ResourceKey + name + body
   │
   ▼ ObjectService::create(key, name, data)
+  │   ├── if kind == "Schema": validate against builtin meta-schema
+  │   │   └── compile nested jsonSchema → 422 on failure
+  │   ├── if kind != "Schema": look up Schema object → validate payload
   │   ├── store.create(key, name, data)           → StoredObject
   │   └── event_bus.publish(key, WatchEvent::Added(obj)) → per-kind watchers
   │
   ▼ Response: 201 Created + StoredObject JSON
+
+POST /apis/kapi.io/v1/Schema
+  │  (Schema objects go through the exact same pipeline)
+  │
+  ▼ ObjectService::create(key = {kapi.io, v1, Schema}, name, data)
+  │   ├── kind == "Schema" → validate against meta-schema
+  │   ├── store.create() → StoredObject
+  │   └── event_bus.publish() → per-kind watchers
+  │
+  ▼ Response: 201 Created
 
 GET /apis/example.io/v1/Widget?watch=true
   │
@@ -232,7 +237,7 @@ GET /apis/example.io/v1/Widget?watch=true
 
 ## Open Questions
 
-- Should schema registration itself go through admission validation? (Out of scope for v1.)
+- Should schema registration itself have additional admission webhooks? (Meta-schema validation is builtin.)
 - Should `delete` require `resourceVersion` unconditionally? (Current: optional.)
 - PATCH with strategic merge patch? (Deferred.)
 
@@ -256,18 +261,16 @@ GET /apis/example.io/v1/Widget?watch=true
 - [x] T9: Define `StoredObject { key: ResourceKey, name, data: UserData, version, created_at, updated_at }` in `src/object/types.rs`
 - [x] T10: Define `ListOptions { limit, continue_token: Option<ContinueToken> }` and `ListResponse { items, continue_token: Option<ContinueToken> }` in `src/object/types.rs`
 - [x] T11: Define `WatchEventType { Added, Modified, Deleted }` and `WatchEvent { event_type, object }` in `src/object/types.rs`
-- [x] T12: Define `Schema { key: ResourceKey, json_schema, created_at }` in `src/schema/types.rs`
+- [x] T12: Define core types in `src/object/types.rs` — `ResourceKey`, `StoredObject`, `UserData`, `ListOptions`, `ListResponse`, `WatchEventType`, `WatchEvent`, `ValidationError`
 
-### P2 — Storage Traits and In-Memory Implementation
+### P2 — Storage Trait and In-Memory Implementation
 
-- [ ] T13: Define `SchemaStore` async trait in `src/store/mod.rs` — `register`, `get`, `list`, `delete` (uses `ResourceKey` instead of separate group/version/kind params)
-- [ ] T14: Define `ObjectStore` async trait in `src/store/mod.rs` — `create`, `get`, `list`, `update` (with `expected_version`), `delete` (with optional `expected_version`)
-- [ ] T15: Implement `InMemorySchemaStore` inner in `InMemoryStore` using `DashMap<ResourceKey, SchemaEntry>`
-- [ ] T16: Implement `InMemoryObjectStore` inner in `InMemoryStore` using `DashMap<(ResourceKey, name), ObjectEntry>`
-- [ ] T17: Add `AtomicU64` version counter to `InMemoryStore`, auto-increment on every create/update
-- [ ] T18: Implement optimistic concurrency in `update`: compare `expected_version` with stored version, return `Err(AppError::Conflict)` on mismatch
-- [ ] T19: Implement optional version check in `delete`
-- [ ] T20: Write unit tests for `InMemoryStore`: create+get, list, update success, update conflict, delete, get missing returns 404
+- [ ] T13: Define single `ObjectStore` async trait — `create`, `get`, `list`, `update` (with `expected_version`), `delete` (with optional `expected_version`)
+- [ ] T14: Implement `InMemoryStore` using `DashMap<(ResourceKey, name), ObjectEntry>` for all objects (including schemas)
+- [ ] T15: Add `AtomicU64` version counter, auto-increment on every create/update
+- [ ] T16: Implement optimistic concurrency in `update`: compare versions, return `Err(AppError::Conflict)` on mismatch
+- [ ] T17: Implement optional version check in `delete`
+- [ ] T18: Write unit tests: create+get, list, update success, update conflict, delete, get missing
 
 ### P3 — Event Bus
 
@@ -277,27 +280,23 @@ GET /apis/example.io/v1/Widget?watch=true
 - [ ] T24: Write unit test: publish an event, multiple subscribers all receive it
 - [ ] T25: Write unit test: dropped subscriber does not block publisher
 
-### P4 — Schema Domain (Service + Handlers)
+### P4 — Meta-Schema
 
-- [ ] T27: Implement `SchemaService` in `src/schema/service.rs` — wraps `Arc<dyn SchemaStore>`, delegates CRUD
-- [ ] T28: Implement schema handlers in `src/schema/handler.rs` — Axum extractors for `State`, `Path`, `Json`, return `(StatusCode, Json<Schema>)`; include doc comments on each handler explaining the endpoint
-- [ ] T29: Add jsonschema compilation on registration: attempt `jsonschema::validator_for(&schema.json_schema)`, return 422 on failure
-- [ ] T30: Wire schema routes in `src/routes.rs`: `GET/POST /apis/kapi.io/v1/schemas`, `GET/DELETE /apis/kapi.io/v1/schemas/{group}/{version}/{kind}`
-- [ ] T31: Write unit test: POST valid schema → 201
-- [ ] T32: Write unit test: POST invalid JSON Schema → 422
-- [ ] T33: Write unit test: GET existing schema → 200, GET missing → 404
-- [ ] T34: Write unit test: DELETE schema → 200, DELETE missing → 404
+- [ ] T27: Create `src/schema/meta_schema.rs` with hardcoded meta-schema JSON constant defining valid Schema object payloads (`targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`)
+- [ ] T28: Add meta-schema compilation function returning `jsonschema::Validator`, called at server startup
+- [ ] T29: Update `src/schema/mod.rs` to declare only `pub mod meta_schema` (remove handler, service, types declarations)
+- [ ] T30: Delete `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs`
 
 ### P5 — Object Domain (Service + Handlers + Validation + Watch)
 
 - [ ] T35: Implement `ObjectService` in `src/object/service.rs` — wraps `Arc<dyn ObjectStore>` + `EventBus`, publishes events after mutations
-- [ ] T36: Implement object handlers in `src/object/handler.rs` — create, get, update, delete, list; include doc comments on each handler
-- [ ] T37: Implement `?watch=true` detection in list handler: if `watch=true`, return `Sse<impl Stream>`, else return `Json<ListResponse>`
-- [ ] T38: Implement admission validation in `ObjectService::create` and `ObjectService::update`: fetch schema from `SchemaStore`, validate payload with `jsonschema`, return 422 on failure, 404 if kind not registered
-- [ ] T39: Wire object routes in `src/routes.rs`: `GET/POST /apis/{group}/{version}/{kind}`, `GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name}`
-- [ ] T40: Write unit test: create valid object → 201, create with invalid data → 422, create for unregistered kind → 404
-- [ ] T41: Write unit test: update with correct resourceVersion → 200, update with wrong version → 409
-- [ ] T42: Write integration test: watch stream receives Added/Modified/Deleted events
+- [ ] T36: Add meta-schema validator field to `ObjectService` (compiled at construction, used for Schema objects)
+- [ ] T37: Implement validation dispatch in `ObjectService::create`/`update`: if `kind == "Schema"`, validate against meta-schema + compile nested jsonSchema; else look up Schema object from store and validate payload
+- [ ] T38: Implement `ObjectService::delete` with Schema guard: if deleting a Schema object, check if objects of the target kind exist; if so, return 409 Conflict with object count
+- [ ] T39: Implement object handlers in `src/object/handler.rs` — create, get, update, delete, list; include doc comments on each handler
+- [ ] T40: Implement `?watch=true` detection in list handler: if `watch=true`, return `Sse<impl Stream>`, else return `Json<ListResponse>`
+- [ ] T41: Wire object routes in `src/routes.rs`: `GET/POST /apis/{group}/{version}/{kind}`, `GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name}`
+- [ ] T42: Write unit tests: create valid object → 201, create with invalid data → 422, create for unregistered kind → 404; update with correct/wrong resourceVersion → 200/409; create valid Schema → 201, create invalid Schema → 422
 
 ### P6 — Middleware Stubs
 
@@ -308,25 +307,26 @@ GET /apis/example.io/v1/Widget?watch=true
 
 ### P7 — Application Wiring
 
-- [ ] T47: Define `AppState` struct: `Arc<InMemoryStore>`, `EventBus`, `SchemaService`, `ObjectService`
-- [ ] T48: Create router in `src/routes.rs` — compose schema routes + object routes + middleware; add doc comments on route groups
-- [ ] T49: Wire everything in `src/main.rs` — construct `AppState`, build router, bind to port from env var or default 8080; add module-level doc comment
-- [ ] T50: Verify: `cargo run` starts server, `curl http://localhost:8080/apis/kapi.io/v1/schemas` returns empty list
+- [ ] T47: Define `AppState` struct: `InMemoryStore`, `EventBus`, `ObjectService` (no separate SchemaService)
+- [ ] T48: Compile meta-schema at startup, inject into `ObjectService` during construction
+- [ ] T49: Create router in `src/routes.rs` — compose object routes under `/apis/{group}/{version}`, add middleware stack
+- [ ] T50: Wire everything in `src/main.rs` — construct `AppState`, build router, bind to port from env var or default 8080
+- [ ] T51: Verify: `cargo run` starts server, `curl http://localhost:8080/apis/kapi.io/v1/Schema` returns empty list
 
 ### P8 — OpenAPI
 
-- [ ] T51: Add `utoipa::ToSchema` derives to all request/response types (`ResourceKey`, `Schema`, `StoredObject`, `AppError`, etc.)
-- [ ] T52: Add `utoipa::OpenApi` derive tags and paths for all handlers
-- [ ] T53: Wire `/openapi` endpoint and Swagger UI serve at `/swagger-ui/`
-- [ ] T54: Verify: load `/swagger-ui/` in browser, all endpoints appear, try a request
+- [ ] T52: Add `utoipa::ToSchema` derives to all request/response types (`ResourceKey`, `StoredObject`, `AppError`, etc.)
+- [ ] T53: Add `utoipa::OpenApi` derive tags and paths for all handlers
+- [ ] T54: Wire `/openapi` endpoint and Swagger UI serve at `/swagger-ui/`
+- [ ] T55: Verify: load `/swagger-ui/` in browser, all endpoints appear, try a request
 
 ### P9 — Integration Tests
 
-- [ ] T55: Integration test: register schema → create object → get object → update object → delete object — full CRUD flow
-- [ ] T56: Integration test: watch stream → create object → receive Added event → update → receive Modified → delete → receive Deleted
-- [ ] T57: Integration test: concurrent update with wrong resourceVersion → 409 Conflict
-- [ ] T57: Integration test: concurrent update with wrong resourceVersion → 409 Conflict
-- [ ] T58: Integration test: create object with invalid data against schema → 422
-- [ ] T59: Integration test: all 404 cases (get missing, delete missing, watch missing kind)
-- [ ] T60: `cargo test` passes clean with no warnings
-- [ ] T61: `cargo doc --no-deps` generates documentation without errors
+- [ ] T56: Integration test: register schema via `/apis/kapi.io/v1/Schema` → create object via `/apis/example.io/v1/Widget` → full CRUD flow
+- [ ] T57: Integration test: watch Schema objects → create schema → receive Added event
+- [ ] T58: Integration test: delete schema with existing objects → 409 Conflict with object_count
+- [ ] T59: Integration test: delete schema with no objects → 200 OK
+- [ ] T60: Integration test: create schema with invalid jsonSchema → 422
+- [ ] T61: Integration test: concurrent update with wrong resourceVersion → 409 Conflict
+- [ ] T62: `cargo test` passes clean with no warnings
+- [ ] T63: `cargo doc --no-deps` generates documentation without errors
