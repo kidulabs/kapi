@@ -36,11 +36,17 @@ pub struct UserData {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct StoredObject {
-    pub key: ResourceKey,
+#[serde(rename_all = "camelCase")]
+pub struct ObjectMetadata {
     pub name: String,
-    pub data: UserData,
     pub resource_version: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct StoredObject {
+    pub key: ResourceKey,
+    pub metadata: ObjectMetadata,
+    pub data: UserData,
 }

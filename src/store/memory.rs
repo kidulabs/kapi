@@ -7,7 +7,7 @@ use dashmap::DashMap;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::{ContinueToken, ListOptions, ListResponse, StoredObject, UserData};
+use crate::object::types::{ContinueToken, ListOptions, ListResponse, ObjectMetadata, StoredObject, UserData};
 use crate::store::{ObjectStore, ResourceKey};
 
 pub struct InMemoryStore {
@@ -43,11 +43,13 @@ impl ObjectStore for InMemoryStore {
         let now = Self::now();
         let object = StoredObject {
             key: key.clone(),
-            name: name.to_string(),
+            metadata: ObjectMetadata {
+                name: name.to_string(),
+                resource_version: self.next_version(),
+                created_at: now,
+                updated_at: now,
+            },
             data: UserData { value: data },
-            resource_version: self.next_version(),
-            created_at: now,
-            updated_at: now,
         };
 
         self.objects.insert(entry, object.clone());
@@ -73,7 +75,7 @@ impl ObjectStore for InMemoryStore {
             .map(|r| r.clone())
             .collect();
 
-        items.sort_by(|a, b| a.name.cmp(&b.name));
+        items.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
 
         let skip_past = opts
             .continue_token
@@ -82,7 +84,7 @@ impl ObjectStore for InMemoryStore {
             .transpose()?;
 
         if let Some(ref skip) = skip_past {
-            items.retain(|item| item.name > *skip);
+            items.retain(|item| item.metadata.name > *skip);
         }
 
         let limit = opts.limit.unwrap_or(usize::MAX);
@@ -90,7 +92,7 @@ impl ObjectStore for InMemoryStore {
         items.truncate(limit);
 
         let continue_token = if has_more {
-            items.last().map(|last| encode_continue_token(&last.name))
+            items.last().map(|last| encode_continue_token(&last.metadata.name))
         } else {
             None
         };
@@ -99,43 +101,34 @@ impl ObjectStore for InMemoryStore {
         Ok(ListResponse { items, continue_token })
     }
 
-    async fn update(&self, key: &ResourceKey, name: &str, data: Value, expected_version: u64) -> Result<StoredObject, AppError> {
-        let entry = (key.clone(), name.to_string());
+    async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
+        let name = &object.metadata.name;
+        let entry = (object.key.clone(), name.to_string());
         let mut guard = self.objects.get_mut(&entry).ok_or_else(|| AppError::NotFound {
             what: "object".to_string(),
-            identifier: format!("{}/{}", key.kind, name),
+            identifier: format!("{}/{}", object.key.kind, name),
         })?;
 
-        if guard.resource_version != expected_version {
+        let expected = object.metadata.resource_version;
+        if guard.metadata.resource_version != expected {
             return Err(AppError::Conflict {
-                expected: expected_version,
-                actual: guard.resource_version,
+                expected,
+                actual: guard.metadata.resource_version,
             });
         }
 
-        guard.data = UserData { value: data };
-        guard.resource_version = self.next_version();
-        guard.updated_at = Self::now();
+        guard.data = object.data;
+        guard.metadata.resource_version = self.next_version();
+        guard.metadata.updated_at = Self::now();
         Ok(guard.clone())
     }
 
-    async fn delete(&self, key: &ResourceKey, name: &str, expected_version: Option<u64>) -> Result<StoredObject, AppError> {
+    async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
         let entry = (key.clone(), name.to_string());
         let (_, object) = self.objects.remove(&entry).ok_or_else(|| AppError::NotFound {
             what: "object".to_string(),
             identifier: format!("{}/{}", key.kind, name),
         })?;
-
-        if let Some(exp_ver) = expected_version {
-            if object.resource_version != exp_ver {
-                let actual = object.resource_version;
-                self.objects.insert(entry, object);
-                return Err(AppError::Conflict {
-                    expected: exp_ver,
-                    actual,
-                });
-            }
-        }
 
         Ok(object)
     }
@@ -173,15 +166,15 @@ mod tests {
         let data = json!({"color": "blue", "size": 10});
 
         let created = store.create(&key, "my-widget", data.clone()).await.unwrap();
-        assert_eq!(created.name, "my-widget");
+        assert_eq!(created.metadata.name, "my-widget");
         assert_eq!(created.data.value, data);
         assert_eq!(created.key, key);
-        assert_eq!(created.resource_version, 1);
+        assert_eq!(created.metadata.resource_version, 1);
 
         let retrieved = store.get(&key, "my-widget").await.unwrap();
-        assert_eq!(retrieved.name, created.name);
+        assert_eq!(retrieved.metadata.name, created.metadata.name);
         assert_eq!(retrieved.data.value, created.data.value);
-        assert_eq!(retrieved.resource_version, created.resource_version);
+        assert_eq!(retrieved.metadata.resource_version, created.metadata.resource_version);
     }
 
     #[tokio::test]
@@ -214,7 +207,7 @@ mod tests {
         store.create(&key, "b", json!({})).await.unwrap();
 
         let res = store.list(&key, ListOptions { limit: None, continue_token: None }).await.unwrap();
-        let names: Vec<&str> = res.items.iter().map(|o| o.name.as_str()).collect();
+        let names: Vec<&str> = res.items.iter().map(|o| o.metadata.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
         assert!(res.continue_token.is_none());
     }
@@ -230,8 +223,8 @@ mod tests {
 
         let res = store.list(&key, ListOptions { limit: Some(2), continue_token: None }).await.unwrap();
         assert_eq!(res.items.len(), 2);
-        assert_eq!(res.items[0].name, "item-0");
-        assert_eq!(res.items[1].name, "item-1");
+        assert_eq!(res.items[0].metadata.name, "item-0");
+        assert_eq!(res.items[1].metadata.name, "item-1");
         assert!(res.continue_token.is_some());
     }
 
@@ -249,8 +242,8 @@ mod tests {
 
         let second = store.list(&key, ListOptions { limit: Some(2), continue_token: Some(token) }).await.unwrap();
         assert_eq!(second.items.len(), 2);
-        assert_eq!(second.items[0].name, "item-2");
-        assert_eq!(second.items[1].name, "item-3");
+        assert_eq!(second.items[0].metadata.name, "item-2");
+        assert_eq!(second.items[1].metadata.name, "item-3");
         assert!(second.continue_token.is_some());
     }
 
@@ -260,10 +253,21 @@ mod tests {
         let key = test_key();
 
         let created = store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
-        let v1 = created.resource_version;
+        let v1 = created.metadata.resource_version;
 
-        let updated = store.update(&key, "my-widget", json!({"x": 2}), v1).await.unwrap();
-        assert!(updated.resource_version > v1);
+        let object = StoredObject {
+            key: key.clone(),
+            metadata: ObjectMetadata {
+                name: "my-widget".to_string(),
+                resource_version: v1,
+                created_at: created.metadata.created_at,
+                updated_at: created.metadata.updated_at,
+            },
+            data: UserData { value: json!({"x": 2}) },
+        };
+
+        let updated = store.update(object).await.unwrap();
+        assert!(updated.metadata.resource_version > v1);
         assert_eq!(updated.data.value, json!({"x": 2}));
     }
 
@@ -272,9 +276,20 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
+        let created = store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
 
-        let err = store.update(&key, "my-widget", json!({"x": 2}), 99).await.unwrap_err();
+        let object = StoredObject {
+            key: key.clone(),
+            metadata: ObjectMetadata {
+                name: "my-widget".to_string(),
+                resource_version: 99,
+                created_at: created.metadata.created_at,
+                updated_at: created.metadata.updated_at,
+            },
+            data: UserData { value: json!({"x": 2}) },
+        };
+
+        let err = store.update(object).await.unwrap_err();
         assert!(matches!(err, AppError::Conflict { expected: 99, actual: 1 }));
     }
 
@@ -283,7 +298,18 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let err = store.update(&key, "nonexistent", json!({"x": 1}), 1).await.unwrap_err();
+        let object = StoredObject {
+            key: key.clone(),
+            metadata: ObjectMetadata {
+                name: "nonexistent".to_string(),
+                resource_version: 1,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            data: UserData { value: json!({"x": 1}) },
+        };
+
+        let err = store.update(object).await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -294,26 +320,12 @@ mod tests {
 
         let created = store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
 
-        let deleted = store.delete(&key, "my-widget", None).await.unwrap();
-        assert_eq!(deleted.name, created.name);
+        let deleted = store.delete(&key, "my-widget").await.unwrap();
+        assert_eq!(deleted.metadata.name, created.metadata.name);
         assert_eq!(deleted.data.value, created.data.value);
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
-    }
-
-    #[tokio::test]
-    async fn delete_wrong_version_conflict_and_object_remains() {
-        let store = InMemoryStore::new();
-        let key = test_key();
-
-        let created = store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
-
-        let err = store.delete(&key, "my-widget", Some(99)).await.unwrap_err();
-        assert!(matches!(err, AppError::Conflict { expected: 99, actual: v } if v == created.resource_version));
-
-        let retrieved = store.get(&key, "my-widget").await.unwrap();
-        assert_eq!(retrieved.data.value, json!({"x": 1}));
     }
 
     #[tokio::test]
@@ -324,7 +336,7 @@ mod tests {
         store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
         store.create(&key, "other", json!({"x": 2})).await.unwrap();
 
-        store.delete(&key, "my-widget", None).await.unwrap();
+        store.delete(&key, "my-widget").await.unwrap();
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
@@ -338,7 +350,7 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let err = store.delete(&key, "nonexistent", None).await.unwrap_err();
+        let err = store.delete(&key, "nonexistent").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -350,20 +362,5 @@ mod tests {
         let res = store.list(&key, ListOptions { limit: None, continue_token: None }).await.unwrap();
         assert!(res.items.is_empty());
         assert!(res.continue_token.is_none());
-    }
-
-    #[tokio::test]
-    async fn delete_matching_version_succeeds() {
-        let store = InMemoryStore::new();
-        let key = test_key();
-
-        let created = store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
-        let v1 = created.resource_version;
-
-        let deleted = store.delete(&key, "my-widget", Some(v1)).await.unwrap();
-        assert_eq!(deleted.name, "my-widget");
-
-        let err = store.get(&key, "my-widget").await.unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
     }
 }

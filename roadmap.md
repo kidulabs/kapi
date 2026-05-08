@@ -324,32 +324,32 @@ GET /apis/example.io/v1/Widget?watch=true
 - [x] T6: Define `AppError` in `src/error.rs` — variants: `NotFound { what, identifier }`, `Conflict { expected, actual }`, `SchemaValidation(Vec<ValidationError>)`, `Internal(anyhow::Error)` — derive `thiserror::Error`
 - [x] T7: Implement `IntoResponse` for `AppError` — map to 404, 409, 422, 500 with rich JSON body `{"error", "code", "details"}`
 - [x] T8: Complete `ResourceKey { group, version, kind }` in `src/store/mod.rs` with `Hash`, `Eq`, `Clone`, `Serialize`, `Deserialize`
-- [x] T9: Define `StoredObject { key: ResourceKey, name, data: UserData, version, created_at, updated_at }` in `src/object/types.rs`
+- [x] T9: Define `StoredObject { key: ResourceKey, metadata: ObjectMetadata, data: UserData }` in `src/object/types.rs` (refactored from flat fields to grouped metadata in T19–T20)
 - [x] T10: Define `ListOptions { limit, continue_token: Option<ContinueToken> }` and `ListResponse { items, continue_token: Option<ContinueToken> }` in `src/object/types.rs`
 - [x] T11: Define `WatchEventType { Added, Modified, Deleted }` and `WatchEvent { event_type, object }` in `src/object/types.rs`
 - [x] T12: Define core types in `src/object/types.rs` — `ResourceKey`, `StoredObject`, `UserData`, `ListOptions`, `ListResponse`, `WatchEventType`, `WatchEvent`, `ValidationError`
 
 ### P2 — Storage Trait and In-Memory Implementation
 
-- [x] T13: Define single `ObjectStore` async trait — `create`, `get`, `list`, `update` (with `expected_version`), `delete` (with optional `expected_version`)
-- [x] T14: Implement `InMemoryStore` using `DashMap<(ResourceKey, name), ObjectEntry>` for all objects (including schemas)
+- [x] T13: Define single `ObjectStore` async trait — `create`, `get`, `list`, `update(object: StoredObject)`, `delete(key, name)` (refactored signatures from P2b — update takes full object with embedded OCC, delete is unconditional)
+- [x] T14: Implement `InMemoryStore` using `DashMap<(ResourceKey, String), StoredObject>` for all objects (including schemas)
 - [x] T15: Add `AtomicU64` version counter, auto-increment on every create/update
-- [x] T16: Implement optimistic concurrency in `update`: compare versions, return `Err(AppError::Conflict)` on mismatch
-- [x] T17: Implement optional version check in `delete`
+- [x] T16: Implement optimistic concurrency in `update`: compare `object.metadata.resource_version` against stored version, return `Err(AppError::Conflict)` on mismatch
+- [x] T17: Implement unconditional delete (originally optional version check, simplified in P2b)
 - [x] T18: Write unit tests: create+get, list, update success, update conflict, delete, get missing
 
 ### P2b — Object Model Refactor
 
 Refactor `StoredObject` structure and `ObjectStore` trait signatures to group metadata, embed OCC, and simplify the storage contract. This is a breaking change to types and trait already implemented in P1/P2.
 
-- [ ] T19: Add `ObjectMetadata { name, resource_version, created_at, updated_at }` struct in `src/object/types.rs` with `#[serde(rename_all = "camelCase")]`
-- [ ] T20: Refactor `StoredObject` to use `key: ResourceKey`, `metadata: ObjectMetadata`, `data: UserData` — remove flat `name`, `resource_version`, `created_at`, `updated_at` fields
-- [ ] T21: Update `ObjectStore` trait in `src/store/mod.rs`:
+- [x] T19: Add `ObjectMetadata { name, resource_version, created_at, updated_at }` struct in `src/object/types.rs` with `#[serde(rename_all = "camelCase")]`
+- [x] T20: Refactor `StoredObject` to use `key: ResourceKey`, `metadata: ObjectMetadata`, `data: UserData` — remove flat `name`, `resource_version`, `created_at`, `updated_at` fields
+- [x] T21: Update `ObjectStore` trait in `src/store/mod.rs`:
   - `update(&self, object: StoredObject) -> Result<StoredObject, AppError>`
   - `delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>` (unconditional)
-- [ ] T22: Rewrite `InMemoryStore::update` to peek at `object.metadata.resource_version` for OCC check instead of taking `expected_version` parameter
-- [ ] T23: Rewrite `InMemoryStore::delete` to remove optional version check — unconditional removal
-- [ ] T24: Rewrite all existing tests in `src/store/memory.rs` for new signatures and types:
+- [x] T22: Rewrite `InMemoryStore::update` to peek at `object.metadata.resource_version` for OCC check instead of taking `expected_version` parameter
+- [x] T23: Rewrite `InMemoryStore::delete` to remove optional version check — unconditional removal
+- [x] T24: Rewrite all existing tests in `src/store/memory.rs` for new signatures and types:
   - create/get round trip
   - create duplicate conflict
   - get not found
@@ -363,7 +363,7 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
   - delete unconditional (no version check)
   - delete not found
   - list empty key
-- [ ] T25: Verify `cargo test` passes with no warnings
+- [x] T25: Verify `cargo test` passes with no warnings
 
 ### P3 — Event Bus
 
