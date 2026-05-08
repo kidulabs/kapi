@@ -86,7 +86,7 @@ struct StoredObject {
     key: ResourceKey,
     name: String,
     data: UserData,
-    version: u64,  // resourceVersion, global monotonic
+    resource_version: u64,  // resourceVersion, global monotonic
     created_at: chrono::DateTime<chrono::Utc>,
     updated_at: chrono::DateTime<chrono::Utc>,
 }
@@ -265,12 +265,12 @@ GET /apis/example.io/v1/Widget?watch=true
 
 ### P2 — Storage Trait and In-Memory Implementation
 
-- [ ] T13: Define single `ObjectStore` async trait — `create`, `get`, `list`, `update` (with `expected_version`), `delete` (with optional `expected_version`)
-- [ ] T14: Implement `InMemoryStore` using `DashMap<(ResourceKey, name), ObjectEntry>` for all objects (including schemas)
-- [ ] T15: Add `AtomicU64` version counter, auto-increment on every create/update
-- [ ] T16: Implement optimistic concurrency in `update`: compare versions, return `Err(AppError::Conflict)` on mismatch
-- [ ] T17: Implement optional version check in `delete`
-- [ ] T18: Write unit tests: create+get, list, update success, update conflict, delete, get missing
+- [x] T13: Define single `ObjectStore` async trait — `create`, `get`, `list`, `update` (with `expected_version`), `delete` (with optional `expected_version`)
+- [x] T14: Implement `InMemoryStore` using `DashMap<(ResourceKey, name), ObjectEntry>` for all objects (including schemas)
+- [x] T15: Add `AtomicU64` version counter, auto-increment on every create/update
+- [x] T16: Implement optimistic concurrency in `update`: compare versions, return `Err(AppError::Conflict)` on mismatch
+- [x] T17: Implement optional version check in `delete`
+- [x] T18: Write unit tests: create+get, list, update success, update conflict, delete, get missing
 
 ### P3 — Event Bus
 
