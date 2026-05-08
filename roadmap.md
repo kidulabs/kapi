@@ -53,8 +53,8 @@ Schema is itself an object kind. Schemas live at the same paths as any other obj
 | GET | `/{kind}?watch=true` | List objects, or stream watch events |
 | POST | `/{kind}` | Create object (validated against registered schema) |
 | GET | `/{kind}/{name}` | Get a specific object |
-| PUT | `/{kind}/{name}?resourceVersion=N` | Update with optimistic concurrency |
-| DELETE | `/{kind}/{name}` | Delete object |
+| PUT | `/{kind}/{name}` | Update object (optimistic concurrency via embedded resourceVersion in request body) |
+| DELETE | `/{kind}/{name}` | Delete object (unconditional) |
 
 ### Other
 
@@ -69,6 +69,7 @@ Schema is itself an object kind. Schemas live at the same paths as any other obj
 
 ```rust
 #[derive(Hash, Eq, PartialEq, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ResourceKey { group: String, version: String, kind: String }
 
 struct UserData { value: serde_json::Value }
@@ -82,13 +83,23 @@ struct ValidationError { path: String, message: String }
 // "{TargetKind}.{TargetGroup}" (e.g. "Widget.example.io").
 // The data field contains targetGroup, targetVersion,
 // targetKind, and jsonSchema.
-struct StoredObject {
-    key: ResourceKey,
+
+// ObjectMetadata groups server-managed lifecycle fields.
+// The client receives and echoes back metadata on update,
+// but never interprets it — it is opaque baggage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ObjectMetadata {
     name: String,
-    data: UserData,
-    resource_version: u64,  // resourceVersion, global monotonic
-    created_at: chrono::DateTime<chrono::Utc>,
-    updated_at: chrono::DateTime<chrono::Utc>,
+    resource_version: u64,    // wire: resourceVersion, global monotonic
+    created_at: chrono::DateTime<chrono::Utc>,  // wire: createdAt
+    updated_at: chrono::DateTime<chrono::Utc>,  // wire: updatedAt
+}
+
+struct StoredObject {
+    key: ResourceKey,          // identity — what kind of thing is this
+    metadata: ObjectMetadata,  // lifecycle — when/how was it changed
+    data: UserData,            // domain — user's actual payload
 }
 
 struct ListOptions { limit: Option<usize>, continue_token: Option<ContinueToken> }
@@ -105,6 +116,31 @@ enum AppError {
 }
 ```
 
+### Wire Format
+
+Objects on the wire use camelCase for metadata fields. The `key` and `data` sections are also serialized. Example:
+
+```json
+{
+  "key": {
+    "group": "apps",
+    "version": "v1",
+    "kind": "deployments"
+  },
+  "metadata": {
+    "name": "my-app",
+    "resourceVersion": 42,
+    "createdAt": "2024-01-01T00:00:00Z",
+    "updatedAt": "2024-01-01T00:00:00Z"
+  },
+  "data": {
+    "replicas": 3
+  }
+}
+```
+
+User-registered JSON Schemas validate **only** the `data` portion. Metadata fields are server-injected and server-managed — users never define them in their schemas.
+
 ---
 
 ## Storage Traits
@@ -115,10 +151,17 @@ trait ObjectStore: Send + Sync {
     async fn create(&self, key: &ResourceKey, name: &str, data: Value) -> Result<StoredObject, AppError>;
     async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
     async fn list(&self, key: &ResourceKey, opts: ListOptions) -> Result<ListResponse, AppError>;
-    async fn update(&self, key: &ResourceKey, name: &str, data: Value, expected_version: u64) -> Result<StoredObject, AppError>;
-    async fn delete(&self, key: &ResourceKey, name: &str, expected_version: Option<u64>) -> Result<StoredObject, AppError>;
+    async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError>;
+    async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
 }
 ```
+
+**Design notes:**
+
+- `create`, `get`, `list` retain `(key, name)` parameters — the object does not exist yet (create) or the caller may not have the full object (get, list).
+- `update` takes the full `StoredObject`. The implementation peeks at `object.metadata.resource_version` for optimistic concurrency control, comparing it against the current stored version. On match: applies `object.data`, bumps version, touches `updated_at`. On mismatch: returns `Conflict`.
+- `delete` takes only `(key, name)` — unconditional removal. No version check.
+- `key` and `name` fields on the incoming `StoredObject` during `update` are trusted from the stored record, not from the client payload. The handler extracts `key` and `name` from the URL and ensures they match before calling the store.
 
 ---
 
@@ -137,6 +180,12 @@ trait ObjectStore: Send + Sync {
 | Schema validation | Builtin meta-schema compiled at startup | Schema objects validated against hardcoded meta-schema; avoids infinite recursion of Schema validating Schema |
 | Schema deletion | Block if objects exist (409 Conflict) | Prevent accidental data loss — user must delete all objects of a kind before removing its schema |
 | Schema validation on registration | Compile JSON Schema via `jsonschema` crate | Reject invalid schemas at registration time with 422 |
+| Object metadata grouping | `ObjectMetadata` struct with `name`, `resourceVersion`, `createdAt`, `updatedAt` | Separates server-managed lifecycle fields from user domain data; follows K8s mental model |
+| Optimistic concurrency | Embedded `resourceVersion` on `StoredObject`, not a method parameter | Version travels with the object as opaque baggage; client echoes it back without needing to understand it; cleaner trait signature |
+| Update takes full object | `update(StoredObject)` not `update(key, name, data, version)` | What comes out goes back in; symmetric contract; no duplicate identity params |
+| Delete is unconditional | No `expected_version` parameter on `delete` | Deletes are idempotent by nature; simplifies the contract; if conditional delete is needed later it can be added |
+| Wire format camelCase | `resourceVersion`, `createdAt`, `updatedAt` in JSON | Standard for JSON APIs; matches K8s conventions |
+| User schemas validate data only | Metadata is server-injected, not part of user schema | Users define only their domain; metadata is an implementation detail; prevents schema registration errors |
 
 ---
 
@@ -156,7 +205,7 @@ src/
 │   └── meta_schema.rs     # Builtin meta-schema constant + validator
 ├── object/
 │   ├── mod.rs
-│   ├── types.rs           # StoredObject, ResourceKey, WatchEvent, etc.
+│   ├── types.rs           # StoredObject, ObjectMetadata, ResourceKey, WatchEvent, etc.
 │   ├── service.rs         # ObjectService<ObjectStore + EventBus>
 │   └── handler.rs         # Axum route handlers for /objects + watch
 ├── event/
@@ -202,6 +251,23 @@ POST /apis/example.io/v1/Widget/my-widget
   │
   ▼ Response: 201 Created + StoredObject JSON
 
+PUT /apis/example.io/v1/Widget/my-widget
+  │  Request body: { "metadata": { "name": "my-widget", "resourceVersion": 42, ... },
+  │                  "data": { "replicas": 5 } }
+  │
+  ▼ Handler: extract ResourceKey + name from URL, deserialize body into StoredObject
+  │          (validate key/name from URL match object's key/name)
+  │
+  ▼ ObjectService::update(stored_object)
+  │   ├── look up Schema object → validate data payload
+  │   ├── store.update(stored_object)
+  │   │   └── peek at stored_object.metadata.resource_version for OCC
+  │   │       if mismatch → Conflict
+  │   │       if match → apply data, bump version, touch updated_at
+  │   ├── event_bus.publish(key, WatchEvent::Modified(obj)) → per-kind watchers
+  │
+  ▼ Response: 200 OK + StoredObject JSON (with new resourceVersion)
+
 POST /apis/kapi.io/v1/Schema
   │  (Schema objects go through the exact same pipeline)
   │
@@ -238,8 +304,8 @@ GET /apis/example.io/v1/Widget?watch=true
 ## Open Questions
 
 - Should schema registration itself have additional admission webhooks? (Meta-schema validation is builtin.)
-- Should `delete` require `resourceVersion` unconditionally? (Current: optional.)
 - PATCH with strategic merge patch? (Deferred.)
+- Should conditional delete (with resourceVersion) be added later if a use case emerges?
 
 ---
 
@@ -272,20 +338,47 @@ GET /apis/example.io/v1/Widget?watch=true
 - [x] T17: Implement optional version check in `delete`
 - [x] T18: Write unit tests: create+get, list, update success, update conflict, delete, get missing
 
+### P2b — Object Model Refactor
+
+Refactor `StoredObject` structure and `ObjectStore` trait signatures to group metadata, embed OCC, and simplify the storage contract. This is a breaking change to types and trait already implemented in P1/P2.
+
+- [ ] T19: Add `ObjectMetadata { name, resource_version, created_at, updated_at }` struct in `src/object/types.rs` with `#[serde(rename_all = "camelCase")]`
+- [ ] T20: Refactor `StoredObject` to use `key: ResourceKey`, `metadata: ObjectMetadata`, `data: UserData` — remove flat `name`, `resource_version`, `created_at`, `updated_at` fields
+- [ ] T21: Update `ObjectStore` trait in `src/store/mod.rs`:
+  - `update(&self, object: StoredObject) -> Result<StoredObject, AppError>`
+  - `delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>` (unconditional)
+- [ ] T22: Rewrite `InMemoryStore::update` to peek at `object.metadata.resource_version` for OCC check instead of taking `expected_version` parameter
+- [ ] T23: Rewrite `InMemoryStore::delete` to remove optional version check — unconditional removal
+- [ ] T24: Rewrite all existing tests in `src/store/memory.rs` for new signatures and types:
+  - create/get round trip
+  - create duplicate conflict
+  - get not found
+  - list sorted by name
+  - list with limit and continue token
+  - list continue token resumes
+  - update correct version succeeds
+  - update wrong version conflict
+  - update not found
+  - delete returns object and get not found
+  - delete unconditional (no version check)
+  - delete not found
+  - list empty key
+- [ ] T25: Verify `cargo test` passes with no warnings
+
 ### P3 — Event Bus
 
-- [ ] T21: Define `EventBus` struct in `src/event/bus.rs` with `DashMap<ResourceKey, broadcast::Sender<WatchEvent>>` for per-kind channels
-- [ ] T22: Implement `EventBus::new()`, `publish(key, event)` (auto-creates per-kind channel on first publish), `subscribe(key) -> impl Stream<WatchEvent>`
-- [ ] T23: Write unit test: publish an event, subscriber receives it
-- [ ] T24: Write unit test: publish an event, multiple subscribers all receive it
-- [ ] T25: Write unit test: dropped subscriber does not block publisher
+- [ ] T26: Define `EventBus` struct in `src/event/bus.rs` with `DashMap<ResourceKey, broadcast::Sender<WatchEvent>>` for per-kind channels
+- [ ] T27: Implement `EventBus::new()`, `publish(key, event)` (auto-creates per-kind channel on first publish), `subscribe(key) -> impl Stream<WatchEvent>`
+- [ ] T28: Write unit test: publish an event, subscriber receives it
+- [ ] T29: Write unit test: publish an event, multiple subscribers all receive it
+- [ ] T30: Write unit test: dropped subscriber does not block publisher
 
 ### P4 — Meta-Schema
 
-- [ ] T27: Create `src/schema/meta_schema.rs` with hardcoded meta-schema JSON constant defining valid Schema object payloads (`targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`)
-- [ ] T28: Add meta-schema compilation function returning `jsonschema::Validator`, called at server startup
-- [ ] T29: Update `src/schema/mod.rs` to declare only `pub mod meta_schema` (remove handler, service, types declarations)
-- [ ] T30: Delete `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs`
+- [ ] T31: Create `src/schema/meta_schema.rs` with hardcoded meta-schema JSON constant defining valid Schema object payloads (`targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`)
+- [ ] T32: Add meta-schema compilation function returning `jsonschema::Validator`, called at server startup
+- [ ] T33: Update `src/schema/mod.rs` to declare only `pub mod meta_schema` (remove handler, service, types declarations)
+- [ ] T34: Delete `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs`
 
 ### P5 — Object Domain (Service + Handlers + Validation + Watch)
 
@@ -294,6 +387,7 @@ GET /apis/example.io/v1/Widget?watch=true
 - [ ] T37: Implement validation dispatch in `ObjectService::create`/`update`: if `kind == "Schema"`, validate against meta-schema + compile nested jsonSchema; else look up Schema object from store and validate payload
 - [ ] T38: Implement `ObjectService::delete` with Schema guard: if deleting a Schema object, check if objects of the target kind exist; if so, return 409 Conflict with object count
 - [ ] T39: Implement object handlers in `src/object/handler.rs` — create, get, update, delete, list; include doc comments on each handler
+  - Update handler: deserialize full `StoredObject` from request body, validate `key`/`name` from URL match the object's fields, call `service.update(object)`
 - [ ] T40: Implement `?watch=true` detection in list handler: if `watch=true`, return `Sse<impl Stream>`, else return `Json<ListResponse>`
 - [ ] T41: Wire object routes in `src/routes.rs`: `GET/POST /apis/{group}/{version}/{kind}`, `GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name}`
 - [ ] T42: Write unit tests: create valid object → 201, create with invalid data → 422, create for unregistered kind → 404; update with correct/wrong resourceVersion → 200/409; create valid Schema → 201, create invalid Schema → 422
@@ -315,7 +409,7 @@ GET /apis/example.io/v1/Widget?watch=true
 
 ### P8 — OpenAPI
 
-- [ ] T52: Add `utoipa::ToSchema` derives to all request/response types (`ResourceKey`, `StoredObject`, `AppError`, etc.)
+- [ ] T52: Add `utoipa::ToSchema` derives to all request/response types (`ResourceKey`, `StoredObject`, `ObjectMetadata`, `AppError`, etc.)
 - [ ] T53: Add `utoipa::OpenApi` derive tags and paths for all handlers
 - [ ] T54: Wire `/openapi` endpoint and Swagger UI serve at `/swagger-ui/`
 - [ ] T55: Verify: load `/swagger-ui/` in browser, all endpoints appear, try a request
