@@ -1,12 +1,12 @@
 ## Phase 1: P2b Cleanup (prerequisite)
 
-- [ ] T1: Move `ValidationError` struct from `src/schema/types.rs` to `src/object/types.rs`
-- [ ] T2: Update `src/error.rs` to import `ValidationError` from `crate::object::types`
-- [ ] T3: Delete `src/schema/types.rs`
-- [ ] T4: Delete `src/schema/service.rs`
-- [ ] T5: Delete `src/schema/handler.rs`
-- [ ] T6: Update `src/schema/mod.rs` to only declare `pub mod meta_schema`
-- [ ] T7: Verify `cargo build` succeeds with no warnings
+- [x] T1: Move `ValidationError` struct from `src/schema/types.rs` to `src/object/types.rs`
+- [x] T2: Update `src/error.rs` to import `ValidationError` from `crate::object::types`
+- [x] T3: Delete `src/schema/types.rs`
+- [x] T4: Delete `src/schema/service.rs`
+- [x] T5: Delete `src/schema/handler.rs`
+- [x] T6: Update `src/schema/mod.rs` to only declare `pub mod meta_schema`
+- [x] T7: Verify `cargo build` succeeds with no warnings
 
 ## Phase 2: EventBus Implementation
 

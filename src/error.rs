@@ -3,7 +3,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde_json::json;
 
-use crate::schema::types::ValidationError;
+use crate::object::types::ValidationError;
 
 #[derive(thiserror::Error, Debug)]
 pub enum AppError {

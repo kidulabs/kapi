@@ -17,6 +17,12 @@ pub struct ListResponse {
     pub continue_token: Option<ContinueToken>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ValidationError {
+    pub path: String,
+    pub message: String,
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum WatchEventType {
     Added,
