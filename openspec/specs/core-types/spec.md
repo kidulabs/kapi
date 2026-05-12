@@ -46,19 +46,36 @@ The system SHALL define a `UserData` named struct containing a single `value: se
 - **WHEN** a handler deserializes a request body
 - **THEN** the payload SHALL be wrapped in `UserData { value: ... }` before passing to the service layer
 
-### Requirement: Schema represents a registered JSON Schema
-The system SHALL define a `Schema` struct containing `key: ResourceKey`, `json_schema: serde_json::Value`, and `created_at: DateTime<Utc>`.
+### Requirement: Schema represented as StoredObject convention
+Schemas SHALL be represented as `StoredObject` with `kind="Schema"` in group `"kapi.io"`, not as a separate `Schema` struct. The `StoredObject.data` field SHALL hold a JSON Schema value for validation.
+
+#### Scenario: Schema struct removed
+- **WHEN** the codebase is compiled
+- **THEN** `src/schema/types.rs` does not exist
+- **AND** no `Schema` struct is defined outside of `StoredObject`
 
 #### Scenario: Schema registration stores the raw JSON Schema
-- **WHEN** a schema is registered via POST /schemas
-- **THEN** the `json_schema` field SHALL hold the raw JSON Schema value for later validation
+- **WHEN** a schema is registered
+- **THEN** a `StoredObject` with `kind="Schema"` stores the raw JSON Schema value in its `data` field for later validation
+
+### Requirement: Schema module scope
+`src/schema/mod.rs` SHALL only declare `pub mod meta_schema`.
+
+#### Scenario: Schema module contains only meta_schema
+- **WHEN** the schema module is compiled
+- **THEN** it contains only `meta_schema.rs`
+- **AND** `schema/types.rs`, `schema/service.rs`, `schema/handler.rs` do not exist
 
 ### Requirement: ValidationError carries structured validation failures
-The system SHALL define a `ValidationError` struct with `path: String` and `message: String`.
+The system SHALL define a `ValidationError` struct with `path: String` and `message: String`, located in `src/object/types.rs`.
 
 #### Scenario: Mapping jsonschema output
 - **WHEN** the `jsonschema` crate reports validation failures
 - **THEN** each failure SHALL be mapped to `ValidationError { path, message }`
+
+#### Scenario: ValidationError accessible from object module
+- **WHEN** `error.rs` imports `ValidationError`
+- **THEN** it imports from `crate::object::types::ValidationError`
 
 ### Requirement: ListOptions and ListResponse support pagination
 The system SHALL define `ListOptions` with `limit: Option<usize>` and `continue_token: Option<ContinueToken>`, and `ListResponse` with `items: Vec<StoredObject>` and `continue_token: Option<ContinueToken>`.
