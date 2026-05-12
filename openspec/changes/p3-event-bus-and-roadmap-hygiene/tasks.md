@@ -10,29 +10,29 @@
 
 ## Phase 2: EventBus Implementation
 
-- [ ] T8: Define `EventBus` struct in `src/event/bus.rs` with `channels: DashMap<ResourceKey, broadcast::Sender<WatchEvent>>` and `capacity: usize`
-- [ ] T9: Implement `EventBus::new(capacity)`, `EventBus::default()` (capacity=1024), and `EventBus::with_capacity(usize)`
-- [ ] T10: Implement `EventBus::publish(key, event)` — fire-and-forget, no-op if no channel, clean up dead channel on publish if `receiver_count() == 0`
-- [ ] T11: Define `WatchStream` wrapper struct around `BroadcastStream<WatchEvent>` with inline documentation explaining: why wrapper (clean API, hide tokio internals), why terminate on lag (honest signaling, K8s semantics), why auto-create on subscribe (no point holding channel if nobody listens)
-- [ ] T12: Implement `Stream<Item = WatchEvent>` for `WatchStream` — handle `Ok(event)` → yield event, `Lagged(n)` → log warning + terminate stream, `Closed` → terminate stream
-- [ ] T13: Implement `EventBus::subscribe(key) -> WatchStream` — auto-creates channel via `entry().or_insert_with()`
-- [ ] T14: Derive `Clone` on `EventBus` (required for Axum State)
-- [ ] T15: Verify `WatchStream` is `Send` (required for Axum SSE)
-- [ ] T16: Update `src/event/mod.rs` to export `EventBus` and `WatchStream`
+- [x] T8: Define `EventBus` struct in `src/event/bus.rs` with `channels: DashMap<ResourceKey, broadcast::Sender<WatchEvent>>` and `capacity: usize`
+- [x] T9: Implement `EventBus::new(capacity)`, `EventBus::default()` (capacity=1024), and `EventBus::with_capacity(usize)`
+- [x] T10: Implement `EventBus::publish(key, event)` — fire-and-forget, no-op if no channel, clean up dead channel on publish if `receiver_count() == 0`
+- [x] T11: Define `WatchStream` wrapper struct around `BroadcastStream<WatchEvent>` with inline documentation explaining: why wrapper (clean API, hide tokio internals), why terminate on lag (honest signaling, K8s semantics), why auto-create on subscribe (no point holding channel if nobody listens)
+- [x] T12: Implement `Stream<Item = WatchEvent>` for `WatchStream` — handle `Ok(event)` → yield event, `Lagged(n)` → log warning + terminate stream, `Closed` → terminate stream
+- [x] T13: Implement `EventBus::subscribe(key) -> WatchStream` — auto-creates channel via `entry().or_insert_with()`
+- [x] T14: Derive `Clone` on `EventBus` (required for Axum State)
+- [x] T15: Verify `WatchStream` is `Send` (required for Axum SSE)
+- [x] T16: Update `src/event/mod.rs` to export `EventBus` and `WatchStream`
 
 ## Phase 3: Tests
 
-- [ ] T17: Test: publish an event, single subscriber receives it
-- [ ] T18: Test: publish an event, multiple subscribers all receive it
-- [ ] T19: Test: dropped subscriber does not block publisher
-- [ ] T20: Test: dead channel cleanup — subscribe, drop subscriber, publish, verify channel removed from map
-- [ ] T21: Test: publish to kind with no channel is a no-op (no panic, no error)
-- [ ] T22: Test: WatchStream terminates on lag (simulate by creating channel with capacity 1, publish 2 events before consuming)
-- [ ] T23: Verify `cargo test` passes with no warnings
+- [x] T17: Test: publish an event, single subscriber receives it
+- [x] T18: Test: publish an event, multiple subscribers all receive it
+- [x] T19: Test: dropped subscriber does not block publisher
+- [x] T20: Test: dead channel cleanup — subscribe, drop subscriber, publish, verify channel removed from map
+- [x] T21: Test: publish to kind with no channel is a no-op (no panic, no error)
+- [x] T22: Test: WatchStream terminates on lag (simulate by creating channel with capacity 1, publish 2 events before consuming)
+- [x] T23: Verify `cargo test` passes with no warnings
 
 ## Phase 4: Roadmap Updates
 
-- [ ] T24: Update P3 section in `roadmap.md` with finalized task descriptions (T26-T30 + T27b + T30b)
-- [ ] T25: Add P10 section for periodic event bus cleanup future work
-- [ ] T26: Add roadmap hygiene tasks section
-- [ ] T27: Correct P2b checkbox states to reflect actual completion
+- [x] T24: Update P3 section in `roadmap.md` with finalized task descriptions (T26-T30 + T27b + T30b)
+- [x] T25: Add P10 section for periodic event bus cleanup future work
+- [x] T26: Add roadmap hygiene tasks section
+- [x] T27: Correct P2b checkbox states to reflect actual completion

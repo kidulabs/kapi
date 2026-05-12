@@ -367,18 +367,20 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
 
 ### P3 — Event Bus
 
-- [ ] T26: Define `EventBus` struct in `src/event/bus.rs` with `DashMap<ResourceKey, broadcast::Sender<WatchEvent>>` for per-kind channels
-- [ ] T27: Implement `EventBus::new()`, `publish(key, event)` (auto-creates per-kind channel on first publish), `subscribe(key) -> impl Stream<WatchEvent>`
-- [ ] T28: Write unit test: publish an event, subscriber receives it
-- [ ] T29: Write unit test: publish an event, multiple subscribers all receive it
-- [ ] T30: Write unit test: dropped subscriber does not block publisher
+- [x] T26: Define `EventBus` struct in `src/event/bus.rs` with `DashMap<ResourceKey, broadcast::Sender<WatchEvent>>` for per-kind channels and configurable capacity (default 1024)
+- [x] T27: Implement `EventBus::new()`, `publish(key, event)` (auto-create on **subscribe**, not publish), `subscribe(key) -> WatchStream`
+- [x] T27b: Implement `WatchStream` wrapper — `Stream<Item = WatchEvent>` that terminates on lag with `None` (honest signaling, K8s semantics)
+- [x] T28: Write unit test: publish an event, subscriber receives it
+- [x] T29: Write unit test: publish an event, multiple subscribers all receive it
+- [x] T30: Write unit test: dropped subscriber does not block publisher
+- [x] T30b: Write unit test: dead channel cleanup (lazy removal on publish when receiver_count == 0)
 
 ### P4 — Meta-Schema
 
 - [ ] T31: Create `src/schema/meta_schema.rs` with hardcoded meta-schema JSON constant defining valid Schema object payloads (`targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`)
 - [ ] T32: Add meta-schema compilation function returning `jsonschema::Validator`, called at server startup
-- [ ] T33: Update `src/schema/mod.rs` to declare only `pub mod meta_schema` (remove handler, service, types declarations)
-- [ ] T34: Delete `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs`
+- [x] T33: Update `src/schema/mod.rs` to declare only `pub mod meta_schema` (remove handler, service, types declarations)
+- [x] T34: Delete `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs`
 
 ### P5 — Object Domain (Service + Handlers + Validation + Watch)
 
@@ -424,3 +426,13 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
 - [ ] T61: Integration test: concurrent update with wrong resourceVersion → 409 Conflict
 - [ ] T62: `cargo test` passes clean with no warnings
 - [ ] T63: `cargo doc --no-deps` generates documentation without errors
+
+### P10 — Periodic Event Bus Cleanup
+
+- [ ] Implement background task that periodically scans and removes dead channels (all receivers dropped) from the EventBus map, preventing memory leaks from kinds that had subscribers but no longer do
+
+### P-RH — Roadmap Hygiene
+
+- [ ] Audit P0-P2b checkbox states against actual codebase state
+- [x] Fix P2b incomplete work: delete stale schema module files, move ValidationError, update mod.rs
+- [x] Correct all checkbox states to match reality
