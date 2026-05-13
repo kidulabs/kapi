@@ -112,6 +112,8 @@ enum AppError {
     NotFound { what: String, identifier: String },
     Conflict { expected: u64, actual: u64 },
     SchemaValidation(Vec<ValidationError>),
+    InvalidSchema(String),                    // schema itself is broken
+    SchemaHasObjects { kind: String, count: usize }, // deleting schema with objects
     Internal(anyhow::Error),
 }
 ```
@@ -377,22 +379,22 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
 
 ### P4 — Meta-Schema
 
-- [ ] T31: Create `src/schema/meta_schema.rs` with hardcoded meta-schema JSON constant defining valid Schema object payloads (`targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`)
-- [ ] T32: Add meta-schema compilation function returning `jsonschema::Validator`, called at server startup
+- [x] T31: Create `src/schema/meta_schema.rs` with hardcoded meta-schema JSON constant defining valid Schema object payloads (`targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`)
+- [x] T32: Add meta-schema compilation function returning `jsonschema::Validator`, called at server startup
 - [x] T33: Update `src/schema/mod.rs` to declare only `pub mod meta_schema` (remove handler, service, types declarations)
 - [x] T34: Delete `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs`
 
 ### P5 — Object Domain (Service + Handlers + Validation + Watch)
 
-- [ ] T35: Implement `ObjectService` in `src/object/service.rs` — wraps `Arc<dyn ObjectStore>` + `EventBus`, publishes events after mutations
-- [ ] T36: Add meta-schema validator field to `ObjectService` (compiled at construction, used for Schema objects)
-- [ ] T37: Implement validation dispatch in `ObjectService::create`/`update`: if `kind == "Schema"`, validate against meta-schema + compile nested jsonSchema; else look up Schema object from store and validate payload
-- [ ] T38: Implement `ObjectService::delete` with Schema guard: if deleting a Schema object, check if objects of the target kind exist; if so, return 409 Conflict with object count
-- [ ] T39: Implement object handlers in `src/object/handler.rs` — create, get, update, delete, list; include doc comments on each handler
+- [x] T35: Implement `ObjectService` in `src/object/service.rs` — wraps `Arc<dyn ObjectStore>` + `EventBus`, publishes events after mutations
+- [x] T36: Add meta-schema validator field to `ObjectService` (compiled at construction, used for Schema objects)
+- [x] T37: Implement validation dispatch in `ObjectService::create`/`update`: if `kind == "Schema"`, validate against meta-schema + compile nested jsonSchema; else look up Schema object from store and validate payload
+- [x] T38: Implement `ObjectService::delete` with Schema guard: if deleting a Schema object, check if objects of the target kind exist; if so, return 409 Conflict with object count
+- [x] T39: Implement object handlers in `src/object/handler.rs` — create, get, update, delete, list; include doc comments on each handler
   - Update handler: deserialize full `StoredObject` from request body, validate `key`/`name` from URL match the object's fields, call `service.update(object)`
-- [ ] T40: Implement `?watch=true` detection in list handler: if `watch=true`, return `Sse<impl Stream>`, else return `Json<ListResponse>`
-- [ ] T41: Wire object routes in `src/routes.rs`: `GET/POST /apis/{group}/{version}/{kind}`, `GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name}`
-- [ ] T42: Write unit tests: create valid object → 201, create with invalid data → 422, create for unregistered kind → 404; update with correct/wrong resourceVersion → 200/409; create valid Schema → 201, create invalid Schema → 422
+- [x] T40: Implement `?watch=true` detection in list handler: if `watch=true`, return `Sse<impl Stream>`, else return `Json<ListResponse>`
+- [x] T41: Wire object routes in `src/routes.rs`: `GET/POST /apis/{group}/{version}/{kind}`, `GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name}`
+- [x] T42: Write unit tests: create valid object → 201, create with invalid data → 422, create for unregistered kind → 404; update with correct/wrong resourceVersion → 200/409; create valid Schema → 201, create invalid Schema → 422
 
 ### P6 — Middleware Stubs
 
@@ -403,11 +405,11 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
 
 ### P7 — Application Wiring
 
-- [ ] T47: Define `AppState` struct: `InMemoryStore`, `EventBus`, `ObjectService` (no separate SchemaService)
-- [ ] T48: Compile meta-schema at startup, inject into `ObjectService` during construction
-- [ ] T49: Create router in `src/routes.rs` — compose object routes under `/apis/{group}/{version}`, add middleware stack
-- [ ] T50: Wire everything in `src/main.rs` — construct `AppState`, build router, bind to port from env var or default 8080
-- [ ] T51: Verify: `cargo run` starts server, `curl http://localhost:8080/apis/kapi.io/v1/Schema` returns empty list
+- [x] T47: Define `AppState` struct: `InMemoryStore`, `EventBus`, `ObjectService` (no separate SchemaService)
+- [x] T48: Compile meta-schema at startup, inject into `ObjectService` during construction
+- [x] T49: Create router in `src/routes.rs` — compose object routes under `/apis/{group}/{version}`, add middleware stack
+- [x] T50: Wire everything in `src/main.rs` — construct `AppState`, build router, bind to port from env var or default 8080
+- [x] T51: Verify: `cargo run` starts server, `curl http://localhost:8080/apis/kapi.io/v1/Schema` returns empty list
 
 ### P8 — OpenAPI
 

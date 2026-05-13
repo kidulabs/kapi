@@ -41,6 +41,16 @@ pub struct UserData {
     pub value: serde_json::Value,
 }
 
+// Schema data struct for type-safe access to Schema registration payloads
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SchemaData {
+    pub target_group: String,
+    pub target_version: String,
+    pub target_kind: String,
+    pub json_schema: serde_json::Value,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectMetadata {

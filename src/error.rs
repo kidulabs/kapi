@@ -16,6 +16,14 @@ pub enum AppError {
     #[error("schema validation failed")]
     SchemaValidation(Vec<ValidationError>),
 
+    // The schema itself is broken (meta-schema validation or compilation failure)
+    #[error("invalid schema: {0}")]
+    InvalidSchema(String),
+
+    // Attempting to delete a Schema that has existing objects of the target kind
+    #[error("schema has objects: kind={kind}, count={count}")]
+    SchemaHasObjects { kind: String, count: usize },
+
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -31,6 +39,14 @@ impl IntoResponse for AppError {
             }
             AppError::SchemaValidation(errors) => {
                 (StatusCode::UNPROCESSABLE_ENTITY, "SchemaValidation", "schema validation failed".to_string(), json!({ "errors": errors }))
+            }
+            // InvalidSchema maps to HTTP 422 Unprocessable Entity
+            AppError::InvalidSchema(msg) => {
+                (StatusCode::UNPROCESSABLE_ENTITY, "InvalidSchema", format!("invalid schema: {msg}"), json!({ "message": msg }))
+            }
+            // SchemaHasObjects maps to HTTP 409 Conflict
+            AppError::SchemaHasObjects { kind, count } => {
+                (StatusCode::CONFLICT, "SchemaHasObjects", format!("schema has objects: kind={kind}, count={count}"), json!({ "kind": kind, "count": count }))
             }
             AppError::Internal(_err) => {
                 (StatusCode::INTERNAL_SERVER_ERROR, "Internal", "internal error".to_string(), json!(null))
