@@ -413,10 +413,18 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
 
 ### P8 — OpenAPI
 
-- [ ] T52: Add `utoipa::ToSchema` derives to all request/response types (`ResourceKey`, `StoredObject`, `ObjectMetadata`, `AppError`, etc.)
-- [ ] T53: Add `utoipa::OpenApi` derive tags and paths for all handlers
-- [ ] T54: Wire `/openapi` endpoint and Swagger UI serve at `/swagger-ui/`
-- [ ] T55: Verify: load `/swagger-ui/` in browser, all endpoints appear, try a request
+- [ ] T52: Implement `build_openapi_spec(service)` in `src/openapi.rs` — generates OpenAPI 3.0.3 JSON at request time by listing all Schema objects from the store
+  - Static components: `ResourceKey`, `ObjectMetadata`, `StoredObject`, `ListResponse`, `WatchEvent`, `WatchEventType`, `ValidationError`, `AppError`, `SchemaData`
+  - Static paths: Schema CRUD (`/apis/kapi.io/v1/Schema`, `/apis/kapi.io/v1/Schema/{name}`)
+  - Dynamic per-kind: for each registered Schema, generate `{Kind}{Group}` data component from `jsonSchema`, `{Kind}{Group}StoredObject` envelope, `{Kind}{Group}ListResponse`, and CRUD paths under `/apis/{group}/{version}/{kind}`
+  - Component naming: `"Widget.other.io"` → `"WidgetOtherIo"` (split on dots, PascalCase each segment, concatenate)
+- [ ] T53: Add `GET /openapi` handler — returns `Json<Value>` from `build_openapi_spec`
+- [ ] T54: Add `GET /swagger-ui/` handler (optional, only if trivial) — HTML page with Swagger UI CDN pointing to `/openapi`
+- [ ] T55: Verify: `curl /openapi` returns valid OpenAPI 3.0.3 JSON with all registered kinds; load `/swagger-ui/` in browser if implemented
+
+### P-Future — OpenAPI Spec Caching
+
+- [ ] Cache generated OpenAPI spec in `Arc<RwLock<Value>>` or similar, rebuild only on Schema mutation (create/update/delete) to avoid store scan on every `/openapi` request
 
 ### P9 — Integration Tests
 
