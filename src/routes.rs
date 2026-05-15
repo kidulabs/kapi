@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use axum::Router;
-use tower::ServiceBuilder;
+use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::object::handler;
@@ -39,10 +39,22 @@ pub fn build_router(state: AppState) -> Router {
             "/apis/{group}/{version}/{kind}/{name}",
             axum::routing::get(handler::get).put(handler::update).delete(handler::delete),
         )
-        // Middleware layers: tracing
-        .layer(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http()),
+        // OpenAPI spec endpoint: dynamically generated on every request
+        .route(
+            "/openapi",
+            axum::routing::get(crate::openapi::get_openapi_handler),
         )
+        // Swagger UI: loads Swagger UI from CDN and fetches spec from /openapi
+        .route(
+            "/swagger-ui",
+            axum::routing::get(crate::openapi::get_swagger_ui_handler),
+        )
+        .route(
+            "/swagger-ui/",
+            axum::routing::get(crate::openapi::get_swagger_ui_handler),
+        )
+        // Middleware layers: tracing, CORS (outermost for preflight interception)
+        .layer(TraceLayer::new_for_http())
+        .layer(CorsLayer::permissive())
         .with_state(state)
 }

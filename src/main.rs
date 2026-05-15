@@ -1,6 +1,7 @@
 mod error;
 mod event;
 mod object;
+mod openapi;
 mod routes;
 mod schema;
 mod store;

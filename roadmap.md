@@ -217,7 +217,7 @@ src/
 │   ├── mod.rs
 │   ├── auth.rs            # AuthLayer stub
 │   └── metrics.rs         # MetricsLayer stub
-└── openapi.rs              # utoipa OpenAPI spec + Swagger UI
+└── openapi.rs              # Dynamic OpenAPI spec builder + handlers
 ```
 
 ---
@@ -411,15 +411,15 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
 - [x] T50: Wire everything in `src/main.rs` — construct `AppState`, build router, bind to port from env var or default 8080
 - [x] T51: Verify: `cargo run` starts server, `curl http://localhost:8080/apis/kapi.io/v1/Schema` returns empty list
 
-### P8 — OpenAPI
+### P8 — OpenAPI (Dynamic Spec Generation)
 
-- [ ] T52: Implement `build_openapi_spec(service)` in `src/openapi.rs` — generates OpenAPI 3.0.3 JSON at request time by listing all Schema objects from the store
+- [x] T52: Implement `build_openapi_spec(service)` in `src/openapi.rs` — generates OpenAPI 3.0.3 JSON at request time by listing all Schema objects from the store
   - Static components: `ResourceKey`, `ObjectMetadata`, `StoredObject`, `ListResponse`, `WatchEvent`, `WatchEventType`, `ValidationError`, `AppError`, `SchemaData`
   - Static paths: Schema CRUD (`/apis/kapi.io/v1/Schema`, `/apis/kapi.io/v1/Schema/{name}`)
   - Dynamic per-kind: for each registered Schema, generate `{Kind}{Group}` data component from `jsonSchema`, `{Kind}{Group}StoredObject` envelope, `{Kind}{Group}ListResponse`, and CRUD paths under `/apis/{group}/{version}/{kind}`
   - Component naming: `"Widget.other.io"` → `"WidgetOtherIo"` (split on dots, PascalCase each segment, concatenate)
-- [ ] T53: Add `GET /openapi` handler — returns `Json<Value>` from `build_openapi_spec`
-- [ ] T54: Add `GET /swagger-ui/` handler (optional, only if trivial) — HTML page with Swagger UI CDN pointing to `/openapi`
+- [x] T53: Add `GET /openapi` handler — returns `Json<Value>` from `build_openapi_spec`
+- [x] T54: Add `GET /swagger-ui/` handler (optional) — HTML page with Swagger UI CDN pointing to `/openapi`
 - [ ] T55: Verify: `curl /openapi` returns valid OpenAPI 3.0.3 JSON with all registered kinds; load `/swagger-ui/` in browser if implemented
 
 ### P-Future — OpenAPI Spec Caching
