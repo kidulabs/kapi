@@ -17,6 +17,7 @@ use crate::object::service::ObjectService;
 use crate::routes::{build_router, AppState};
 use crate::schema::meta_schema::compile_meta_schema;
 use crate::store::memory::InMemoryStore;
+use crate::store::ObjectStore;
 use crate::event::EventBus;
 
 #[tokio::main]
@@ -29,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
     info!("Meta-schema compiled successfully");
 
     // Construct storage backend
-    let store = Arc::new(InMemoryStore::new());
+    let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
 
     // Construct event bus for SSE watch notifications
     let event_bus = EventBus::default();

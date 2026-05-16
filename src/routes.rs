@@ -11,7 +11,6 @@ use tower_http::trace::TraceLayer;
 
 use crate::object::handler;
 use crate::object::service::ObjectService;
-use crate::store::memory::InMemoryStore;
 
 /// Application state shared across all handlers.
 ///
@@ -19,7 +18,7 @@ use crate::store::memory::InMemoryStore;
 /// Wrapped in Arc for Clone (required by axum's State extractor).
 #[derive(Clone)]
 pub struct AppState {
-    pub object_service: Arc<ObjectService<InMemoryStore>>,
+    pub object_service: Arc<ObjectService>,
 }
 
 /// Builds the router with all object CRUD routes.

@@ -21,9 +21,9 @@ use crate::store::{ObjectStore, ResourceKey};
 /// - `event_bus`: Per-kind event bus for watch notifications
 /// - `meta_validator`: Compiled meta-schema for validating Schema registrations
 /// - `schema_cache`: Compiled user schemas keyed by schema name (e.g., "Widget.example.io")
-pub struct ObjectService<S: ObjectStore> {
+pub struct ObjectService {
     /// The storage backend
-    store: Arc<S>,
+    store: Arc<dyn ObjectStore>,
     /// Per-kind event bus for SSE watch notifications
     event_bus: EventBus,
     /// Compiled meta-schema validator for Schema registration payloads
@@ -32,11 +32,11 @@ pub struct ObjectService<S: ObjectStore> {
     schema_cache: DashMap<String, Arc<Validator>>,
 }
 
-impl<S: ObjectStore> ObjectService<S> {
+impl ObjectService {
     /// Creates a new ObjectService with the given store, event bus, and meta-validator.
     ///
     /// The schema cache starts empty and is populated as Schema objects are created.
-    pub fn new(store: Arc<S>, event_bus: EventBus, meta_validator: Validator) -> Self {
+    pub fn new(store: Arc<dyn ObjectStore>, event_bus: EventBus, meta_validator: Validator) -> Self {
         Self {
             store,
             event_bus,
@@ -383,15 +383,15 @@ mod tests {
     use serde_json::json;
 
     // Helper to create a service with a fresh store and event bus
-    fn make_service() -> ObjectService<InMemoryStore> {
-        let store = Arc::new(InMemoryStore::new());
+    fn make_service() -> ObjectService {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         let event_bus = EventBus::default();
         let meta_validator = compile_meta_schema().expect("meta-schema should compile");
         ObjectService::new(store, event_bus, meta_validator)
     }
 
     // Helper to register a Schema for testing
-    async fn register_test_schema(service: &ObjectService<InMemoryStore>) {
+    async fn register_test_schema(service: &ObjectService) {
         let schema_key = ResourceKey {
             group: "kapi.io".to_string(),
             version: "v1".to_string(),

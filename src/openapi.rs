@@ -16,7 +16,7 @@ use crate::error::AppError;
 use crate::object::service::ObjectService;
 use crate::object::types::{ListOptions, SchemaData};
 use crate::routes::AppState;
-use crate::store::{ObjectStore, ResourceKey};
+use crate::store::ResourceKey;
 
 /// Returns the ResourceKey for Schema objects stored under the kapi.io group.
 fn schema_resource_key() -> ResourceKey {
@@ -64,7 +64,7 @@ pub fn component_name(schema_name: &str) -> String {
 /// - Static components/schemas for kapi built-in types
 /// - Static paths for Schema CRUD (/apis/kapi.io/v1/Schema)
 /// - Dynamic per-kind paths and component schemas for each registered Schema
-pub async fn build_openapi_spec<S: ObjectStore>(service: &ObjectService<S>) -> Result<Value, AppError> {
+pub async fn build_openapi_spec(service: &ObjectService) -> Result<Value, AppError> {
     // Build all components (static + dynamic)
     let mut all_schemas = serde_json::Map::new();
     for (name, schema) in build_static_components() {
@@ -1048,8 +1048,9 @@ mod tests {
     }
 
     /// Helper to create an ObjectService for testing with a fresh store and event bus.
-    fn make_test_service() -> ObjectService<crate::store::memory::InMemoryStore> {
-        let store = std::sync::Arc::new(crate::store::memory::InMemoryStore::new());
+    fn make_test_service() -> ObjectService {
+        let store: std::sync::Arc<dyn crate::store::ObjectStore> =
+            std::sync::Arc::new(crate::store::memory::InMemoryStore::new());
         let event_bus = crate::event::EventBus::default();
         let meta_validator = crate::schema::meta_schema::compile_meta_schema()
             .expect("meta-schema should compile");
