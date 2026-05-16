@@ -11,25 +11,32 @@ This is **not** a Kubernetes compatibility layer — it borrows the API model (g
 ## Architecture
 
 ```
-Request → Auth Layer → Metrics Layer → Admission Validation → Handler → Service → Store
-                                                                        │
-                                                                        └→ EventBus → SSE Watchers
+Request → Auth Layer → Metrics Layer → Handler → ObjectService → Store
+                                                    │
+                                        ┌───────────┴──────────────────────┐
+                                        │  publish/subscribe via traits    │
+                                        ▼                                  ▼
+                                 EventPublisher               SchemaValidator
+                                 (trait — Arc<dyn>)           (trait — Arc<dyn>)
+                                        │                                  │
+                                        ▼                                  ▼
+                                  EventBus                      JsonSchemaValidator
+                              (broadcast channels)              (wraps jsonschema crate)
 
-                                    ┌─────────────┐
-                                    │  AppState   │
-                                    │             │
-                                    │ ObjectStore │  (trait — all objects, including schemas)
-                                    │ EventBus    │
-                                    └─────────────┘
+                    ┌──────────────────┐
+                    │    AppState      │
+                    │                  │
+                    │  ObjectService   │  (wraps store + event publisher + validators)
+                    └──────────────────┘
 ```
 
 **Layers:**
 
 1. **Tower middleware** — composable chain (auth, metrics, trace, future: admission webhook)
 2. **Handlers** — thin Axum extractors + response, no business logic
-3. **Services** — orchestrate store + event bus; guarantee publish on every mutation
+3. **ObjectService** — orchestrates store, event publisher, and schema validators; guarantee publish on every mutation
 4. **Store** — pluggable via a single `ObjectStore` async trait; v1 = in-memory (DashMap). Schema are objects too, stored in the same store (kind `"Schema"` in group `kapi.io`).
-5. **EventBus** — per-kind `tokio::broadcast` channels; subscribers watch a specific kind and receive all CUD events for that kind
+5. **EventPublisher (trait)** — abstracted behind `Arc<dyn EventPublisher>`; production impl is `EventBus` using per-kind `tokio::broadcast` channels
 
 ---
 
@@ -173,15 +180,15 @@ trait ObjectStore: Send + Sync {
 |----------|--------|-----------|
 | Framework | Axum | Tower composability for middleware chain, SSE support, nested routers |
 | Storage abstraction | Single ObjectStore trait | Schema is also an object (kind `"Schema"`); one store for everything simplifies backends |
-| Event publishing | Service layer publishes, store is pure data | Impossible to "forget to publish" — handlers only call service, never store directly |
+| Event publishing | Service layer publishes via `Arc<dyn EventPublisher>`, store is pure data | Impossible to "forget to publish" — handlers only call service, never store directly; event bus is swappable |
 | v1 storage | In-memory (DashMap) | Zero ops overhead, perfect for dev; trait abstraction makes swapping trivial later |
 | API paths | Kube-style `/apis/{group}/{version}/{kind}` | Familiar to kube users, supports multiple API groups naturally |
 | Watch semantics | `?watch=true` on list endpoint | Kube-native pattern, single URL, handler branches on query param |
-| Event bus | Per-resource-kind broadcast channels | Each kind gets its own channel; `?watch=true` subscribes to all CUD events for that specific kind |
+| Event bus | `EventPublisher` trait, production impl = per-kind `tokio::broadcast` channels | Each kind gets its own channel; `?watch=true` subscribes via `ObjectService::subscribe()`; backend is swappable for testing |
 | Concurrency | Global monotonic `AtomicU64` counter | Enables "give me events since version N" for watch resume; sufficient for in-memory |
-| Schema validation | Builtin meta-schema compiled at startup | Schema objects validated against hardcoded meta-schema; avoids infinite recursion of Schema validating Schema |
+| Schema validation | `Arc<dyn SchemaValidator>` — meta-schema compiled as `JsonSchemaValidator` at startup, user schemas compiled lazily | Schema objects validated against hardcoded meta-schema; avoids infinite recursion; `jsonschema` crate isolated behind trait |
 | Schema deletion | Block if objects exist (409 Conflict) | Prevent accidental data loss — user must delete all objects of a kind before removing its schema |
-| Schema validation on registration | Compile JSON Schema via `jsonschema` crate | Reject invalid schemas at registration time with 422 |
+| Schema validation on registration | Compile via `JsonSchemaValidator::compile()` (wraps `jsonschema`) | Reject invalid schemas at registration time with 422; `jsonschema` crate isolated behind `SchemaValidator` trait |
 | Object metadata grouping | `ObjectMetadata` struct with `name`, `resourceVersion`, `createdAt`, `updatedAt` | Separates server-managed lifecycle fields from user domain data; follows K8s mental model |
 | Optimistic concurrency | Embedded `resourceVersion` on `StoredObject`, not a method parameter | Version travels with the object as opaque baggage; client echoes it back without needing to understand it; cleaner trait signature |
 | Update takes full object | `update(StoredObject)` not `update(key, name, data, version)` | What comes out goes back in; symmetric contract; no duplicate identity params |
@@ -204,15 +211,15 @@ src/
 │   └── memory.rs          # InMemoryStore (DashMap, AtomicU64)
 ├── schema/
 │   ├── mod.rs
-│   └── meta_schema.rs     # Builtin meta-schema constant + validator
+│   └── meta_schema.rs     # Builtin meta-schema constant + SchemaValidator trait + JsonSchemaValidator wrapper + SchemaValidationError
 ├── object/
 │   ├── mod.rs
-│   ├── types.rs           # StoredObject, ObjectMetadata, ResourceKey, WatchEvent, etc.
-│   ├── service.rs         # ObjectService<ObjectStore + EventBus>
+│   ├── types.rs           # StoredObject, ObjectMetadata, WatchEvent, ValidationError, etc. (ResourceKey defined in store/mod.rs, re-exported)
+│   ├── service.rs         # ObjectService (wraps Arc<dyn ObjectStore>, Arc<dyn EventPublisher>, Arc<dyn SchemaValidator>)
 │   └── handler.rs         # Axum route handlers for /objects + watch
 ├── event/
 │   ├── mod.rs
-│   └── bus.rs             # EventBus (DashMap<ResourceKey, broadcast::Sender>)
+│   └── bus.rs             # EventBus + EventPublisher trait + WatchStream
 ├── middleware/
 │   ├── mod.rs
 │   ├── auth.rs            # AuthLayer stub
@@ -226,8 +233,8 @@ src/
 
 ```toml
 axum, tokio (full), serde, serde_json, jsonschema, dashmap,
-tokio-stream, futures, tracing, tracing-subscriber,
-utoipa, utoipa-swagger-ui, async-trait, chrono,
+tokio-stream, futures-util, tracing, tracing-subscriber,
+async-trait, chrono, base64,
 thiserror, anyhow, tower, tower-http (trace, cors)
 ```
 
@@ -249,7 +256,8 @@ POST /apis/example.io/v1/Widget/my-widget
   │   │   └── compile nested jsonSchema → 422 on failure
   │   ├── if kind != "Schema": look up Schema object → validate payload
   │   ├── store.create(key, name, data)           → StoredObject
-  │   └── event_bus.publish(key, WatchEvent::Added(obj)) → per-kind watchers
+  │   └── self.event_bus.publish(key, WatchEvent::Added(obj)) → per-kind watchers
+  │       (event_bus is Arc<dyn EventPublisher>, injected at construction)
   │
   ▼ Response: 201 Created + StoredObject JSON
 
@@ -266,7 +274,8 @@ PUT /apis/example.io/v1/Widget/my-widget
   │   │   └── peek at stored_object.metadata.resource_version for OCC
   │   │       if mismatch → Conflict
   │   │       if match → apply data, bump version, touch updated_at
-  │   ├── event_bus.publish(key, WatchEvent::Modified(obj)) → per-kind watchers
+  │   ├── self.event_bus.publish(key, WatchEvent::Modified(obj)) → per-kind watchers
+  │   │   (publish delegated to the internal EventPublisher trait object)
   │
   ▼ Response: 200 OK + StoredObject JSON (with new resourceVersion)
 
@@ -276,7 +285,8 @@ POST /apis/kapi.io/v1/Schema
   ▼ ObjectService::create(key = {kapi.io, v1, Schema}, name, data)
   │   ├── kind == "Schema" → validate against meta-schema
   │   ├── store.create() → StoredObject
-  │   └── event_bus.publish() → per-kind watchers
+  │   └── self.event_bus.publish() → per-kind watchers
+  │       (same pattern — publish via trait object internally)
   │
   ▼ Response: 201 Created
 
@@ -284,7 +294,8 @@ GET /apis/example.io/v1/Widget?watch=true
   │
   ▼ Handler: detect ?watch=true, build ResourceKey from path
   │
-  ▼ event_bus.subscribe(key) → BroadcastStream<WatchEvent>
+  ▼ ObjectService::subscribe(key) → WatchStream
+  │   (delegates to internal event_bus.subscribe(); handler never touches EventPublisher directly)
   │
   ▼ Response: SSE stream of Added/Modified/Deleted events
 ```
@@ -380,13 +391,13 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
 ### P4 — Meta-Schema
 
 - [x] T31: Create `src/schema/meta_schema.rs` with hardcoded meta-schema JSON constant defining valid Schema object payloads (`targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`)
-- [x] T32: Add meta-schema compilation function returning `jsonschema::Validator`, called at server startup
+- [x] T32: Add meta-schema compilation function returning `JsonSchemaValidator` (wraps `jsonschema::Validator`), called at server startup
 - [x] T33: Update `src/schema/mod.rs` to declare only `pub mod meta_schema` (remove handler, service, types declarations)
 - [x] T34: Delete `src/schema/types.rs`, `src/schema/service.rs`, `src/schema/handler.rs`
 
 ### P5 — Object Domain (Service + Handlers + Validation + Watch)
 
-- [x] T35: Implement `ObjectService` in `src/object/service.rs` — wraps `Arc<dyn ObjectStore>` + `EventBus`, publishes events after mutations
+- [x] T35: Implement `ObjectService` in `src/object/service.rs` — wraps `Arc<dyn ObjectStore>` + `Arc<dyn EventPublisher>` + `Arc<dyn SchemaValidator>`, publishes events after mutations
 - [x] T36: Add meta-schema validator field to `ObjectService` (compiled at construction, used for Schema objects)
 - [x] T37: Implement validation dispatch in `ObjectService::create`/`update`: if `kind == "Schema"`, validate against meta-schema + compile nested jsonSchema; else look up Schema object from store and validate payload
 - [x] T38: Implement `ObjectService::delete` with Schema guard: if deleting a Schema object, check if objects of the target kind exist; if so, return 409 Conflict with object count
@@ -420,7 +431,7 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
   - Component naming: `"Widget.other.io"` → `"WidgetOtherIo"` (split on dots, PascalCase each segment, concatenate)
 - [x] T53: Add `GET /openapi` handler — returns `Json<Value>` from `build_openapi_spec`
 - [x] T54: Add `GET /swagger-ui/` handler (optional) — HTML page with Swagger UI CDN pointing to `/openapi`
-- [ ] T55: Verify: `curl /openapi` returns valid OpenAPI 3.0.3 JSON with all registered kinds; load `/swagger-ui/` in browser if implemented
+- [x] T55: Verify: `curl /openapi` returns valid OpenAPI 3.0.3 JSON with all registered kinds; load `/swagger-ui/` in browser if implemented
 
 ### P-Future — OpenAPI Spec Caching
 

@@ -1,11 +1,70 @@
 //! Meta-schema management.
 //!
 //! Provides a hardcoded JSON Schema constant (Draft 2020-12) that defines
-//! the shape of valid Schema registration payloads, and a compilation function
-//! that returns a `jsonschema::Validator` for use at server startup.
+//! the shape of valid Schema registration payloads, and a `JsonSchemaValidator`
+//! wrapper that implements the `SchemaValidator` trait — isolating `ObjectService`
+//! from the `jsonschema` crate dependency.
 
 use jsonschema::draft202012;
-use jsonschema::Validator;
+use serde_json::Value;
+
+/// A structured validation failure carrying the path and message.
+pub struct SchemaValidationError {
+    pub instance_path: String,
+    pub message: String,
+}
+
+/// Trait abstracting JSON Schema validation.
+///
+/// This trait allows `ObjectService` to validate payloads without depending
+/// on the `jsonschema` crate directly. It requires `Send + Sync` so it can
+/// be stored as `Arc<dyn SchemaValidator>`.
+pub trait SchemaValidator: Send + Sync {
+    /// Returns `true` if the instance validates against the schema.
+    fn is_valid(&self, instance: &Value) -> bool;
+    /// Returns a list of validation errors.
+    fn validate(&self, instance: &Value) -> Vec<SchemaValidationError>;
+}
+
+/// A `jsonschema::Validator` wrapper that implements `SchemaValidator`.
+///
+/// This is the production implementation. Compilation delegates to
+/// `draft202012::options().build()`, and validation maps the
+/// `jsonschema` error iterator to domain `SchemaValidationError` values.
+pub struct JsonSchemaValidator {
+    inner: jsonschema::Validator,
+}
+
+impl JsonSchemaValidator {
+    /// Compiles a JSON Schema value into a `JsonSchemaValidator`.
+    pub fn compile(schema_json: &Value) -> Result<Self, anyhow::Error> {
+        let validator = draft202012::options()
+            .build(schema_json)
+            .map_err(|e| anyhow::anyhow!("failed to compile schema: {}", e))?;
+        Ok(Self { inner: validator })
+    }
+}
+
+impl SchemaValidator for JsonSchemaValidator {
+    fn is_valid(&self, instance: &Value) -> bool {
+        self.inner.is_valid(instance)
+    }
+
+    fn validate(&self, instance: &Value) -> Vec<SchemaValidationError> {
+        self.inner
+            .iter_errors(instance)
+            .map(|e| SchemaValidationError {
+                instance_path: e
+                    .instance_path()
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect::<Vec<_>>()
+                    .join("/"),
+                message: e.to_string(),
+            })
+            .collect()
+    }
+}
 
 /// Meta-schema JSON constant defining valid Schema registration shape.
 ///
@@ -24,21 +83,16 @@ pub const META_SCHEMA_JSON: &str = r#"{
   "unevaluatedProperties": false
 }"#;
 
-/// Compiles the meta-schema into a reusable `jsonschema::Validator`.
+/// Compiles the meta-schema into a reusable `JsonSchemaValidator`.
 ///
 /// Called once at server startup. The resulting validator is injected into
 /// `ObjectService` for validating Schema registration payloads.
-pub fn compile_meta_schema() -> Result<Validator, anyhow::Error> {
-    // Parse the meta-schema JSON constant
+pub fn compile_meta_schema() -> Result<JsonSchemaValidator, anyhow::Error> {
     let schema_json: serde_json::Value = serde_json::from_str(META_SCHEMA_JSON)
         .map_err(|e| anyhow::anyhow!("failed to parse meta-schema JSON: {}", e))?;
 
-    // Build a Draft 2020-12 validator
-    let validator = draft202012::options()
-        .build(&schema_json)
-        .map_err(|e| anyhow::anyhow!("failed to compile meta-schema: {}", e))?;
-
-    Ok(validator)
+    JsonSchemaValidator::compile(&schema_json)
+        .map_err(|e| anyhow::anyhow!("failed to compile meta-schema: {}", e))
 }
 
 #[cfg(test)]
@@ -74,7 +128,8 @@ mod tests {
             "jsonSchema": { "type": "object" }
         });
         assert!(!validator.is_valid(&missing_target_group));
-        assert!(validator.iter_errors(&missing_target_group).count() > 0);
+        let errors = validator.validate(&missing_target_group);
+        assert!(!errors.is_empty(), "expected validation errors");
     }
 
     // T9: Unknown field fails meta-schema validation (unevaluatedProperties: false)

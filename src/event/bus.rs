@@ -10,6 +10,18 @@ use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
 use crate::object::types::WatchEvent;
 use crate::store::ResourceKey;
 
+/// Trait abstracting event distribution for SSE watch endpoints.
+///
+/// This trait isolates `ObjectService` from the concrete `EventBus`
+/// implementation, enabling mock-based testing and future event bus
+/// backends without touching the service layer.
+pub trait EventPublisher: Send + Sync {
+    /// Publish a watch event for the given resource key.
+    fn publish(&self, key: &ResourceKey, event: WatchEvent);
+    /// Subscribe to watch events for the given resource key.
+    fn subscribe(&self, key: &ResourceKey) -> WatchStream;
+}
+
 /// Per-kind event bus backing SSE watch endpoints.
 ///
 /// Maintains a separate `tokio::broadcast` channel per `ResourceKey`.
@@ -94,6 +106,16 @@ impl EventBus {
         WatchStream {
             inner: BroadcastStream::new(receiver),
         }
+    }
+}
+
+impl EventPublisher for EventBus {
+    fn publish(&self, key: &ResourceKey, event: WatchEvent) {
+        EventBus::publish(self, key, event);
+    }
+
+    fn subscribe(&self, key: &ResourceKey) -> WatchStream {
+        EventBus::subscribe(self, key)
     }
 }
 

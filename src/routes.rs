@@ -18,7 +18,19 @@ use crate::object::service::ObjectService;
 /// Wrapped in Arc for Clone (required by axum's State extractor).
 #[derive(Clone)]
 pub struct AppState {
-    pub object_service: Arc<ObjectService>,
+    object_service: Arc<ObjectService>,
+}
+
+impl AppState {
+    /// Creates a new AppState wrapping an ObjectService.
+    pub fn new(object_service: Arc<ObjectService>) -> Self {
+        Self { object_service }
+    }
+
+    /// Returns a reference to the ObjectService.
+    pub fn object_service(&self) -> &ObjectService {
+        &self.object_service
+    }
 }
 
 /// Builds the router with all object CRUD routes.

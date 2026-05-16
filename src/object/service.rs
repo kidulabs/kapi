@@ -6,13 +6,12 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use jsonschema::Validator;
-use jsonschema::draft202012;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::event::EventBus;
+use crate::event::EventPublisher;
 use crate::object::types::{ListOptions, ListResponse, SchemaData, StoredObject, WatchEvent, WatchEventType};
+use crate::schema::{JsonSchemaValidator, SchemaValidator};
 use crate::store::{ObjectStore, ResourceKey};
 
 /// ObjectService wraps store, event bus, and validators.
@@ -24,23 +23,27 @@ use crate::store::{ObjectStore, ResourceKey};
 pub struct ObjectService {
     /// The storage backend
     store: Arc<dyn ObjectStore>,
-    /// Per-kind event bus for SSE watch notifications
-    event_bus: EventBus,
-    /// Compiled meta-schema validator for Schema registration payloads
-    meta_validator: Arc<Validator>,
-    /// Compiled user schemas keyed by schema name
-    schema_cache: DashMap<String, Arc<Validator>>,
+    /// Per-kind event bus for SSE watch notifications (via trait object)
+    event_bus: Arc<dyn EventPublisher>,
+    /// Compiled meta-schema validator for Schema registration payloads (via trait object)
+    meta_validator: Arc<dyn SchemaValidator>,
+    /// Compiled user schemas keyed by schema name (cached as trait objects)
+    schema_cache: DashMap<String, Arc<dyn SchemaValidator>>,
 }
 
 impl ObjectService {
     /// Creates a new ObjectService with the given store, event bus, and meta-validator.
     ///
     /// The schema cache starts empty and is populated as Schema objects are created.
-    pub fn new(store: Arc<dyn ObjectStore>, event_bus: EventBus, meta_validator: Validator) -> Self {
+    pub fn new(
+        store: Arc<dyn ObjectStore>,
+        event_bus: Arc<dyn EventPublisher>,
+        meta_validator: Arc<dyn SchemaValidator>,
+    ) -> Self {
         Self {
             store,
             event_bus,
-            meta_validator: Arc::new(meta_validator),
+            meta_validator,
             schema_cache: DashMap::new(),
         }
     }
@@ -124,9 +127,12 @@ impl ObjectService {
         }
     }
 
-    /// Returns a reference to the event bus for SSE subscription.
-    pub fn event_bus(&self) -> &EventBus {
-        &self.event_bus
+    /// Subscribe to watch events for the given key.
+    ///
+    /// Delegates to the internal `EventPublisher` so handlers don't need
+    /// to know the event bus exists.
+    pub fn subscribe(&self, key: &ResourceKey) -> crate::event::WatchStream {
+        self.event_bus.subscribe(key)
     }
 
     // --- Private helper methods ---
@@ -140,8 +146,9 @@ impl ObjectService {
     ) -> Result<StoredObject, AppError> {
         // Step 1: Meta-schema validation
         if !self.meta_validator.is_valid(&data) {
-            let errors: Vec<String> = self.meta_validator.iter_errors(&data)
-                .map(|e| e.to_string())
+            let errors: Vec<String> = self.meta_validator.validate(&data)
+                .into_iter()
+                .map(|e| e.message)
                 .collect();
             return Err(AppError::InvalidSchema(errors.join("; ")));
         }
@@ -150,8 +157,7 @@ impl ObjectService {
         let schema_data: SchemaData = serde_json::from_value(data.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
-        let compiled = draft202012::options()
-            .build(&schema_data.json_schema)
+        let compiled = JsonSchemaValidator::compile(&schema_data.json_schema)
             .map_err(|e| AppError::InvalidSchema(format!("failed to compile jsonSchema: {}", e)))?;
 
         // Step 3: Store the Schema object
@@ -203,15 +209,11 @@ impl ObjectService {
 
         // Step 4: Validate object data against compiled schema
         if !validator.is_valid(&data) {
-            let errors: Vec<_> = validator.iter_errors(&data)
-                .map(|e| {
-                    crate::object::types::ValidationError {
-                        path: e.instance_path().iter()
-                            .map(|s| s.to_string())
-                            .collect::<Vec<_>>()
-                            .join("/"),
-                        message: e.to_string(),
-                    }
+            let errors: Vec<_> = validator.validate(&data)
+                .into_iter()
+                .map(|e| crate::object::types::ValidationError {
+                    path: e.instance_path,
+                    message: e.message,
                 })
                 .collect();
             return Err(AppError::SchemaValidation(errors));
@@ -237,8 +239,9 @@ impl ObjectService {
     ) -> Result<StoredObject, AppError> {
         // Step 1: Meta-schema validation
         if !self.meta_validator.is_valid(&data) {
-            let errors: Vec<String> = self.meta_validator.iter_errors(&data)
-                .map(|e| e.to_string())
+            let errors: Vec<String> = self.meta_validator.validate(&data)
+                .into_iter()
+                .map(|e| e.message)
                 .collect();
             return Err(AppError::InvalidSchema(errors.join("; ")));
         }
@@ -247,8 +250,7 @@ impl ObjectService {
         let schema_data: SchemaData = serde_json::from_value(data.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
-        let compiled = draft202012::options()
-            .build(&schema_data.json_schema)
+        let compiled = JsonSchemaValidator::compile(&schema_data.json_schema)
             .map_err(|e| AppError::InvalidSchema(format!("failed to compile jsonSchema: {}", e)))?;
 
         // Step 3: Store the update
@@ -299,15 +301,11 @@ impl ObjectService {
 
         // Step 4: Validate
         if !validator.is_valid(&data) {
-            let errors: Vec<_> = validator.iter_errors(&data)
-                .map(|e| {
-                    crate::object::types::ValidationError {
-                        path: e.instance_path().iter()
-                            .map(|s| s.to_string())
-                            .collect::<Vec<_>>()
-                            .join("/"),
-                        message: e.to_string(),
-                    }
+            let errors: Vec<_> = validator.validate(&data)
+                .into_iter()
+                .map(|e| crate::object::types::ValidationError {
+                    path: e.instance_path,
+                    message: e.message,
                 })
                 .collect();
             return Err(AppError::SchemaValidation(errors));
@@ -385,8 +383,9 @@ mod tests {
     // Helper to create a service with a fresh store and event bus
     fn make_service() -> ObjectService {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
-        let event_bus = EventBus::default();
-        let meta_validator = compile_meta_schema().expect("meta-schema should compile");
+        let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+        let meta_validator: Arc<dyn SchemaValidator> =
+            Arc::new(compile_meta_schema().expect("meta-schema should compile"));
         ObjectService::new(store, event_bus, meta_validator)
     }
 

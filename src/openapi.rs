@@ -134,7 +134,7 @@ pub async fn build_openapi_spec(service: &ObjectService) -> Result<Value, AppErr
 pub async fn get_openapi_handler(
     State(state): State<AppState>,
 ) -> Result<Json<Value>, AppError> {
-    let spec = build_openapi_spec(&state.object_service).await?;
+    let spec = build_openapi_spec(state.object_service()).await?;
     Ok(Json(spec))
 }
 
@@ -1049,11 +1049,14 @@ mod tests {
 
     /// Helper to create an ObjectService for testing with a fresh store and event bus.
     fn make_test_service() -> ObjectService {
+        use crate::event::EventPublisher;
         let store: std::sync::Arc<dyn crate::store::ObjectStore> =
             std::sync::Arc::new(crate::store::memory::InMemoryStore::new());
-        let event_bus = crate::event::EventBus::default();
-        let meta_validator = crate::schema::meta_schema::compile_meta_schema()
-            .expect("meta-schema should compile");
+        let event_bus: std::sync::Arc<dyn EventPublisher> =
+            std::sync::Arc::new(crate::event::EventBus::default());
+        let meta_validator: std::sync::Arc<dyn crate::schema::SchemaValidator> =
+            std::sync::Arc::new(crate::schema::meta_schema::compile_meta_schema()
+                .expect("meta-schema should compile"));
         ObjectService::new(store, event_bus, meta_validator)
     }
 }

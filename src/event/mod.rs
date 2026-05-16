@@ -1,3 +1,3 @@
 pub mod bus;
 
-pub use bus::{EventBus, WatchStream};
+pub use bus::{EventBus, EventPublisher, WatchStream};

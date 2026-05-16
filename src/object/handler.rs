@@ -14,7 +14,6 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::event::WatchStream;
 use crate::object::types::{ListOptions, StoredObject};
 use crate::routes::AppState;
 use crate::store::ResourceKey;
@@ -73,7 +72,7 @@ pub async fn create(
         kind: path.kind,
     };
 
-    let stored = state.object_service.create(key, name, body).await?;
+    let stored = state.object_service().create(key, name, body).await?;
     Ok((StatusCode::CREATED, Json(stored)))
 }
 
@@ -91,7 +90,7 @@ pub async fn get(
         kind: path.kind,
     };
 
-    let stored = state.object_service.get(key, path.name).await?;
+    let stored = state.object_service().get(key, path.name).await?;
     Ok(Json(stored))
 }
 
@@ -121,7 +120,7 @@ pub async fn list(
         limit: query.limit,
         continue_token: None,
     };
-    let response = state.object_service.list(key, opts).await?;
+    let response = state.object_service().list(key, opts).await?;
     Ok(Json(response).into_response())
 }
 
@@ -129,8 +128,8 @@ pub async fn list(
 ///
 /// Maps WatchEvent to axum SSE events with JSON data.
 fn watch(state: AppState, key: ResourceKey) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    // Subscribe to the event bus for this key
-    let stream: WatchStream = state.object_service.event_bus().subscribe(&key);
+    // Subscribe to watch events for this key via ObjectService
+    let stream = state.object_service().subscribe(&key);
 
     // Map WatchEvent to SSE Event
     let sse_stream = stream.map(|watch_event| {
@@ -178,7 +177,7 @@ pub async fn update(
     body.key = url_key;
     body.metadata.name = path.name;
 
-    let updated = state.object_service.update(body).await?;
+    let updated = state.object_service().update(body).await?;
     Ok(Json(updated))
 }
 
@@ -196,6 +195,6 @@ pub async fn delete(
         kind: path.kind,
     };
 
-    let deleted = state.object_service.delete(key, path.name).await?;
+    let deleted = state.object_service().delete(key, path.name).await?;
     Ok(Json(deleted))
 }
