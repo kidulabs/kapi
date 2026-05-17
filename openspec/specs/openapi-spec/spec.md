@@ -1,9 +1,7 @@
 ## Purpose
 
 Dynamic OpenAPI 3.0.3 specification generation at request time, including static components/paths for Schema CRUD and dynamic per-kind paths/schemas from registered schemas. Module restructured from single file to directory (`src/openapi/`).
-
-## ADDED Requirements
-
+## Requirements
 ### Requirement: GET /openapi returns dynamically generated OpenAPI 3.0.3 JSON
 The system SHALL provide a `GET /openapi` endpoint that returns an OpenAPI 3.0.3 specification as `application/json`. The spec SHALL be generated on every request by listing all Schema objects from the store and building the document from scratch.
 
@@ -98,6 +96,7 @@ Component names SHALL be derived from the schema name (format: `{Kind}.{group}`)
 - **THEN** component names are `"WidgetExampleIo"` and `"WidgetOtherIo"` respectively
 
 ### Requirement: Path parameters are documented in OpenAPI
+
 Dynamic paths SHALL document only the `name` path parameter on item paths (`/apis/{group}/{version}/{kind}/{name}`). The `group`, `version`, and `kind` are **baked into the URL path** and are NOT path parameters in the OpenAPI spec. This follows the roadmap design where GVK is resolved at route registration time, not at request time.
 
 #### Scenario: Item path has only name parameter
@@ -135,3 +134,4 @@ If implemented, the system SHALL provide a `GET /swagger-ui/` endpoint that retu
 #### Scenario: Swagger UI page loads
 - **WHEN** `GET /swagger-ui/` is requested in a browser
 - **THEN** an HTML page is returned that loads Swagger UI and points to `/openapi`
+
