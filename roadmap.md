@@ -224,7 +224,11 @@ src/
 │   ├── mod.rs
 │   ├── auth.rs            # AuthLayer stub
 │   └── metrics.rs         # MetricsLayer stub
-└── openapi.rs              # Dynamic OpenAPI spec builder + handlers
+├── openapi/
+│   ├── mod.rs             # Module declarations, re-exports, HTTP handlers, tests
+│   ├── components.rs      # Static + dynamic component schema builders
+│   ├── paths.rs           # Static + dynamic path builders + spec orchestrator
+│   └── swagger.rs         # Swagger UI HTML constant and handler
 ```
 
 ---

@@ -1,6 +1,6 @@
 ## Purpose
 
-Dynamic OpenAPI 3.0.3 specification generation at request time, including static components/paths for Schema CRUD and dynamic per-kind paths/schemas from registered schemas.
+Dynamic OpenAPI 3.0.3 specification generation at request time, including static components/paths for Schema CRUD and dynamic per-kind paths/schemas from registered schemas. Module restructured from single file to directory (`src/openapi/`).
 
 ## ADDED Requirements
 
@@ -98,15 +98,17 @@ Component names SHALL be derived from the schema name (format: `{Kind}.{group}`)
 - **THEN** component names are `"WidgetExampleIo"` and `"WidgetOtherIo"` respectively
 
 ### Requirement: Path parameters are documented in OpenAPI
-All dynamic paths SHALL document their path parameters (`group`, `version`, `kind`, `name`) as OpenAPI path parameters with type `string` and `required: true`.
+Dynamic paths SHALL document only the `name` path parameter on item paths (`/apis/{group}/{version}/{kind}/{name}`). The `group`, `version`, and `kind` are **baked into the URL path** and are NOT path parameters in the OpenAPI spec. This follows the roadmap design where GVK is resolved at route registration time, not at request time.
 
-#### Scenario: Collection path has path parameters
-- **WHEN** the spec is generated for a dynamic kind path
-- **THEN** the path parameters include `group`, `version`, and `kind`
-
-#### Scenario: Item path has path parameters
+#### Scenario: Item path has only name parameter
 - **WHEN** the spec is generated for a dynamic item path
-- **THEN** the path parameters include `group`, `version`, `kind`, and `name`
+- **THEN** the path parameters include only `name` (type `string`, required)
+- **AND** the path parameters do NOT include `group`, `version`, or `kind`
+
+#### Scenario: Collection path has no path parameters
+- **WHEN** the spec is generated for a dynamic collection path
+- **THEN** the path has no path parameters
+- **AND** the `?watch=true` query parameter is documented on the GET operation
 
 ### Requirement: Watch query parameter documented on list endpoint
 The `GET` list endpoint for each kind SHALL document the `?watch=true` query parameter as an optional boolean. When `watch=true`, the response is an SSE stream of `WatchEvent` objects.
