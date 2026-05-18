@@ -15,11 +15,11 @@ use tracing::info;
 
 use crate::event::EventPublisher;
 use crate::object::service::ObjectService;
-use crate::routes::{build_router, AppState};
-use crate::schema::meta_schema::compile_meta_schema;
+use crate::routes::{AppState, build_router};
 use crate::schema::SchemaValidator;
-use crate::store::memory::InMemoryStore;
+use crate::schema::meta_schema::compile_meta_schema;
 use crate::store::ObjectStore;
+use crate::store::memory::InMemoryStore;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {

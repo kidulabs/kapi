@@ -22,8 +22,8 @@ mod swagger;
 pub use components::component_name;
 pub use swagger::get_swagger_ui_handler;
 
-use axum::extract::State;
 use axum::Json;
+use axum::extract::State;
 use serde_json::Value;
 
 use crate::error::AppError;
@@ -33,9 +33,7 @@ use crate::routes::AppState;
 ///
 /// Calls `build_openapi_spec` to generate the OpenAPI document from the
 /// current state of registered schemas, and returns it as JSON.
-pub async fn get_openapi_handler(
-    State(state): State<AppState>,
-) -> Result<Json<Value>, AppError> {
+pub async fn get_openapi_handler(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
     let spec = self::paths::build_openapi_spec(state.object_service()).await?;
     Ok(Json(spec))
 }
@@ -95,7 +93,10 @@ mod tests {
     #[test]
     fn build_static_components_stored_object_shape() {
         let components = build_static_components();
-        let stored = components.iter().find(|(n, _)| n == "StoredObject").unwrap();
+        let stored = components
+            .iter()
+            .find(|(n, _)| n == "StoredObject")
+            .unwrap();
         let obj = stored.1.as_object().unwrap();
         assert_eq!(obj["type"], "object");
         let props = obj["properties"].as_object().unwrap();
@@ -125,7 +126,10 @@ mod tests {
     #[test]
     fn build_static_components_watch_event_type_enum() {
         let components = build_static_components();
-        let wet = components.iter().find(|(n, _)| n == "WatchEventType").unwrap();
+        let wet = components
+            .iter()
+            .find(|(n, _)| n == "WatchEventType")
+            .unwrap();
         let obj = wet.1.as_object().unwrap();
         assert_eq!(obj["type"], "string");
         let variants: Vec<&str> = obj["enum"]
@@ -174,8 +178,14 @@ mod tests {
         assert_eq!(obj["type"], "object");
         let props = obj["properties"].as_object().unwrap();
         assert_eq!(props["key"]["$ref"], "#/components/schemas/ResourceKey");
-        assert_eq!(props["metadata"]["$ref"], "#/components/schemas/ObjectMetadata");
-        assert_eq!(props["data"]["$ref"], "#/components/schemas/WidgetExampleIo");
+        assert_eq!(
+            props["metadata"]["$ref"],
+            "#/components/schemas/ObjectMetadata"
+        );
+        assert_eq!(
+            props["data"]["$ref"],
+            "#/components/schemas/WidgetExampleIo"
+        );
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "key"));
         assert!(required.iter().any(|r| r == "metadata"));
@@ -220,19 +230,27 @@ mod tests {
     #[test]
     fn build_static_paths_post_has_request_body_with_metadata() {
         let paths = build_static_paths();
-        let (_path, collection) = paths.iter().find(|(p, _)| p == "/apis/kapi.io/v1/Schema").unwrap();
+        let (_path, collection) = paths
+            .iter()
+            .find(|(p, _)| p == "/apis/kapi.io/v1/Schema")
+            .unwrap();
         let rb = &collection["post"]["requestBody"];
         assert_eq!(rb["required"], true);
         let schema = &rb["content"]["application/json"]["schema"];
-        assert!(schema["allOf"].is_array(), "should use allOf to compose metadata + SchemaData");
-        assert_eq!(schema["allOf"][0]["required"][0], "metadata");
-        assert_eq!(schema["allOf"][1]["$ref"], "#/components/schemas/SchemaData");
+        // Schema name is auto-generated — request body is just SchemaData, no metadata
+        assert_eq!(
+            schema["$ref"],
+            "#/components/schemas/SchemaData"
+        );
     }
 
     #[test]
     fn build_static_paths_post_has_error_responses() {
         let paths = build_static_paths();
-        let (_path, collection) = paths.iter().find(|(p, _)| p == "/apis/kapi.io/v1/Schema").unwrap();
+        let (_path, collection) = paths
+            .iter()
+            .find(|(p, _)| p == "/apis/kapi.io/v1/Schema")
+            .unwrap();
         let responses = &collection["post"]["responses"];
         assert!(responses.get("201").is_some());
         assert!(responses.get("404").is_some());
@@ -271,7 +289,10 @@ mod tests {
             json_schema: serde_json::json!({ "type": "object" }),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
-        let (_path, collection) = paths.iter().find(|(p, _)| p == "/apis/example.io/v1/Widget").unwrap();
+        let (_path, collection) = paths
+            .iter()
+            .find(|(p, _)| p == "/apis/example.io/v1/Widget")
+            .unwrap();
         let params = collection["get"]["parameters"].as_array().unwrap();
         let watch = params.iter().find(|p| p["name"] == "watch").unwrap();
         assert_eq!(watch["in"], "query");
@@ -288,7 +309,10 @@ mod tests {
             json_schema: serde_json::json!({ "type": "object" }),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
-        let (_path, collection) = paths.iter().find(|(p, _)| p == "/apis/example.io/v1/Widget").unwrap();
+        let (_path, collection) = paths
+            .iter()
+            .find(|(p, _)| p == "/apis/example.io/v1/Widget")
+            .unwrap();
         let responses = &collection["post"]["responses"];
         assert!(responses.get("201").is_some());
         assert!(responses.get("404").is_some());
@@ -305,10 +329,17 @@ mod tests {
             json_schema: serde_json::json!({ "type": "object" }),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
-        let (_path, item) = paths.iter().find(|(p, _)| p == "/apis/example.io/v1/Widget/{name}").unwrap();
+        let (_path, item) = paths
+            .iter()
+            .find(|(p, _)| p == "/apis/example.io/v1/Widget/{name}")
+            .unwrap();
         let params = item["get"]["parameters"].as_array().unwrap();
         let names: Vec<&str> = params.iter().map(|p| p["name"].as_str().unwrap()).collect();
-        assert_eq!(names, vec!["name"], "only name param should be present, GVK is in the URL");
+        assert_eq!(
+            names,
+            vec!["name"],
+            "only name param should be present, GVK is in the URL"
+        );
     }
 
     #[tokio::test]
@@ -346,9 +377,18 @@ mod tests {
             "missing item path"
         );
         let schemas = spec["components"]["schemas"].as_object().unwrap();
-        assert!(schemas.contains_key("WidgetExampleIo"), "missing data component");
-        assert!(schemas.contains_key("WidgetExampleIoStoredObject"), "missing stored component");
-        assert!(schemas.contains_key("WidgetExampleIoListResponse"), "missing list component");
+        assert!(
+            schemas.contains_key("WidgetExampleIo"),
+            "missing data component"
+        );
+        assert!(
+            schemas.contains_key("WidgetExampleIoStoredObject"),
+            "missing stored component"
+        );
+        assert!(
+            schemas.contains_key("WidgetExampleIoListResponse"),
+            "missing list component"
+        );
     }
 
     #[tokio::test]
@@ -368,14 +408,20 @@ mod tests {
 
         // Register schema → build spec → verify paths exist
         service
-            .create(schema_key.clone(), "Widget.example.io".to_string(), schema_data.clone())
+            .create(
+                schema_key.clone(),
+                "Widget.example.io".to_string(),
+                schema_data.clone(),
+            )
             .await
             .unwrap();
         let spec_after_create = build_openapi_spec(&service).await.unwrap();
-        assert!(spec_after_create["paths"]
-            .as_object()
-            .unwrap()
-            .contains_key("/apis/example.io/v1/Widget"));
+        assert!(
+            spec_after_create["paths"]
+                .as_object()
+                .unwrap()
+                .contains_key("/apis/example.io/v1/Widget")
+        );
 
         // Delete schema → build spec → verify paths removed
         service
@@ -400,8 +446,10 @@ mod tests {
         let event_bus: std::sync::Arc<dyn EventPublisher> =
             std::sync::Arc::new(crate::event::EventBus::default());
         let meta_validator: std::sync::Arc<dyn crate::schema::SchemaValidator> =
-            std::sync::Arc::new(crate::schema::meta_schema::compile_meta_schema()
-                .expect("meta-schema should compile"));
+            std::sync::Arc::new(
+                crate::schema::meta_schema::compile_meta_schema()
+                    .expect("meta-schema should compile"),
+            );
         crate::object::service::ObjectService::new(store, event_bus, meta_validator)
     }
 }

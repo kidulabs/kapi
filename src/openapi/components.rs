@@ -4,7 +4,7 @@
 //! document. Includes built-in kapi types (ResourceKey, StoredObject, etc.)
 //! and dynamically generated per-kind schemas from registered Schema objects.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::object::types::SchemaData;
 
@@ -45,110 +45,143 @@ pub fn component_name(schema_name: &str) -> String {
 pub(crate) fn build_static_components() -> Vec<(String, Value)> {
     vec![
         // ResourceKey: { group, version, kind }
-        ("ResourceKey".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "group": { "type": "string" },
-                "version": { "type": "string" },
-                "kind": { "type": "string" }
-            },
-            "required": ["group", "version", "kind"]
-        })),
-        // ObjectMetadata: metadata with versioning and timestamps
-        ("ObjectMetadata".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "name": { "type": "string" },
-                "resourceVersion": { "type": "integer", "format": "int64" },
-                "createdAt": { "type": "string", "format": "date-time" },
-                "updatedAt": { "type": "string", "format": "date-time" }
-            },
-            "required": ["name", "resourceVersion", "createdAt", "updatedAt"]
-        })),
-        // UserData: envelope holding arbitrary JSON data
-        ("UserData".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "value": {}
-            },
-            "required": ["value"]
-        })),
-        // StoredObject: generic envelope wrapping a stored resource
-        ("StoredObject".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "key": { "$ref": "#/components/schemas/ResourceKey" },
-                "metadata": { "$ref": "#/components/schemas/ObjectMetadata" },
-                "data": { "$ref": "#/components/schemas/UserData" }
-            },
-            "required": ["key", "metadata", "data"]
-        })),
-        // ListResponse: paginated list of StoredObjects
-        ("ListResponse".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "items": {
-                    "type": "array",
-                    "items": { "$ref": "#/components/schemas/StoredObject" }
+        (
+            "ResourceKey".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "group": { "type": "string" },
+                    "version": { "type": "string" },
+                    "kind": { "type": "string" }
                 },
-                "continueToken": {
-                    "type": "string",
-                    "nullable": true
-                }
-            },
-            "required": ["items"]
-        })),
+                "required": ["group", "version", "kind"]
+            }),
+        ),
+        // ObjectMetadata: metadata with versioning and timestamps
+        (
+            "ObjectMetadata".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "name": { "type": "string" },
+                    "resourceVersion": { "type": "integer", "format": "int64" },
+                    "createdAt": { "type": "string", "format": "date-time" },
+                    "updatedAt": { "type": "string", "format": "date-time" }
+                },
+                "required": ["name", "resourceVersion", "createdAt", "updatedAt"]
+            }),
+        ),
+        // UserData: envelope holding arbitrary JSON data
+        (
+            "UserData".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "value": {}
+                },
+                "required": ["value"]
+            }),
+        ),
+        // StoredObject: generic envelope wrapping a stored resource
+        (
+            "StoredObject".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "key": { "$ref": "#/components/schemas/ResourceKey" },
+                    "metadata": { "$ref": "#/components/schemas/ObjectMetadata" },
+                    "data": { "$ref": "#/components/schemas/UserData" }
+                },
+                "required": ["key", "metadata", "data"]
+            }),
+        ),
+        // ListResponse: paginated list of StoredObjects
+        (
+            "ListResponse".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": { "$ref": "#/components/schemas/StoredObject" }
+                    },
+                    "continueToken": {
+                        "type": "string",
+                        "nullable": true
+                    }
+                },
+                "required": ["items"]
+            }),
+        ),
         // WatchEvent: SSE event payload with type and object
-        ("WatchEvent".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "eventType": { "$ref": "#/components/schemas/WatchEventType" },
-                "object": { "$ref": "#/components/schemas/StoredObject" }
-            },
-            "required": ["eventType", "object"]
-        })),
+        (
+            "WatchEvent".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "eventType": { "$ref": "#/components/schemas/WatchEventType" },
+                    "object": { "$ref": "#/components/schemas/StoredObject" }
+                },
+                "required": ["eventType", "object"]
+            }),
+        ),
         // WatchEventType: enum of event kinds
-        ("WatchEventType".to_string(), json!({
-            "type": "string",
-            "enum": ["Added", "Modified", "Deleted"]
-        })),
+        (
+            "WatchEventType".to_string(),
+            json!({
+                "type": "string",
+                "enum": ["Added", "Modified", "Deleted"]
+            }),
+        ),
         // ValidationError: field-level validation failure
-        ("ValidationError".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "path": { "type": "string" },
-                "message": { "type": "string" }
-            },
-            "required": ["path", "message"]
-        })),
+        (
+            "ValidationError".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "path": { "type": "string" },
+                    "message": { "type": "string" }
+                },
+                "required": ["path", "message"]
+            }),
+        ),
         // AppError: standard error response shape
-        ("AppError".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "error": { "type": "string" },
-                "code": { "type": "string" },
-                "details": {}
-            },
-            "required": ["error", "code"]
-        })),
+        (
+            "AppError".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" },
+                    "details": {}
+                },
+                "required": ["error", "code"]
+            }),
+        ),
         // SchemaData: payload for Schema registration
-        ("SchemaData".to_string(), json!({
-            "type": "object",
-            "properties": {
-                "targetGroup": { "type": "string" },
-                "targetVersion": { "type": "string" },
-                "targetKind": { "type": "string" },
-                "jsonSchema": {}
-            },
-            "required": ["targetGroup", "targetVersion", "targetKind", "jsonSchema"]
-        })),
+        (
+            "SchemaData".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "targetGroup": { "type": "string" },
+                    "targetVersion": { "type": "string" },
+                    "targetKind": { "type": "string" },
+                    "jsonSchema": {}
+                },
+                "required": ["targetGroup", "targetVersion", "targetKind", "jsonSchema"]
+            }),
+        ),
     ]
 }
 
 /// Builds the data component schema for a registered kind.
 ///
 /// Wraps the user's `jsonSchema` as an OpenAPI Schema Object.
-pub(crate) fn build_kind_data_component(schema_data: &SchemaData, comp_name: &str) -> (String, Value) {
+pub(crate) fn build_kind_data_component(
+    schema_data: &SchemaData,
+    comp_name: &str,
+) -> (String, Value) {
     let schema = json!({
         "type": "object",
         "properties": {

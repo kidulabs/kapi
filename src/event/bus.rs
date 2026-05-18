@@ -218,7 +218,13 @@ mod tests {
         bus.publish(&key, event);
 
         let received = stream.next().await;
-        assert!(matches!(received, Some(WatchEvent { event_type: WatchEventType::Added, .. })));
+        assert!(matches!(
+            received,
+            Some(WatchEvent {
+                event_type: WatchEventType::Added,
+                ..
+            })
+        ));
     }
 
     // Publish an event, multiple subscribers all receive it.
@@ -235,8 +241,20 @@ mod tests {
         // Both subscribers should receive the same event.
         let e1 = stream1.next().await;
         let e2 = stream2.next().await;
-        assert!(matches!(e1, Some(WatchEvent { event_type: WatchEventType::Added, .. })));
-        assert!(matches!(e2, Some(WatchEvent { event_type: WatchEventType::Added, .. })));
+        assert!(matches!(
+            e1,
+            Some(WatchEvent {
+                event_type: WatchEventType::Added,
+                ..
+            })
+        ));
+        assert!(matches!(
+            e2,
+            Some(WatchEvent {
+                event_type: WatchEventType::Added,
+                ..
+            })
+        ));
     }
 
     // Dead channel cleanup: channels with zero receivers are lazily removed
@@ -280,7 +298,13 @@ mod tests {
         bus.publish(&key, make_event());
 
         let received = stream2.next().await;
-        assert!(matches!(received, Some(WatchEvent { event_type: WatchEventType::Added, .. })));
+        assert!(matches!(
+            received,
+            Some(WatchEvent {
+                event_type: WatchEventType::Added,
+                ..
+            })
+        ));
     }
 
     // Publishing to a key with no channel is a no-op — no panic, no error,
@@ -315,6 +339,9 @@ mod tests {
         // The receiver missed the first event due to buffer overrun.
         // WatchStream should yield None (stream terminates).
         let received = stream.next().await;
-        assert!(received.is_none(), "expected stream termination on lag, got: {received:?}");
+        assert!(
+            received.is_none(),
+            "expected stream termination on lag, got: {received:?}"
+        );
     }
 }

@@ -3,11 +3,11 @@
 //! Handlers are thin — they extract path params, deserialize body, call service, return response.
 //! No business logic in handlers.
 
-use axum::extract::{Path, Query, State};
-use axum::response::sse::{Event, Sse};
-use axum::response::IntoResponse;
 use axum::Json;
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
+use axum::response::IntoResponse;
+use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
 use futures_util::StreamExt;
 use serde::Deserialize;
@@ -42,23 +42,52 @@ pub struct ListQuery {
     pub limit: Option<usize>,
 }
 
+/// Extracts the schema name from a Schema registration body.
+///
+/// Reads `targetKind` and `targetGroup` from the JSON body and returns
+/// `Some("{targetKind}.{targetGroup}")`. Returns `None` if either field
+/// is missing or not a string.
+///
+/// The generated name is used as the storage key and cache key for the schema,
+/// ensuring consistency between the stored name and the cache lookup key.
+fn extract_schema_name(body: &Value) -> Option<String> {
+    let target_kind = body.get("targetKind")?.as_str()?;
+    let target_group = body.get("targetGroup")?.as_str()?;
+    Some(format!("{}.{}", target_kind, target_group))
+}
+
 /// Creates a new object.
 ///
 /// Extracts group, version, kind from path, deserializes body as JSON,
-/// extracts name from metadata.name, and calls ObjectService::create.
-/// Returns 201 Created with the StoredObject.
+/// and calls ObjectService::create. Returns 201 Created with the StoredObject.
+///
+/// For Schema objects (`kind == "Schema"`), the name is generated from
+/// `targetKind` and `targetGroup` in the body as `{targetKind}.{targetGroup}`.
+/// For non-Schema objects, the name is extracted from `metadata.name`.
 pub async fn create(
     State(state): State<AppState>,
     Path(path): Path<ObjectPath>,
     Json(mut body): Json<Value>,
 ) -> Result<(StatusCode, Json<StoredObject>), AppError> {
-    // Extract object name from metadata.name field
-    let name = body
-        .get("metadata")
-        .and_then(|m| m.get("name"))
-        .and_then(|n| n.as_str())
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("missing metadata.name in request body")))?
-        .to_string();
+    // Branch on kind: Schema objects generate their name from payload fields,
+    // while regular objects require a client-supplied metadata.name
+    let name = if path.kind == "Schema" {
+        // Schema registration: generate name from targetKind.targetGroup
+        extract_schema_name(&body).ok_or_else(|| {
+            AppError::InvalidSchema(
+                "Schema registration requires targetKind and targetGroup fields".to_string(),
+            )
+        })?
+    } else {
+        // Regular object: extract name from metadata.name
+        body.get("metadata")
+            .and_then(|m| m.get("name"))
+            .and_then(|n| n.as_str())
+            .ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!("missing metadata.name in request body"))
+            })?
+            .to_string()
+    };
 
     // Remove metadata from body before passing to service
     // (metadata is a kapi-level concern, not part of the schema/object data)
@@ -127,16 +156,17 @@ pub async fn list(
 /// Watch logic — subscribes to event bus and returns SSE stream.
 ///
 /// Maps WatchEvent to axum SSE events with JSON data.
-fn watch(state: AppState, key: ResourceKey) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
+fn watch(
+    state: AppState,
+    key: ResourceKey,
+) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
     // Subscribe to watch events for this key via ObjectService
     let stream = state.object_service().subscribe(&key);
 
     // Map WatchEvent to SSE Event
     let sse_stream = stream.map(|watch_event| {
         let json_data = serde_json::to_string(&watch_event).unwrap_or_default();
-        Ok(Event::default()
-            .event("message")
-            .data(json_data))
+        Ok(Event::default().event("message").data(json_data))
     });
 
     Sse::new(sse_stream)

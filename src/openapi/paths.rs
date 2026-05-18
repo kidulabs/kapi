@@ -5,7 +5,7 @@
 //! the top-level [`build_openapi_spec`] orchestrator that assembles the
 //! full OpenAPI document from components, paths, and dynamic content.
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::error::AppError;
 use crate::object::service::ObjectService;
@@ -46,18 +46,22 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
 
     // Discover registered schemas by listing Schema objects from the store
     let schema_list = service
-        .list(schema_resource_key(), ListOptions {
-            limit: None,
-            continue_token: None,
-        })
+        .list(
+            schema_resource_key(),
+            ListOptions {
+                limit: None,
+                continue_token: None,
+            },
+        )
         .await?;
 
     // Parse each StoredObject's data field into SchemaData and generate dynamic content
     for item in &schema_list.items {
-        let schema_data: crate::object::types::SchemaData = match serde_json::from_value(item.data.value.clone()) {
-            Ok(sd) => sd,
-            Err(_) => continue,
-        };
+        let schema_data: crate::object::types::SchemaData =
+            match serde_json::from_value(item.data.value.clone()) {
+                Ok(sd) => sd,
+                Err(_) => continue,
+            };
 
         let schema_name = format!("{}.{}", schema_data.target_kind, schema_data.target_group);
         let comp_name = component_name(&schema_name);
@@ -108,146 +112,135 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
 
     vec![
         // Combined GET+POST for /apis/kapi.io/v1/Schema
-        ("/apis/kapi.io/v1/Schema".to_string(), json!({
-            "get": {
-                "summary": "List all registered Schema objects",
-                "operationId": "listSchemas",
-                "parameters": [],
-                "responses": {
-                    "200": {
-                        "description": "A list of Schema objects",
-                        "content": {
-                            "application/json": {
-                                "schema": list_response_ref
+        (
+            "/apis/kapi.io/v1/Schema".to_string(),
+            json!({
+                "get": {
+                    "summary": "List all registered Schema objects",
+                    "operationId": "listSchemas",
+                    "parameters": [],
+                    "responses": {
+                        "200": {
+                            "description": "A list of Schema objects",
+                            "content": {
+                                "application/json": {
+                                    "schema": list_response_ref
+                                }
                             }
-                        }
-                    }
-                }
-            },
-            "post": {
-                "summary": "Register a new Schema",
-                "operationId": "createSchema",
-                "parameters": [],
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": schema_create_request_schema()
                         }
                     }
                 },
-                "responses": {
-                    "201": {
-                        "description": "Schema created successfully",
+                "post": {
+                    "summary": "Register a new Schema",
+                    "operationId": "createSchema",
+                    "parameters": [],
+                    "requestBody": {
+                        "required": true,
                         "content": {
                             "application/json": {
-                                "schema": stored_object_ref
+                                "schema": schema_create_request_schema()
                             }
                         }
                     },
-                    "404": {
-                        "description": "Not found",
-                        "content": { "application/json": { "schema": schema_error_ref } }
-                    },
-                    "409": {
-                        "description": "Conflict — duplicate schema",
-                        "content": { "application/json": { "schema": schema_error_ref } }
-                    },
-                    "422": {
-                        "description": "Invalid schema — meta-schema validation failure",
-                        "content": { "application/json": { "schema": schema_error_ref } }
+                    "responses": {
+                        "201": {
+                            "description": "Schema created successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": stored_object_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": "Not found",
+                            "content": { "application/json": { "schema": schema_error_ref } }
+                        },
+                        "409": {
+                            "description": "Conflict — duplicate schema",
+                            "content": { "application/json": { "schema": schema_error_ref } }
+                        },
+                        "422": {
+                            "description": "Invalid schema — meta-schema validation failure",
+                            "content": { "application/json": { "schema": schema_error_ref } }
+                        }
                     }
                 }
-            }
-        })),
+            }),
+        ),
         // Combined GET+DELETE for /apis/kapi.io/v1/Schema/{name}
-        ("/apis/kapi.io/v1/Schema/{name}".to_string(), json!({
-            "get": {
-                "summary": "Get a Schema by name",
-                "operationId": "getSchema",
-                "parameters": [
-                    {
-                        "name": "name",
-                        "in": "path",
-                        "required": true,
-                        "schema": { "type": "string" },
-                        "description": "The schema name (e.g. Widget.example.io)"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "The Schema object",
-                        "content": {
-                            "application/json": {
-                                "schema": stored_object_ref
-                            }
+        (
+            "/apis/kapi.io/v1/Schema/{name}".to_string(),
+            json!({
+                "get": {
+                    "summary": "Get a Schema by name",
+                    "operationId": "getSchema",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": true,
+                            "schema": { "type": "string" },
+                            "description": "The schema name (e.g. Widget.example.io)"
                         }
-                    },
-                    "404": {
-                        "description": "Schema not found",
-                        "content": { "application/json": { "schema": schema_error_ref } }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "The Schema object",
+                            "content": {
+                                "application/json": {
+                                    "schema": stored_object_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": "Schema not found",
+                            "content": { "application/json": { "schema": schema_error_ref } }
+                        }
+                    }
+                },
+                "delete": {
+                    "summary": "Delete a Schema by name",
+                    "operationId": "deleteSchema",
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": true,
+                            "schema": { "type": "string" },
+                            "description": "The schema name (e.g. Widget.example.io)"
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": "Schema deleted successfully",
+                            "content": {
+                                "application/json": {
+                                    "schema": stored_object_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": "Schema not found",
+                            "content": { "application/json": { "schema": schema_error_ref } }
+                        },
+                        "409": {
+                            "description": "Conflict — schema has existing objects of the target kind",
+                            "content": { "application/json": { "schema": schema_error_ref } }
+                        }
                     }
                 }
-            },
-            "delete": {
-                "summary": "Delete a Schema by name",
-                "operationId": "deleteSchema",
-                "parameters": [
-                    {
-                        "name": "name",
-                        "in": "path",
-                        "required": true,
-                        "schema": { "type": "string" },
-                        "description": "The schema name (e.g. Widget.example.io)"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Schema deleted successfully",
-                        "content": {
-                            "application/json": {
-                                "schema": stored_object_ref
-                            }
-                        }
-                    },
-                    "404": {
-                        "description": "Schema not found",
-                        "content": { "application/json": { "schema": schema_error_ref } }
-                    },
-                    "409": {
-                        "description": "Conflict — schema has existing objects of the target kind",
-                        "content": { "application/json": { "schema": schema_error_ref } }
-                    }
-                }
-            }
-        })),
+            }),
+        ),
     ]
 }
 
 /// Builds the request body schema for creating a Schema object.
 ///
-/// Combines `metadata.name` (required by the handler) with the SchemaData component.
+/// Schema name is auto-generated as `{targetKind}.{targetGroup}` by the handler.
+/// The client does not need to supply `metadata.name`.
 pub(crate) fn schema_create_request_schema() -> Value {
     json!({
-        "allOf": [
-            {
-                "type": "object",
-                "properties": {
-                    "metadata": {
-                        "type": "object",
-                        "properties": {
-                            "name": {
-                                "type": "string",
-                                "description": "Schema name, format: {Kind}.{group} (e.g. Widget.example.io)"
-                            }
-                        },
-                        "required": ["name"]
-                    }
-                },
-                "required": ["metadata"]
-            },
-            { "$ref": "#/components/schemas/SchemaData" }
-        ]
+        "$ref": "#/components/schemas/SchemaData"
     })
 }
 
@@ -260,7 +253,10 @@ pub(crate) fn schema_create_request_schema() -> Value {
 ///
 /// Only `name` on item paths needs a path parameter. The list GET also
 /// documents the optional `?watch=true` query parameter.
-pub(crate) fn build_kind_paths(schema_data: &crate::object::types::SchemaData, comp_name: &str) -> Vec<(String, Value)> {
+pub(crate) fn build_kind_paths(
+    schema_data: &crate::object::types::SchemaData,
+    comp_name: &str,
+) -> Vec<(String, Value)> {
     let group = &schema_data.target_group;
     let version = &schema_data.target_version;
     let kind = &schema_data.target_kind;
@@ -274,169 +270,175 @@ pub(crate) fn build_kind_paths(schema_data: &crate::object::types::SchemaData, c
 
     vec![
         // Collection path: GET (list) + POST (create)
-        (collection_path, json!({
-            "get": {
-                "summary": format!("List {} objects", kind),
-                "operationId": format!("list{}", comp_name),
-                "parameters": [
-                    {
-                        "name": "watch",
-                        "in": "query",
-                        "required": false,
-                        "schema": { "type": "boolean" },
-                        "description": "Enable SSE watch stream"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": format!("A list of {} objects", kind),
-                        "content": {
-                            "application/json": {
-                                "schema": list_ref
-                            }
+        (
+            collection_path,
+            json!({
+                "get": {
+                    "summary": format!("List {} objects", kind),
+                    "operationId": format!("list{}", comp_name),
+                    "parameters": [
+                        {
+                            "name": "watch",
+                            "in": "query",
+                            "required": false,
+                            "schema": { "type": "boolean" },
+                            "description": "Enable SSE watch stream"
                         }
-                    }
-                }
-            },
-            "post": {
-                "summary": format!("Create a new {} object", kind),
-                "operationId": format!("create{}", comp_name),
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": build_create_request_schema(schema_data)
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": format!("A list of {} objects", kind),
+                            "content": {
+                                "application/json": {
+                                    "schema": list_ref
+                                }
+                            }
                         }
                     }
                 },
-                "responses": {
-                    "201": {
-                        "description": format!("{} object created", kind),
+                "post": {
+                    "summary": format!("Create a new {} object", kind),
+                    "operationId": format!("create{}", comp_name),
+                    "requestBody": {
+                        "required": true,
                         "content": {
                             "application/json": {
-                                "schema": stored_ref
+                                "schema": build_create_request_schema(schema_data)
                             }
                         }
                     },
-                    "404": {
-                        "description": "Schema not found for this kind",
-                        "content": { "application/json": { "schema": error_ref } }
-                    },
-                    "409": {
-                        "description": "Conflict — object with same name already exists",
-                        "content": { "application/json": { "schema": error_ref } }
-                    },
-                    "422": {
-                        "description": "Schema validation failed",
-                        "content": { "application/json": { "schema": error_ref } }
+                    "responses": {
+                        "201": {
+                            "description": format!("{} object created", kind),
+                            "content": {
+                                "application/json": {
+                                    "schema": stored_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": "Schema not found for this kind",
+                            "content": { "application/json": { "schema": error_ref } }
+                        },
+                        "409": {
+                            "description": "Conflict — object with same name already exists",
+                            "content": { "application/json": { "schema": error_ref } }
+                        },
+                        "422": {
+                            "description": "Schema validation failed",
+                            "content": { "application/json": { "schema": error_ref } }
+                        }
                     }
                 }
-            }
-        })),
+            }),
+        ),
         // Item path: GET (get) + PUT (update) + DELETE (delete)
-        (item_path, json!({
-            "get": {
-                "summary": format!("Get a {} object by name", kind),
-                "operationId": format!("get{}", comp_name),
-                "parameters": [
-                    {
-                        "name": "name",
-                        "in": "path",
-                        "required": true,
-                        "schema": { "type": "string" },
-                        "description": "The object name"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": format!("The {} object", kind),
-                        "content": {
-                            "application/json": {
-                                "schema": stored_ref
-                            }
+        (
+            item_path,
+            json!({
+                "get": {
+                    "summary": format!("Get a {} object by name", kind),
+                    "operationId": format!("get{}", comp_name),
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": true,
+                            "schema": { "type": "string" },
+                            "description": "The object name"
                         }
-                    },
-                    "404": {
-                        "description": format!("{} object not found", kind),
-                        "content": { "application/json": { "schema": error_ref } }
-                    }
-                }
-            },
-            "put": {
-                "summary": format!("Update a {} object", kind),
-                "operationId": format!("update{}", comp_name),
-                "parameters": [
-                    {
-                        "name": "name",
-                        "in": "path",
-                        "required": true,
-                        "schema": { "type": "string" },
-                        "description": "The object name"
-                    }
-                ],
-                "requestBody": {
-                    "required": true,
-                    "content": {
-                        "application/json": {
-                            "schema": stored_ref
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": format!("The {} object", kind),
+                            "content": {
+                                "application/json": {
+                                    "schema": stored_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": format!("{} object not found", kind),
+                            "content": { "application/json": { "schema": error_ref } }
                         }
                     }
                 },
-                "responses": {
-                    "200": {
-                        "description": format!("{} object updated", kind),
-                        "content": {
-                            "application/json": {
-                                "schema": stored_ref
-                            }
+                "put": {
+                    "summary": format!("Update a {} object", kind),
+                    "operationId": format!("update{}", comp_name),
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": true,
+                            "schema": { "type": "string" },
+                            "description": "The object name"
                         }
-                    },
-                    "404": {
-                        "description": format!("{} object not found", kind),
-                        "content": { "application/json": { "schema": error_ref } }
-                    },
-                    "409": {
-                        "description": "Conflict — version mismatch",
-                        "content": { "application/json": { "schema": error_ref } }
-                    },
-                    "422": {
-                        "description": "Schema validation failed",
-                        "content": { "application/json": { "schema": error_ref } }
-                    }
-                }
-            },
-            "delete": {
-                "summary": format!("Delete a {} object", kind),
-                "operationId": format!("delete{}", comp_name),
-                "parameters": [
-                    {
-                        "name": "name",
-                        "in": "path",
+                    ],
+                    "requestBody": {
                         "required": true,
-                        "schema": { "type": "string" },
-                        "description": "The object name"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": format!("{} object deleted", kind),
                         "content": {
                             "application/json": {
                                 "schema": stored_ref
                             }
                         }
                     },
-                    "404": {
-                        "description": format!("{} object not found", kind),
-                        "content": { "application/json": { "schema": error_ref } }
-                    },
-                    "409": {
-                        "description": "Conflict — schema has objects of this kind",
-                        "content": { "application/json": { "schema": error_ref } }
+                    "responses": {
+                        "200": {
+                            "description": format!("{} object updated", kind),
+                            "content": {
+                                "application/json": {
+                                    "schema": stored_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": format!("{} object not found", kind),
+                            "content": { "application/json": { "schema": error_ref } }
+                        },
+                        "409": {
+                            "description": "Conflict — version mismatch",
+                            "content": { "application/json": { "schema": error_ref } }
+                        },
+                        "422": {
+                            "description": "Schema validation failed",
+                            "content": { "application/json": { "schema": error_ref } }
+                        }
+                    }
+                },
+                "delete": {
+                    "summary": format!("Delete a {} object", kind),
+                    "operationId": format!("delete{}", comp_name),
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": true,
+                            "schema": { "type": "string" },
+                            "description": "The object name"
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": format!("{} object deleted", kind),
+                            "content": {
+                                "application/json": {
+                                    "schema": stored_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": format!("{} object not found", kind),
+                            "content": { "application/json": { "schema": error_ref } }
+                        },
+                        "409": {
+                            "description": "Conflict — schema has objects of this kind",
+                            "content": { "application/json": { "schema": error_ref } }
+                        }
                     }
                 }
-            }
-        })),
+            }),
+        ),
     ]
 }
 

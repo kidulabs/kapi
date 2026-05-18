@@ -48,7 +48,9 @@ pub fn build_router(state: AppState) -> Router {
         // Named resource routes: get (GET), update (PUT), delete (DELETE)
         .route(
             "/apis/{group}/{version}/{kind}/{name}",
-            axum::routing::get(handler::get).put(handler::update).delete(handler::delete),
+            axum::routing::get(handler::get)
+                .put(handler::update)
+                .delete(handler::delete),
         )
         // OpenAPI spec endpoint: dynamically generated on every request
         .route(

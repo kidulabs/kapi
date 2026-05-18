@@ -7,7 +7,9 @@ use dashmap::DashMap;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::{ContinueToken, ListOptions, ListResponse, ObjectMetadata, StoredObject, UserData};
+use crate::object::types::{
+    ContinueToken, ListOptions, ListResponse, ObjectMetadata, StoredObject, UserData,
+};
 use crate::store::{ObjectStore, ResourceKey};
 
 pub struct InMemoryStore {
@@ -15,8 +17,7 @@ pub struct InMemoryStore {
     next_version: AtomicU64,
 }
 
-
-//TODO: Memory store intended to be simple CRUD store. 
+//TODO: Memory store intended to be simple CRUD store.
 // In future need to be refactored to move versioning and timestamp logic into a wrapper layer so that we can implement more complex stores without duplicating that logic.
 impl InMemoryStore {
     pub fn new() -> Self {
@@ -37,10 +38,18 @@ impl InMemoryStore {
 
 #[async_trait]
 impl ObjectStore for InMemoryStore {
-    async fn create(&self, key: &ResourceKey, name: &str, data: Value) -> Result<StoredObject, AppError> {
+    async fn create(
+        &self,
+        key: &ResourceKey,
+        name: &str,
+        data: Value,
+    ) -> Result<StoredObject, AppError> {
         let entry = (key.clone(), name.to_string());
         if self.objects.contains_key(&entry) {
-            return Err(AppError::Conflict { expected: 0, actual: 0 });
+            return Err(AppError::Conflict {
+                expected: 0,
+                actual: 0,
+            });
         }
 
         let now = Self::now();
@@ -95,22 +104,29 @@ impl ObjectStore for InMemoryStore {
         items.truncate(limit);
 
         let continue_token = if has_more {
-            items.last().map(|last| encode_continue_token(&last.metadata.name))
+            items
+                .last()
+                .map(|last| encode_continue_token(&last.metadata.name))
         } else {
             None
         };
 
-
-        Ok(ListResponse { items, continue_token })
+        Ok(ListResponse {
+            items,
+            continue_token,
+        })
     }
 
     async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
         let name = &object.metadata.name;
         let entry = (object.key.clone(), name.to_string());
-        let mut guard = self.objects.get_mut(&entry).ok_or_else(|| AppError::NotFound {
-            what: "object".to_string(),
-            identifier: format!("{}/{}", object.key.kind, name),
-        })?;
+        let mut guard = self
+            .objects
+            .get_mut(&entry)
+            .ok_or_else(|| AppError::NotFound {
+                what: "object".to_string(),
+                identifier: format!("{}/{}", object.key.kind, name),
+            })?;
 
         let expected = object.metadata.resource_version;
         if guard.metadata.resource_version != expected {
@@ -128,10 +144,13 @@ impl ObjectStore for InMemoryStore {
 
     async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
         let entry = (key.clone(), name.to_string());
-        let (_, object) = self.objects.remove(&entry).ok_or_else(|| AppError::NotFound {
-            what: "object".to_string(),
-            identifier: format!("{}/{}", key.kind, name),
-        })?;
+        let (_, object) = self
+            .objects
+            .remove(&entry)
+            .ok_or_else(|| AppError::NotFound {
+                what: "object".to_string(),
+                identifier: format!("{}/{}", key.kind, name),
+            })?;
 
         Ok(object)
     }
@@ -141,7 +160,8 @@ fn decode_continue_token(token: &ContinueToken) -> Result<String, AppError> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&token.0)
         .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
-    String::from_utf8(bytes).map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))
+    String::from_utf8(bytes)
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))
 }
 
 fn encode_continue_token(name: &str) -> ContinueToken {
@@ -177,7 +197,10 @@ mod tests {
         let retrieved = store.get(&key, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
         assert_eq!(retrieved.data.value, created.data.value);
-        assert_eq!(retrieved.metadata.resource_version, created.metadata.resource_version);
+        assert_eq!(
+            retrieved.metadata.resource_version,
+            created.metadata.resource_version
+        );
     }
 
     #[tokio::test]
@@ -185,9 +208,15 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
+        store
+            .create(&key, "my-widget", json!({"x": 1}))
+            .await
+            .unwrap();
 
-        let err = store.create(&key, "my-widget", json!({"x": 2})).await.unwrap_err();
+        let err = store
+            .create(&key, "my-widget", json!({"x": 2}))
+            .await
+            .unwrap_err();
         assert!(matches!(err, AppError::Conflict { .. }));
     }
 
@@ -209,7 +238,16 @@ mod tests {
         store.create(&key, "a", json!({})).await.unwrap();
         store.create(&key, "b", json!({})).await.unwrap();
 
-        let res = store.list(&key, ListOptions { limit: None, continue_token: None }).await.unwrap();
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    limit: None,
+                    continue_token: None,
+                },
+            )
+            .await
+            .unwrap();
         let names: Vec<&str> = res.items.iter().map(|o| o.metadata.name.as_str()).collect();
         assert_eq!(names, vec!["a", "b", "c"]);
         assert!(res.continue_token.is_none());
@@ -221,10 +259,22 @@ mod tests {
         let key = test_key();
 
         for i in 0..5 {
-            store.create(&key, &format!("item-{i}"), json!({})).await.unwrap();
+            store
+                .create(&key, &format!("item-{i}"), json!({}))
+                .await
+                .unwrap();
         }
 
-        let res = store.list(&key, ListOptions { limit: Some(2), continue_token: None }).await.unwrap();
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    limit: Some(2),
+                    continue_token: None,
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(res.items.len(), 2);
         assert_eq!(res.items[0].metadata.name, "item-0");
         assert_eq!(res.items[1].metadata.name, "item-1");
@@ -237,13 +287,34 @@ mod tests {
         let key = test_key();
 
         for i in 0..5 {
-            store.create(&key, &format!("item-{i}"), json!({})).await.unwrap();
+            store
+                .create(&key, &format!("item-{i}"), json!({}))
+                .await
+                .unwrap();
         }
 
-        let first = store.list(&key, ListOptions { limit: Some(2), continue_token: None }).await.unwrap();
+        let first = store
+            .list(
+                &key,
+                ListOptions {
+                    limit: Some(2),
+                    continue_token: None,
+                },
+            )
+            .await
+            .unwrap();
         let token = first.continue_token.unwrap();
 
-        let second = store.list(&key, ListOptions { limit: Some(2), continue_token: Some(token) }).await.unwrap();
+        let second = store
+            .list(
+                &key,
+                ListOptions {
+                    limit: Some(2),
+                    continue_token: Some(token),
+                },
+            )
+            .await
+            .unwrap();
         assert_eq!(second.items.len(), 2);
         assert_eq!(second.items[0].metadata.name, "item-2");
         assert_eq!(second.items[1].metadata.name, "item-3");
@@ -255,7 +326,10 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let created = store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
+        let created = store
+            .create(&key, "my-widget", json!({"x": 1}))
+            .await
+            .unwrap();
         let v1 = created.metadata.resource_version;
 
         let object = StoredObject {
@@ -266,7 +340,9 @@ mod tests {
                 created_at: created.metadata.created_at,
                 updated_at: created.metadata.updated_at,
             },
-            data: UserData { value: json!({"x": 2}) },
+            data: UserData {
+                value: json!({"x": 2}),
+            },
         };
 
         let updated = store.update(object).await.unwrap();
@@ -279,7 +355,10 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let created = store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
+        let created = store
+            .create(&key, "my-widget", json!({"x": 1}))
+            .await
+            .unwrap();
 
         let object = StoredObject {
             key: key.clone(),
@@ -289,11 +368,19 @@ mod tests {
                 created_at: created.metadata.created_at,
                 updated_at: created.metadata.updated_at,
             },
-            data: UserData { value: json!({"x": 2}) },
+            data: UserData {
+                value: json!({"x": 2}),
+            },
         };
 
         let err = store.update(object).await.unwrap_err();
-        assert!(matches!(err, AppError::Conflict { expected: 99, actual: 1 }));
+        assert!(matches!(
+            err,
+            AppError::Conflict {
+                expected: 99,
+                actual: 1
+            }
+        ));
     }
 
     #[tokio::test]
@@ -309,7 +396,9 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            data: UserData { value: json!({"x": 1}) },
+            data: UserData {
+                value: json!({"x": 1}),
+            },
         };
 
         let err = store.update(object).await.unwrap_err();
@@ -321,7 +410,10 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let created = store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
+        let created = store
+            .create(&key, "my-widget", json!({"x": 1}))
+            .await
+            .unwrap();
 
         let deleted = store.delete(&key, "my-widget").await.unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
@@ -336,7 +428,10 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        store.create(&key, "my-widget", json!({"x": 1})).await.unwrap();
+        store
+            .create(&key, "my-widget", json!({"x": 1}))
+            .await
+            .unwrap();
         store.create(&key, "other", json!({"x": 2})).await.unwrap();
 
         store.delete(&key, "my-widget").await.unwrap();
@@ -362,7 +457,16 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let res = store.list(&key, ListOptions { limit: None, continue_token: None }).await.unwrap();
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    limit: None,
+                    continue_token: None,
+                },
+            )
+            .await
+            .unwrap();
         assert!(res.items.is_empty());
         assert!(res.continue_token.is_none());
     }

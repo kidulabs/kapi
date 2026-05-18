@@ -10,7 +10,9 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::event::EventPublisher;
-use crate::object::types::{ListOptions, ListResponse, SchemaData, StoredObject, WatchEvent, WatchEventType};
+use crate::object::types::{
+    ListOptions, ListResponse, SchemaData, StoredObject, WatchEvent, WatchEventType,
+};
 use crate::schema::{JsonSchemaValidator, SchemaValidator};
 use crate::store::{ObjectStore, ResourceKey};
 
@@ -81,7 +83,11 @@ impl ObjectService {
     }
 
     /// Lists objects by key and options — delegates to store.
-    pub async fn list(&self, key: ResourceKey, opts: ListOptions) -> Result<ListResponse, AppError> {
+    pub async fn list(
+        &self,
+        key: ResourceKey,
+        opts: ListOptions,
+    ) -> Result<ListResponse, AppError> {
         self.store.list(&key, opts).await
     }
 
@@ -119,10 +125,13 @@ impl ObjectService {
         } else {
             // Regular object path: delete and publish
             let deleted = self.store.delete(&key, &name).await?;
-            self.event_bus.publish(&key, WatchEvent {
-                event_type: WatchEventType::Deleted,
-                object: deleted.clone(),
-            });
+            self.event_bus.publish(
+                &key,
+                WatchEvent {
+                    event_type: WatchEventType::Deleted,
+                    object: deleted.clone(),
+                },
+            );
             Ok(deleted)
         }
     }
@@ -146,7 +155,9 @@ impl ObjectService {
     ) -> Result<StoredObject, AppError> {
         // Step 1: Meta-schema validation
         if !self.meta_validator.is_valid(&data) {
-            let errors: Vec<String> = self.meta_validator.validate(&data)
+            let errors: Vec<String> = self
+                .meta_validator
+                .validate(&data)
                 .into_iter()
                 .map(|e| e.message)
                 .collect();
@@ -167,10 +178,13 @@ impl ObjectService {
         self.schema_cache.insert(name.clone(), Arc::new(compiled));
 
         // Step 5: Publish Added event
-        self.event_bus.publish(&key, WatchEvent {
-            event_type: WatchEventType::Added,
-            object: stored.clone(),
-        });
+        self.event_bus.publish(
+            &key,
+            WatchEvent {
+                event_type: WatchEventType::Added,
+                object: stored.clone(),
+            },
+        );
 
         Ok(stored)
     }
@@ -189,19 +203,26 @@ impl ObjectService {
             kind: "Schema".to_string(),
         };
         let schema_name = format!("{}.{}", key.kind, key.group);
-        let schema_obj = self.store.get(&schema_key, &schema_name).await
+        let schema_obj = self
+            .store
+            .get(&schema_key, &schema_name)
+            .await
             .map_err(|_| AppError::NotFound {
                 what: "schema".to_string(),
                 identifier: schema_name.clone(),
             })?;
 
         // Step 2: Parse schema data to get target info
-        let schema_data: SchemaData = serde_json::from_value(schema_obj.data.value)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e)))?;
+        let schema_data: SchemaData =
+            serde_json::from_value(schema_obj.data.value).map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e))
+            })?;
 
         // Step 3: Look up compiled validator from cache
         let cache_key = format!("{}.{}", schema_data.target_kind, schema_data.target_group);
-        let validator = self.schema_cache.get(&cache_key)
+        let validator = self
+            .schema_cache
+            .get(&cache_key)
             .ok_or_else(|| AppError::NotFound {
                 what: "compiled schema".to_string(),
                 identifier: cache_key.clone(),
@@ -209,7 +230,8 @@ impl ObjectService {
 
         // Step 4: Validate object data against compiled schema
         if !validator.is_valid(&data) {
-            let errors: Vec<_> = validator.validate(&data)
+            let errors: Vec<_> = validator
+                .validate(&data)
                 .into_iter()
                 .map(|e| crate::object::types::ValidationError {
                     path: e.instance_path,
@@ -223,10 +245,13 @@ impl ObjectService {
         let stored = self.store.create(&key, &name, data).await?;
 
         // Step 6: Publish Added event
-        self.event_bus.publish(&key, WatchEvent {
-            event_type: WatchEventType::Added,
-            object: stored.clone(),
-        });
+        self.event_bus.publish(
+            &key,
+            WatchEvent {
+                event_type: WatchEventType::Added,
+                object: stored.clone(),
+            },
+        );
 
         Ok(stored)
     }
@@ -239,7 +264,9 @@ impl ObjectService {
     ) -> Result<StoredObject, AppError> {
         // Step 1: Meta-schema validation
         if !self.meta_validator.is_valid(&data) {
-            let errors: Vec<String> = self.meta_validator.validate(&data)
+            let errors: Vec<String> = self
+                .meta_validator
+                .validate(&data)
                 .into_iter()
                 .map(|e| e.message)
                 .collect();
@@ -257,13 +284,17 @@ impl ObjectService {
         let updated = self.store.update(object).await?;
 
         // Step 4: Update cache
-        self.schema_cache.insert(updated.metadata.name.clone(), Arc::new(compiled));
+        self.schema_cache
+            .insert(updated.metadata.name.clone(), Arc::new(compiled));
 
         // Step 5: Publish Modified event
-        self.event_bus.publish(&updated.key, WatchEvent {
-            event_type: WatchEventType::Modified,
-            object: updated.clone(),
-        });
+        self.event_bus.publish(
+            &updated.key,
+            WatchEvent {
+                event_type: WatchEventType::Modified,
+                object: updated.clone(),
+            },
+        );
 
         Ok(updated)
     }
@@ -281,19 +312,26 @@ impl ObjectService {
             kind: "Schema".to_string(),
         };
         let schema_name = format!("{}.{}", object.key.kind, object.key.group);
-        let schema_obj = self.store.get(&schema_key, &schema_name).await
+        let schema_obj = self
+            .store
+            .get(&schema_key, &schema_name)
+            .await
             .map_err(|_| AppError::NotFound {
                 what: "schema".to_string(),
                 identifier: schema_name.clone(),
             })?;
 
         // Step 2: Parse schema data
-        let schema_data: SchemaData = serde_json::from_value(schema_obj.data.value)
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e)))?;
+        let schema_data: SchemaData =
+            serde_json::from_value(schema_obj.data.value).map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e))
+            })?;
 
         // Step 3: Look up compiled validator
         let cache_key = format!("{}.{}", schema_data.target_kind, schema_data.target_group);
-        let validator = self.schema_cache.get(&cache_key)
+        let validator = self
+            .schema_cache
+            .get(&cache_key)
             .ok_or_else(|| AppError::NotFound {
                 what: "compiled schema".to_string(),
                 identifier: cache_key.clone(),
@@ -301,7 +339,8 @@ impl ObjectService {
 
         // Step 4: Validate
         if !validator.is_valid(&data) {
-            let errors: Vec<_> = validator.validate(&data)
+            let errors: Vec<_> = validator
+                .validate(&data)
                 .into_iter()
                 .map(|e| crate::object::types::ValidationError {
                     path: e.instance_path,
@@ -315,22 +354,31 @@ impl ObjectService {
         let updated = self.store.update(object).await?;
 
         // Step 6: Publish Modified event
-        self.event_bus.publish(&updated.key, WatchEvent {
-            event_type: WatchEventType::Modified,
-            object: updated.clone(),
-        });
+        self.event_bus.publish(
+            &updated.key,
+            WatchEvent {
+                event_type: WatchEventType::Modified,
+                object: updated.clone(),
+            },
+        );
 
         Ok(updated)
     }
 
     /// Deletes a Schema object with guard against deleting schemas with existing objects.
-    async fn delete_schema(&self, key: ResourceKey, name: String) -> Result<StoredObject, AppError> {
+    async fn delete_schema(
+        &self,
+        key: ResourceKey,
+        name: String,
+    ) -> Result<StoredObject, AppError> {
         // Step 1: Get the schema from store
         let schema_obj = self.store.get(&key, &name).await?;
 
         // Step 2: Parse schema data to extract target kind
         let schema_data: SchemaData = serde_json::from_value(schema_obj.data.value.clone())
-            .map_err(|e| AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e)))?;
+            .map_err(|e| {
+                AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e))
+            })?;
 
         // Step 3: Build target key and check for existing objects
         let target_key = ResourceKey {
@@ -340,17 +388,29 @@ impl ObjectService {
         };
 
         // List with limit 1 to check if any objects exist
-        let list_result = self.store.list(&target_key, ListOptions {
-            limit: Some(1),
-            continue_token: None,
-        }).await?;
+        let list_result = self
+            .store
+            .list(
+                &target_key,
+                ListOptions {
+                    limit: Some(1),
+                    continue_token: None,
+                },
+            )
+            .await?;
 
         if !list_result.items.is_empty() {
             // Count total objects for the error message
-            let full_list = self.store.list(&target_key, ListOptions {
-                limit: None,
-                continue_token: None,
-            }).await?;
+            let full_list = self
+                .store
+                .list(
+                    &target_key,
+                    ListOptions {
+                        limit: None,
+                        continue_token: None,
+                    },
+                )
+                .await?;
             return Err(AppError::SchemaHasObjects {
                 kind: target_key.kind,
                 count: full_list.items.len(),
@@ -364,10 +424,13 @@ impl ObjectService {
         self.schema_cache.remove(&name);
 
         // Step 6: Publish Deleted event
-        self.event_bus.publish(&key, WatchEvent {
-            event_type: WatchEventType::Deleted,
-            object: deleted.clone(),
-        });
+        self.event_bus.publish(
+            &key,
+            WatchEvent {
+                event_type: WatchEventType::Deleted,
+                object: deleted.clone(),
+            },
+        );
 
         Ok(deleted)
     }
@@ -389,7 +452,10 @@ mod tests {
         ObjectService::new(store, event_bus, meta_validator)
     }
 
-    // Helper to register a Schema for testing
+    // Helper to register a Schema for testing.
+    // The name format "{targetKind}.{targetGroup}" is backend-generated
+    // (see handler::extract_schema_name), but tests call service.create()
+    // directly and must supply the name.
     async fn register_test_schema(service: &ObjectService) {
         let schema_key = ResourceKey {
             group: "kapi.io".to_string(),
@@ -408,7 +474,9 @@ mod tests {
                 }
             }
         });
-        service.create(schema_key, "Widget.example.io".to_string(), schema_data)
+        // Name is generated as "{targetKind}.{targetGroup}" by the handler
+        service
+            .create(schema_key, "Widget.example.io".to_string(), schema_data)
             .await
             .expect("schema registration should succeed");
     }
@@ -429,7 +497,13 @@ mod tests {
             "jsonSchema": { "type": "object" }
         });
 
-        let result = service.create(schema_key.clone(), "Widget.example.io".to_string(), schema_data).await;
+        let result = service
+            .create(
+                schema_key.clone(),
+                "Widget.example.io".to_string(),
+                schema_data,
+            )
+            .await;
         assert!(result.is_ok());
         let stored = result.unwrap();
         assert_eq!(stored.metadata.name, "Widget.example.io");
@@ -438,7 +512,10 @@ mod tests {
         assert!(service.schema_cache.contains_key("Widget.example.io"));
 
         // Verify stored in store
-        let retrieved = service.get(schema_key, "Widget.example.io".to_string()).await.unwrap();
+        let retrieved = service
+            .get(schema_key, "Widget.example.io".to_string())
+            .await
+            .unwrap();
         assert_eq!(retrieved.metadata.name, "Widget.example.io");
     }
 
@@ -454,7 +531,11 @@ mod tests {
         // Missing required fields
         let invalid_data = json!({ "targetGroup": "example.io" });
 
-        let result = service.create(schema_key, "Test".to_string(), invalid_data).await;
+        // Name would be generated as "Widget.example.io" by the handler,
+        // but this test calls service.create() directly
+        let result = service
+            .create(schema_key, "Widget.example.io".to_string(), invalid_data)
+            .await;
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
 
@@ -475,7 +556,10 @@ mod tests {
             "jsonSchema": { "type": "not-a-real-type" }
         });
 
-        let result = service.create(schema_key, "Test".to_string(), invalid_schema).await;
+        // Name would be generated as "Widget.example.io" by the handler
+        let result = service
+            .create(schema_key, "Widget.example.io".to_string(), invalid_schema)
+            .await;
         // This should fail during compilation of jsonSchema
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
@@ -490,7 +574,9 @@ mod tests {
             kind: "Widget".to_string(),
         };
 
-        let result = service.create(widget_key, "my-widget".to_string(), json!({})).await;
+        let result = service
+            .create(widget_key, "my-widget".to_string(), json!({}))
+            .await;
         assert!(matches!(result, Err(AppError::NotFound { .. })));
     }
 
@@ -508,7 +594,9 @@ mod tests {
         // Invalid data: size should be integer, not string
         let invalid_data = json!({ "color": "blue", "size": "not-a-number" });
 
-        let result = service.create(widget_key, "my-widget".to_string(), invalid_data).await;
+        let result = service
+            .create(widget_key, "my-widget".to_string(), invalid_data)
+            .await;
         assert!(matches!(result, Err(AppError::SchemaValidation(_))));
     }
 
@@ -523,11 +611,14 @@ mod tests {
             version: "v1".to_string(),
             kind: "Widget".to_string(),
         };
-        let created = service.create(
-            widget_key.clone(),
-            "my-widget".to_string(),
-            json!({ "color": "blue", "size": 10 }),
-        ).await.unwrap();
+        let created = service
+            .create(
+                widget_key.clone(),
+                "my-widget".to_string(),
+                json!({ "color": "blue", "size": 10 }),
+            )
+            .await
+            .unwrap();
 
         let v1 = created.metadata.resource_version;
         let mut updated_obj = created;
@@ -550,11 +641,14 @@ mod tests {
             version: "v1".to_string(),
             kind: "Widget".to_string(),
         };
-        let created = service.create(
-            widget_key.clone(),
-            "my-widget".to_string(),
-            json!({ "color": "blue", "size": 10 }),
-        ).await.unwrap();
+        let created = service
+            .create(
+                widget_key.clone(),
+                "my-widget".to_string(),
+                json!({ "color": "blue", "size": 10 }),
+            )
+            .await
+            .unwrap();
 
         let mut wrong_version_obj = created;
         wrong_version_obj.data.value = json!({ "color": "red" });
@@ -579,13 +673,22 @@ mod tests {
             "targetKind": "Widget",
             "jsonSchema": { "type": "object" }
         });
-        service.create(schema_key.clone(), "Widget.example.io".to_string(), schema_data).await.unwrap();
+        service
+            .create(
+                schema_key.clone(),
+                "Widget.example.io".to_string(),
+                schema_data,
+            )
+            .await
+            .unwrap();
 
         // Verify cached
         assert!(service.schema_cache.contains_key("Widget.example.io"));
 
         // Delete the schema
-        let result = service.delete(schema_key, "Widget.example.io".to_string()).await;
+        let result = service
+            .delete(schema_key, "Widget.example.io".to_string())
+            .await;
         assert!(result.is_ok());
 
         // Verify cache evicted
@@ -604,11 +707,14 @@ mod tests {
             version: "v1".to_string(),
             kind: "Widget".to_string(),
         };
-        service.create(
-            widget_key.clone(),
-            "my-widget".to_string(),
-            json!({ "color": "blue", "size": 10 }),
-        ).await.unwrap();
+        service
+            .create(
+                widget_key.clone(),
+                "my-widget".to_string(),
+                json!({ "color": "blue", "size": 10 }),
+            )
+            .await
+            .unwrap();
 
         // Try to delete the schema
         let schema_key = ResourceKey {
@@ -616,8 +722,12 @@ mod tests {
             version: "v1".to_string(),
             kind: "Schema".to_string(),
         };
-        let result = service.delete(schema_key, "Widget.example.io".to_string()).await;
-        assert!(matches!(result, Err(AppError::SchemaHasObjects { kind, count }) if kind == "Widget" && count >= 1));
+        let result = service
+            .delete(schema_key, "Widget.example.io".to_string())
+            .await;
+        assert!(
+            matches!(result, Err(AppError::SchemaHasObjects { kind, count }) if kind == "Widget" && count >= 1)
+        );
     }
 
     // T28: Delete regular object → success, Deleted event published
@@ -631,11 +741,14 @@ mod tests {
             version: "v1".to_string(),
             kind: "Widget".to_string(),
         };
-        let created = service.create(
-            widget_key.clone(),
-            "my-widget".to_string(),
-            json!({ "color": "blue", "size": 10 }),
-        ).await.unwrap();
+        let created = service
+            .create(
+                widget_key.clone(),
+                "my-widget".to_string(),
+                json!({ "color": "blue", "size": 10 }),
+            )
+            .await
+            .unwrap();
 
         let result = service.delete(widget_key, "my-widget".to_string()).await;
         assert!(result.is_ok());
@@ -657,10 +770,23 @@ mod tests {
             "targetKind": "Widget",
             "jsonSchema": { "type": "object" }
         });
-        service.create(schema_key.clone(), "Widget.example.io".to_string(), schema_data.clone()).await.unwrap();
+        service
+            .create(
+                schema_key.clone(),
+                "Widget.example.io".to_string(),
+                schema_data.clone(),
+            )
+            .await
+            .unwrap();
 
         // Try to create duplicate
-        let result = service.create(schema_key.clone(), "Widget.example.io".to_string(), schema_data).await;
+        let result = service
+            .create(
+                schema_key.clone(),
+                "Widget.example.io".to_string(),
+                schema_data,
+            )
+            .await;
         assert!(matches!(result, Err(AppError::Conflict { .. })));
     }
 
@@ -679,10 +805,66 @@ mod tests {
             "targetKind": "Widget",
             "jsonSchema": { "type": "object" }
         });
-        service.create(schema_key.clone(), "Widget.example.io".to_string(), schema_data).await.unwrap();
+        service
+            .create(
+                schema_key.clone(),
+                "Widget.example.io".to_string(),
+                schema_data,
+            )
+            .await
+            .unwrap();
         assert!(service.schema_cache.contains_key("Widget.example.io"));
 
-        service.delete(schema_key, "Widget.example.io".to_string()).await.unwrap();
+        service
+            .delete(schema_key, "Widget.example.io".to_string())
+            .await
+            .unwrap();
         assert!(!service.schema_cache.contains_key("Widget.example.io"));
+    }
+
+    // Schema create with missing targetKind returns InvalidSchema error
+    // (meta-schema requires targetKind as a required field)
+    #[tokio::test]
+    async fn create_schema_missing_target_kind_returns_error() {
+        let service = make_service();
+        let schema_key = ResourceKey {
+            group: "kapi.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Schema".to_string(),
+        };
+        // Missing targetKind
+        let schema_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "jsonSchema": { "type": "object" }
+        });
+
+        let result = service
+            .create(schema_key, "Widget.example.io".to_string(), schema_data)
+            .await;
+        assert!(matches!(result, Err(AppError::InvalidSchema(_))));
+    }
+
+    // Schema create with missing targetGroup returns InvalidSchema error
+    // (meta-schema requires targetGroup as a required field)
+    #[tokio::test]
+    async fn create_schema_missing_target_group_returns_error() {
+        let service = make_service();
+        let schema_key = ResourceKey {
+            group: "kapi.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Schema".to_string(),
+        };
+        // Missing targetGroup
+        let schema_data = json!({
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": { "type": "object" }
+        });
+
+        let result = service
+            .create(schema_key, "Widget.example.io".to_string(), schema_data)
+            .await;
+        assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
 }
