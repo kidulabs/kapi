@@ -1,9 +1,7 @@
 ## Purpose
 
 Define the `ObjectService` that orchestrates validation, storage, and event publishing for all object operations. The service is the single entry point for object CRUD — handlers call the service, never the store directly.
-
 ## Requirements
-
 ### Requirement: ObjectService wraps store, event bus, and validators
 The system SHALL define an `ObjectService` struct containing:
 - `store: Arc<dyn ObjectStore>` — the storage backend
@@ -17,7 +15,7 @@ The system SHALL define an `ObjectService` struct containing:
 
 ### Requirement: create validates and stores objects
 The `create(key, name, data)` method SHALL:
-1. If `key.kind == "Schema"`: validate `data` against `meta_validator`, compile `data.jsonSchema` via `validator_for()`, cache the compiled validator
+1. If `key.kind == "Schema"`: validate `data` against `meta_validator`, compile `data.jsonSchema` via `validator_for()`, cache the compiled validator under the `name` parameter (which is generated as `{targetKind}.{targetGroup}` by the handler)
 2. If `key.kind != "Schema"`: look up the Schema from the store, validate `data` against the cached compiled schema
 3. Call `store.create(key, name, data)`
 4. Call `event_bus.publish(key, WatchEvent::Added(obj))`
@@ -25,7 +23,7 @@ The `create(key, name, data)` method SHALL:
 
 #### Scenario: Create valid Schema
 - **WHEN** a Schema registration passes meta-schema validation and its jsonSchema compiles
-- **THEN** the schema is stored, the compiled validator is cached, and an `Added` event is published
+- **THEN** the schema is stored with the generated name, the compiled validator is cached under that name, and an `Added` event is published
 
 #### Scenario: Create Schema with invalid meta-schema
 - **WHEN** a Schema registration fails meta-schema validation
@@ -152,3 +150,4 @@ The service SHALL publish events only after successful store operations. If the 
 #### Scenario: Failed update does not publish
 - **WHEN** `update` fails due to a version conflict
 - **THEN** no `Modified` event is published
+
