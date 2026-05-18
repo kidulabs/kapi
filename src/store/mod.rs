@@ -1,4 +1,4 @@
-pub(crate) mod memory;
+pub mod memory;
 
 use async_trait::async_trait;
 use serde_json::Value;

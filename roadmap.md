@@ -195,6 +195,7 @@ trait ObjectStore: Send + Sync {
 | Delete is unconditional | No `expected_version` parameter on `delete` | Deletes are idempotent by nature; simplifies the contract; if conditional delete is needed later it can be added |
 | Wire format camelCase | `resourceVersion`, `createdAt`, `updatedAt` in JSON | Standard for JSON APIs; matches K8s conventions |
 | User schemas validate data only | Metadata is server-injected, not part of user schema | Users define only their domain; metadata is an implementation detail; prevents schema registration errors |
+| Binary construction | `AppConfig` struct + `create_app()` / `run()` in lib | main.rs is ~15 lines — only tracing init, port parsing, and `kapi::run(config)`; all wiring lives in the library for testability and reuse |
 
 ---
 
@@ -202,13 +203,15 @@ trait ObjectStore: Send + Sync {
 
 ```
 src/
-├── main.rs                # Tokio runtime, wire everything, start server
-├── lib.rs                 # Module tree, re-exports
+├── main.rs                # Tokio runtime, port parsing, config construction, kapi::run()
+├── lib.rs                 # Module tree, re-exports, create_app(), run()
+├── config/
+│   └── mod.rs             # AppConfig struct (port, store, event_bus)
 ├── error.rs               # AppError enum + IntoResponse impl
 ├── routes.rs               # Router composition (all route definitions)
 ├── store/
 │   ├── mod.rs             # ObjectStore trait definition (single trait)
-│   └── memory.rs          # InMemoryStore (DashMap, AtomicU64)
+│   └── memory.rs          # InMemoryStore (DashMap, AtomicU64), pub for binary access
 ├── schema/
 │   ├── mod.rs
 │   └── meta_schema.rs     # Builtin meta-schema constant + SchemaValidator trait + JsonSchemaValidator wrapper + SchemaValidationError
@@ -426,7 +429,7 @@ Refactor `StoredObject` structure and `ObjectStore` trait signatures to group me
 - [x] T47: Define `AppState` struct: `InMemoryStore`, `EventBus`, `ObjectService` (no separate SchemaService)
 - [x] T48: Compile meta-schema at startup, inject into `ObjectService` during construction
 - [x] T49: Create router in `src/routes.rs` — compose object routes under `/apis/{group}/{version}`, add middleware stack
-- [x] T50: Wire everything in `src/main.rs` — construct `AppState`, build router, bind to port from env var or default 8080
+- [x] T50: Add `create_app(config)` and `run(config)` to `lib.rs` — `AppConfig` struct drives construction; `main.rs` reduced to config + `kapi::run(config)`
 - [x] T51: Verify: `cargo run` starts server, `curl http://localhost:8080/apis/kapi.io/v1/Schema` returns empty list
 
 ### P8 — OpenAPI (Dynamic Spec Generation)
