@@ -1,7 +1,12 @@
+[workspace]
+members = ["tests"]
+resolver = "3"
+
 [package]
 name = "kapi"
 version = "0.1.0"
 edition = "2024"
+autotests = false
 
 [dependencies]
 axum = "0.8"

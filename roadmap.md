@@ -459,14 +459,14 @@ Currently, schema registration only validates against the meta-schema (structura
 
 ### P9 — Integration Tests
 
-- [ ] T56: Integration test: register schema via `/apis/kapi.io/v1/Schema` → create object via `/apis/example.io/v1/Widget` → full CRUD flow
-- [ ] T57: Integration test: watch Schema objects → create schema → receive Added event
-- [ ] T58: Integration test: delete schema with existing objects → 409 Conflict with object_count
-- [ ] T59: Integration test: delete schema with no objects → 200 OK
-- [ ] T60: Integration test: create schema with invalid jsonSchema → 422
-- [ ] T61: Integration test: concurrent update with wrong resourceVersion → 409 Conflict
-- [ ] T62: `cargo test` passes clean with no warnings
-- [ ] T63: `cargo doc --no-deps` generates documentation without errors
+- [x] T56: Integration test: register schema via `/apis/kapi.io/v1/Schema` → create object via `/apis/example.io/v1/Widget` → full CRUD flow
+- [x] T57: Integration test: watch Schema objects → create schema → receive Added event
+- [x] T58: Integration test: delete schema with existing objects → 409 Conflict with object_count
+- [x] T59: Integration test: delete schema with no objects → 200 OK
+- [x] T60: Integration test: create schema with invalid jsonSchema → 422
+- [x] T61: Integration test: concurrent update with wrong resourceVersion → 409 Conflict
+- [x] T62: `cargo test` passes clean with no warnings
+- [x] T63: `cargo doc --no-deps` generates documentation without errors
 
 ### P10 — Periodic Event Bus Cleanup
 

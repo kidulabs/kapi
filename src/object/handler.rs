@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::{ListOptions, StoredObject};
+use crate::object::types::{ContinueToken, ListOptions, StoredObject};
 use crate::routes::AppState;
 use crate::store::ResourceKey;
 
@@ -40,6 +40,8 @@ pub struct ObjectNamePath {
 pub struct ListQuery {
     pub watch: Option<bool>,
     pub limit: Option<usize>,
+    #[serde(rename = "continue")]
+    pub continue_token: Option<String>,
 }
 
 /// Extracts the schema name from a Schema registration body.
@@ -147,7 +149,7 @@ pub async fn list(
     // Regular list
     let opts = ListOptions {
         limit: query.limit,
-        continue_token: None,
+        continue_token: query.continue_token.map(ContinueToken),
     };
     let response = state.object_service().list(key, opts).await?;
     Ok(Json(response).into_response())
