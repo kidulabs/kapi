@@ -44,11 +44,6 @@ impl EventBus {
         }
     }
 
-    /// Creates a new `EventBus` with the default capacity of 1024.
-    pub fn default() -> Self {
-        Self::new(DEFAULT_CAPACITY)
-    }
-
     /// Creates a new `EventBus` with the given per-channel capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self::new(capacity)
@@ -106,6 +101,12 @@ impl EventBus {
         WatchStream {
             inner: BroadcastStream::new(receiver),
         }
+    }
+}
+
+impl Default for EventBus {
+    fn default() -> Self {
+        Self::new(DEFAULT_CAPACITY)
     }
 }
 

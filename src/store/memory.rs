@@ -17,6 +17,12 @@ pub struct InMemoryStore {
     next_version: AtomicU64,
 }
 
+impl Default for InMemoryStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl InMemoryStore {
     pub fn new() -> Self {
         Self {
@@ -90,7 +96,7 @@ impl ObjectStore for InMemoryStore {
         let skip_past = opts
             .continue_token
             .as_ref()
-            .map(|t| decode_continue_token(t))
+            .map(decode_continue_token)
             .transpose()?;
 
         if let Some(ref skip) = skip_past {
