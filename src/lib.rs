@@ -10,6 +10,7 @@ pub mod store;
 
 pub use config::AppConfig;
 pub use event::EventPublisher;
+pub use object::types::{ContinueToken, ListOptions, ListResponse};
 pub use store::ObjectStore;
 
 use std::sync::Arc;
@@ -31,13 +32,13 @@ pub fn create_app(config: &AppConfig) -> anyhow::Result<Router> {
     let meta_validator: Arc<dyn SchemaValidator> = Arc::new(compile_meta_schema()?);
     info!("Meta-schema compiled successfully");
 
-    let object_service = ObjectService::new(
+    let object_service = Arc::new(ObjectService::new(
         config.store.clone(),
         config.event_bus.clone(),
         meta_validator,
-    );
+    ));
 
-    let app_state = AppState::new(Arc::new(object_service));
+    let app_state = AppState::new(object_service);
     let app: Router = build_router(app_state);
 
     Ok(app)
@@ -56,12 +57,4 @@ pub async fn run(config: AppConfig) -> anyhow::Result<()> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert!(true);
-    }
 }

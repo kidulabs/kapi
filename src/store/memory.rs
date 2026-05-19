@@ -17,8 +17,6 @@ pub struct InMemoryStore {
     next_version: AtomicU64,
 }
 
-//TODO: Memory store intended to be simple CRUD store.
-// In future need to be refactored to move versioning and timestamp logic into a wrapper layer so that we can implement more complex stores without duplicating that logic.
 impl InMemoryStore {
     pub fn new() -> Self {
         Self {

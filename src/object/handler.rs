@@ -164,9 +164,9 @@ fn watch(
     let stream = state.object_service().subscribe(&key);
 
     // Map WatchEvent to SSE Event
-    let sse_stream = stream.map(|watch_event| {
-        let json_data = serde_json::to_string(&watch_event).unwrap_or_default();
-        Ok(Event::default().event("message").data(json_data))
+    let sse_stream = stream.filter_map(|watch_event| async move {
+        let json_data = serde_json::to_string(&watch_event).ok()?;
+        Some(Ok(Event::default().event("message").data(json_data)))
     });
 
     Sse::new(sse_stream)

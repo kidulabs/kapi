@@ -146,57 +146,31 @@ impl ObjectService {
 
     // --- Private helper methods ---
 
-    /// Validates a Schema payload against meta-schema, compiles jsonSchema, caches it.
-    async fn validate_and_create_schema(
-        &self,
-        key: ResourceKey,
-        name: String,
-        data: Value,
-    ) -> Result<StoredObject, AppError> {
-        // Step 1: Meta-schema validation
-        if !self.meta_validator.is_valid(&data) {
+    fn validate_meta_schema(&self, data: &Value) -> Result<SchemaData, AppError> {
+        if !self.meta_validator.is_valid(data) {
             let errors: Vec<String> = self
                 .meta_validator
-                .validate(&data)
+                .validate(data)
                 .into_iter()
                 .map(|e| e.message)
                 .collect();
             return Err(AppError::InvalidSchema(errors.join("; ")));
         }
-
-        // Step 2: Parse SchemaData and compile jsonSchema
         let schema_data: SchemaData = serde_json::from_value(data.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
-
-        let compiled = JsonSchemaValidator::compile(&schema_data.json_schema)
-            .map_err(|e| AppError::InvalidSchema(format!("failed to compile jsonSchema: {}", e)))?;
-
-        // Step 3: Store the Schema object
-        let stored = self.store.create(&key, &name, data).await?;
-
-        // Step 4: Cache the compiled validator (keyed by schema name)
-        self.schema_cache.insert(name.clone(), Arc::new(compiled));
-
-        // Step 5: Publish Added event
-        self.event_bus.publish(
-            &key,
-            WatchEvent {
-                event_type: WatchEventType::Added,
-                object: stored.clone(),
-            },
-        );
-
-        Ok(stored)
+        Ok(schema_data)
     }
 
-    /// Validates an object against its cached schema and creates it.
-    async fn validate_and_create_object(
+    fn compile_jsonschema(&self, schema_data: &SchemaData) -> Result<Arc<dyn SchemaValidator>, AppError> {
+        JsonSchemaValidator::compile(&schema_data.json_schema)
+            .map_err(|e| AppError::InvalidSchema(format!("failed to compile jsonSchema: {}", e)))
+            .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)
+    }
+
+    async fn lookup_object_validator(
         &self,
-        key: ResourceKey,
-        name: String,
-        data: Value,
-    ) -> Result<StoredObject, AppError> {
-        // Step 1: Look up the Schema from the store
+        key: &ResourceKey,
+    ) -> Result<Arc<dyn SchemaValidator>, AppError> {
         let schema_key = ResourceKey {
             group: "kapi.io".to_string(),
             version: "v1".to_string(),
@@ -212,39 +186,41 @@ impl ObjectService {
                 identifier: schema_name.clone(),
             })?;
 
-        // Step 2: Parse schema data to get target info
-        let schema_data: SchemaData =
-            serde_json::from_value(schema_obj.data.value).map_err(|e| {
-                AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e))
-            })?;
+        let schema_data: SchemaData = serde_json::from_value(schema_obj.data.value)
+            .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
-        // Step 3: Look up compiled validator from cache
         let cache_key = format!("{}.{}", schema_data.target_kind, schema_data.target_group);
-        let validator = self
-            .schema_cache
+        self.schema_cache
             .get(&cache_key)
             .ok_or_else(|| AppError::NotFound {
                 what: "compiled schema".to_string(),
                 identifier: cache_key.clone(),
-            })?;
+            })
+            .map(|v| v.clone())
+    }
 
-        // Step 4: Validate object data against compiled schema
-        if !validator.is_valid(&data) {
-            let errors: Vec<_> = validator
-                .validate(&data)
-                .into_iter()
-                .map(|e| crate::object::types::ValidationError {
-                    path: e.instance_path,
-                    message: e.message,
-                })
-                .collect();
-            return Err(AppError::SchemaValidation(errors));
-        }
+    fn map_validation_errors(
+        errors: Vec<crate::schema::SchemaValidationError>,
+    ) -> Vec<crate::object::types::ValidationError> {
+        errors
+            .into_iter()
+            .map(|e| crate::object::types::ValidationError {
+                path: e.instance_path,
+                message: e.message,
+            })
+            .collect()
+    }
 
-        // Step 5: Store the object
+    async fn validate_and_create_schema(
+        &self,
+        key: ResourceKey,
+        name: String,
+        data: Value,
+    ) -> Result<StoredObject, AppError> {
+        let schema_data = self.validate_meta_schema(&data)?;
+        let compiled = self.compile_jsonschema(&schema_data)?;
         let stored = self.store.create(&key, &name, data).await?;
-
-        // Step 6: Publish Added event
+        self.schema_cache.insert(name.clone(), compiled);
         self.event_bus.publish(
             &key,
             WatchEvent {
@@ -252,7 +228,31 @@ impl ObjectService {
                 object: stored.clone(),
             },
         );
+        Ok(stored)
+    }
 
+    /// Validates an object against its cached schema and creates it.
+    async fn validate_and_create_object(
+        &self,
+        key: ResourceKey,
+        name: String,
+        data: Value,
+    ) -> Result<StoredObject, AppError> {
+        let validator = self.lookup_object_validator(&key).await?;
+
+        if !validator.is_valid(&data) {
+            let errors = Self::map_validation_errors(validator.validate(&data));
+            return Err(AppError::SchemaValidation(errors));
+        }
+
+        let stored = self.store.create(&key, &name, data).await?;
+        self.event_bus.publish(
+            &key,
+            WatchEvent {
+                event_type: WatchEventType::Added,
+                object: stored.clone(),
+            },
+        );
         Ok(stored)
     }
 
@@ -262,32 +262,10 @@ impl ObjectService {
         object: StoredObject,
         data: Value,
     ) -> Result<StoredObject, AppError> {
-        // Step 1: Meta-schema validation
-        if !self.meta_validator.is_valid(&data) {
-            let errors: Vec<String> = self
-                .meta_validator
-                .validate(&data)
-                .into_iter()
-                .map(|e| e.message)
-                .collect();
-            return Err(AppError::InvalidSchema(errors.join("; ")));
-        }
-
-        // Step 2: Parse and compile jsonSchema
-        let schema_data: SchemaData = serde_json::from_value(data.clone())
-            .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
-
-        let compiled = JsonSchemaValidator::compile(&schema_data.json_schema)
-            .map_err(|e| AppError::InvalidSchema(format!("failed to compile jsonSchema: {}", e)))?;
-
-        // Step 3: Store the update
+        let schema_data = self.validate_meta_schema(&data)?;
+        let compiled = self.compile_jsonschema(&schema_data)?;
         let updated = self.store.update(object).await?;
-
-        // Step 4: Update cache
-        self.schema_cache
-            .insert(updated.metadata.name.clone(), Arc::new(compiled));
-
-        // Step 5: Publish Modified event
+        self.schema_cache.insert(updated.metadata.name.clone(), compiled);
         self.event_bus.publish(
             &updated.key,
             WatchEvent {
@@ -295,7 +273,6 @@ impl ObjectService {
                 object: updated.clone(),
             },
         );
-
         Ok(updated)
     }
 
@@ -305,55 +282,14 @@ impl ObjectService {
         object: StoredObject,
         data: Value,
     ) -> Result<StoredObject, AppError> {
-        // Step 1: Look up the Schema
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
-        let schema_name = format!("{}.{}", object.key.kind, object.key.group);
-        let schema_obj = self
-            .store
-            .get(&schema_key, &schema_name)
-            .await
-            .map_err(|_| AppError::NotFound {
-                what: "schema".to_string(),
-                identifier: schema_name.clone(),
-            })?;
+        let validator = self.lookup_object_validator(&object.key).await?;
 
-        // Step 2: Parse schema data
-        let schema_data: SchemaData =
-            serde_json::from_value(schema_obj.data.value).map_err(|e| {
-                AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e))
-            })?;
-
-        // Step 3: Look up compiled validator
-        let cache_key = format!("{}.{}", schema_data.target_kind, schema_data.target_group);
-        let validator = self
-            .schema_cache
-            .get(&cache_key)
-            .ok_or_else(|| AppError::NotFound {
-                what: "compiled schema".to_string(),
-                identifier: cache_key.clone(),
-            })?;
-
-        // Step 4: Validate
         if !validator.is_valid(&data) {
-            let errors: Vec<_> = validator
-                .validate(&data)
-                .into_iter()
-                .map(|e| crate::object::types::ValidationError {
-                    path: e.instance_path,
-                    message: e.message,
-                })
-                .collect();
+            let errors = Self::map_validation_errors(validator.validate(&data));
             return Err(AppError::SchemaValidation(errors));
         }
 
-        // Step 5: Store update
         let updated = self.store.update(object).await?;
-
-        // Step 6: Publish Modified event
         self.event_bus.publish(
             &updated.key,
             WatchEvent {
@@ -361,7 +297,6 @@ impl ObjectService {
                 object: updated.clone(),
             },
         );
-
         Ok(updated)
     }
 
@@ -376,9 +311,7 @@ impl ObjectService {
 
         // Step 2: Parse schema data to extract target kind
         let schema_data: SchemaData = serde_json::from_value(schema_obj.data.value.clone())
-            .map_err(|e| {
-                AppError::Internal(anyhow::anyhow!("failed to parse schema data: {}", e))
-            })?;
+            .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         // Step 3: Build target key and check for existing objects
         let target_key = ResourceKey {
