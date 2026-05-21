@@ -3,18 +3,52 @@ schema: spec-driven
 # Project context (optional)
 # This is shown to AI when creating artifacts.
 # Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Tech stack: Rust 2024 edition, axum 0.8, tokio, serde, thiserror, anyhow, tracing, tower/tower-http, jsonschema, dashmap, chrono
+  We use conventional commits (feat:, fix:, chore:, refactor:, docs:, test:, perf:, ci:)
+  Domain: API platform (kapi) - schema-driven API backend with object store, OpenAPI spec generation, and validation
+  Testing: Integration tests in separate test crate (tests/), http-body-util for request testing
+  Error handling: thiserror for domain errors, anyhow for application-level errors
+  Async: tokio runtime, async-trait for trait methods, futures-util for stream handling
+  Storage: In-memory store using dashmap for concurrent access
+  API: RESTful with OpenAPI documentation, JSON Schema validation
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+rules:
+  proposal:
+    - Keep proposals under 500 words
+    - Always include a "Non-goals" section
+    - Reference existing specs in openspec/specs/ before proposing new ones
+  specs:
+    - Use SHALL/MUST for normative requirements (avoid should/may)
+    - Every requirement MUST have at least one scenario
+    - Scenarios MUST use exactly 4 hashtags (#### Scenario:)
+    - Scenarios MUST use WHEN/THEN format
+  design:
+    - Include alternatives considered for each major decision
+    - Reference Rust ecosystem crates when applicable
+    - Document any unsafe code justification
+  tasks:
+    - Break tasks into chunks that can be completed in one session
+    - Order tasks by dependency
+    - Include clippy and cargo check verification steps
+    - For coding tasks, add comments that are not verbose but explain the intent of complex code sections to make the code walkthrough easier.
+    - Add tasks for checking existing documentation and updating it if necessary when making changes to the codebase.
+    - Add tasks to check if any items in roadmap are impacted by the changes and update or remove them accordingly.
+
+# Instruct AI to load relevant skills when working on artifacts
+skills:
+  - rust-router: For all Rust code questions and implementation
+  - m06-error-handling: When designing error handling
+  - m07-concurrency: When working with async/concurrent code
+  - m11-ecosystem: When selecting crates or managing dependencies
+  - domain-web: When building web/API services
+  - coding-guidelines: For Rust code style and best practices
+  - rust-refactor-helper: When refactoring or restructuring code
+  - m15-anti-pattern: When reviewing code for common pitfalls
+  - m01-ownership: When fixing ownership, borrow, or lifetime issues
+  - m04-zero-cost: When working with generics, traits, or performance-critical code
+  - m09-domain: When modeling domain types and business logic
+  - m10-performance: When optimizing hot paths or benchmarking
+  - m12-lifecycle: When managing RAII, connection pools, or resource cleanup
