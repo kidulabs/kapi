@@ -95,7 +95,7 @@ The `delete` method SHALL remove the object for the given `ResourceKey` and name
 - **THEN** the object is removed regardless of its current `resource_version`
 
 ### Requirement: InMemoryStore uses DashMap for concurrent access
-The `InMemoryStore` implementation SHALL use `DashMap<(ResourceKey, String), StoredObject>` as its backing store and `std::sync::atomic::AtomicU64` as its version counter. It SHALL implement the `ObjectStore` trait.
+The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore` using `DashMap<(ResourceKey, String), StoredObject>` as its backing store with `std::sync::atomic::AtomicU64` as its version counter, and `SQLiteStore` using a SQLite database file with `rusqlite` as its backing store. Both SHALL implement the `ObjectStore` trait and produce identical behavior for all trait methods.
 
 #### Scenario: Concurrent creates from multiple threads succeed
 - **WHEN** multiple threads call `create` with different names simultaneously
@@ -104,6 +104,10 @@ The `InMemoryStore` implementation SHALL use `DashMap<(ResourceKey, String), Sto
 #### Scenario: Concurrent reads do not block each other
 - **WHEN** multiple threads call `get` simultaneously
 - **THEN** all reads complete without blocking each other
+
+#### Scenario: Both implementations satisfy the same trait
+- **WHEN** either `InMemoryStore` or `SQLiteStore` is used as `Arc<dyn ObjectStore>`
+- **THEN** all trait methods behave identically for the same inputs
 
 ### Requirement: InMemoryStore visibility restricted to crate
 The `InMemoryStore` module SHALL be declared `pub(crate)` in `src/store/mod.rs` so it is visible only within the `kapi` crate, not to external consumers.
