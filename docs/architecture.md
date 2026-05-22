@@ -68,7 +68,7 @@ The central orchestrator that coordinates validation, storage, and event publish
 
 ### 4. Store (store/mod.rs)
 
-Pluggable via the `ObjectStore` async trait. The v1 implementation is `InMemoryStore` using `DashMap`. Schema objects are stored in the same store as regular objects (kind `"Schema"` in group `kapi.io`).
+Pluggable via the `ObjectStore` async trait. Two implementations are available: `InMemoryStore` using `DashMap` for ephemeral storage, and `SQLiteStore` using `rusqlite` for persistent storage. Schema objects are stored in the same store as regular objects (kind `"Schema"` in group `kapi.io`).
 
 ### 5. Event Bus (event/bus.rs)
 
@@ -85,7 +85,8 @@ src/
 ├── routes.rs               # Router composition (all route definitions)
 ├── store/
 │   ├── mod.rs              # ObjectStore trait, ResourceKey
-│   └── memory.rs           # InMemoryStore (DashMap, AtomicU64) + tests
+│   ├── memory.rs           # InMemoryStore (DashMap, AtomicU64) + tests
+│   └── sqlite.rs           # SQLiteStore (rusqlite, spawn_blocking) + tests
 ├── schema/
 │   └── meta_schema.rs      # Meta-schema constant + SchemaValidator trait
 │                           # + JsonSchemaValidator wrapper + tests
@@ -193,7 +194,7 @@ DELETE /apis/kapi.io/v1/Schema/{name}
 | Framework | Axum | Tower composability for middleware, SSE support, nested routers |
 | Storage abstraction | Single ObjectStore trait | Schema is also an object; one store simplifies backends |
 | Event publishing | Service layer publishes, store is pure data | Impossible to "forget to publish" — handlers call service only |
-| v1 storage | In-memory (DashMap) | Zero ops overhead, perfect for dev; trait makes swapping trivial |
+| v1 storage | In-memory (DashMap) + SQLite (rusqlite) | Zero ops for dev, persistent option for production; trait makes swapping trivial |
 | API paths | Kube-style `/apis/{group}/{version}/{kind}` | Familiar to kube users, supports multiple API groups |
 | Watch semantics | `?watch=true` on list endpoint | Kube-native pattern, handler branches on query param |
 | Event bus | Per-kind `tokio::broadcast` channels | Each kind gets its own channel; swappable for testing |

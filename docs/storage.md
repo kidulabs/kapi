@@ -30,7 +30,7 @@ pub trait ObjectStore: Send + Sync {
 
 ## InMemoryStore
 
-The v1 implementation uses `DashMap<(ResourceKey, String), StoredObject>`.
+The in-memory implementation uses `DashMap<(ResourceKey, String), StoredObject>`.
 
 ```rust
 pub struct InMemoryStore {
@@ -45,6 +45,27 @@ Key behaviors:
 - **Pagination:** Results sorted alphabetically by name. Cursor-based pagination with base64-encoded continue tokens. The token encodes the last item name in the current page.
 - **Conflict detection:** Create checks for duplicate `(key, name)` pairs. Update compares stored `resource_version` against the supplied version.
 - **Thread safety:** All operations use `DashMap` for concurrent access without external synchronization.
+
+## SQLiteStore
+
+The persistent implementation uses SQLite via `rusqlite`, wrapped in `Arc<Mutex<Connection>>` with `tokio::task::spawn_blocking` for async compatibility.
+
+```rust
+pub struct SQLiteStore {
+    conn: Arc<Mutex<Connection>>,
+    next_version: Arc<AtomicU64>,
+}
+```
+
+Key behaviors:
+
+- **Construction:** `SQLiteStore::new(path)` creates parent directories, opens (or creates) the SQLite database, and runs schema initialization automatically
+- **Schema:** Single `objects` table with composite primary key `(group, version, kind, name)`, JSON data column, RFC 3339 timestamps
+- **Versioning:** Global monotonic `AtomicU64` counter, initialized from `MAX(resource_version)` on startup
+- **Pagination:** SQL-level `ORDER BY name ASC` with `LIMIT` and `name > ?` skip condition for efficient cursor-based pagination
+- **Conflict detection:** `INSERT` relies on SQLite's primary key constraint for duplicate detection; `UPDATE` uses `resource_version` in WHERE clause for optimistic concurrency
+- **Thread safety:** Single connection behind `Arc<std::sync::Mutex>`, all blocking calls wrapped in `spawn_blocking`
+- **Configuration:** DB path read from `KAPI_DB_PATH` env var with fallback to `./kapi.db`
 
 ## EventPublisher Trait
 
@@ -153,9 +174,9 @@ This avoids re-compiling the JSON Schema on every object write.
 
 The architecture supports swapping implementations at every layer:
 
-| Layer | Trait | v1 Implementation | Future Options |
-|-------|-------|-------------------|----------------|
-| Storage | `ObjectStore` | `InMemoryStore` | SQLite, Postgres, etcd |
+| Layer | Trait | Implementations | Future Options |
+|-------|-------|-----------------|----------------|
+| Storage | `ObjectStore` | `InMemoryStore`, `SQLiteStore` | Postgres, etcd |
 | Events | `EventPublisher` | `EventBus` (broadcast) | Redis pub/sub, NATS |
 | Validation | `SchemaValidator` | `JsonSchemaValidator` | Custom validation rules |
 

@@ -24,8 +24,10 @@ chrono = { version = "0.4", features = ["serde"] }
 base64 = "0.22"
 thiserror = "2"
 anyhow = "1"
+rusqlite = { version = "0.37", features = ["bundled"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 
 [dev-dependencies]
 http-body-util = "0.1"
+tempfile = "3"

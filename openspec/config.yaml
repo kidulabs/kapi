@@ -12,6 +12,21 @@ context: |
   Async: tokio runtime, async-trait for trait methods, futures-util for stream handling
   Storage: In-memory store using dashmap for concurrent access
   API: RESTful with OpenAPI documentation, JSON Schema validation
+  # Instruct AI to load relevant skills when working on artifacts
+  skills:
+    - rust-router: For all Rust code questions and implementation
+    - m06-error-handling: When designing error handling
+    - m07-concurrency: When working with async/concurrent code
+    - m11-ecosystem: When selecting crates or managing dependencies
+    - domain-web: When building web/API services
+    - coding-guidelines: For Rust code style and best practices
+    - rust-refactor-helper: When refactoring or restructuring code
+    - m15-anti-pattern: When reviewing code for common pitfalls
+    - m01-ownership: When fixing ownership, borrow, or lifetime issues
+    - m04-zero-cost: When working with generics, traits, or performance-critical code
+    - m09-domain: When modeling domain types and business logic
+    - m10-performance: When optimizing hot paths or benchmarking
+    - m12-lifecycle: When managing RAII, connection pools, or resource cleanup
 
 # Per-artifact rules (optional)
 # Add custom rules for specific artifacts.
@@ -36,19 +51,3 @@ rules:
     - For coding tasks, add comments that are not verbose but explain the intent of complex code sections to make the code walkthrough easier.
     - Add tasks for checking existing documentation and updating it if necessary when making changes to the codebase.
     - Add tasks to check if any items in roadmap are impacted by the changes and update or remove them accordingly.
-
-# Instruct AI to load relevant skills when working on artifacts
-skills:
-  - rust-router: For all Rust code questions and implementation
-  - m06-error-handling: When designing error handling
-  - m07-concurrency: When working with async/concurrent code
-  - m11-ecosystem: When selecting crates or managing dependencies
-  - domain-web: When building web/API services
-  - coding-guidelines: For Rust code style and best practices
-  - rust-refactor-helper: When refactoring or restructuring code
-  - m15-anti-pattern: When reviewing code for common pitfalls
-  - m01-ownership: When fixing ownership, borrow, or lifetime issues
-  - m04-zero-cost: When working with generics, traits, or performance-critical code
-  - m09-domain: When modeling domain types and business logic
-  - m10-performance: When optimizing hot paths or benchmarking
-  - m12-lifecycle: When managing RAII, connection pools, or resource cleanup

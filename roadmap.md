@@ -1,9 +1,14 @@
 # kapi — Roadmap
 
+## Completed
+
+- [x] **Persistent storage** — SQLite-backed `ObjectStore` implementation via `rusqlite` with `spawn_blocking`
+
 ## Pending
 
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
 - [ ] **Periodic event bus cleanup** — Background task to scan and remove dead channels from EventBus
+- [ ] ** Label filtering** - Add label support like k8s
 
 ## Deferred Improvements
 
@@ -18,7 +23,6 @@
 
 These are explicitly not being pursued:
 
-- Persistent storage (SQLite, Postgres, etcd)
 - Auth/authorization implementation
 - Multi-node clustering or consensus
 - Webhook admission controllers
