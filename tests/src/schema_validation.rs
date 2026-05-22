@@ -3,8 +3,7 @@ use serde_json::json;
 
 use crate::{assert_status, TestApp};
 
-pub async fn test_valid_schema_accepted() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_valid_schema_accepted(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     let valid_schema = json!({
@@ -27,8 +26,7 @@ pub async fn test_valid_schema_accepted() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_invalid_json_schema_rejected() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_invalid_json_schema_rejected(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     let invalid_schema = json!({
@@ -48,8 +46,7 @@ pub async fn test_invalid_json_schema_rejected() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_missing_required_fields_rejected() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_missing_required_fields_rejected(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     let missing_target_kind = json!({

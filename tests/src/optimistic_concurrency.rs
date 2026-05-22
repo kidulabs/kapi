@@ -3,8 +3,7 @@ use serde_json::Value;
 
 use crate::{assert_status, parse_body, register_widget_schema, widget, TestApp};
 
-pub async fn test_update_correct_rv() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -49,8 +48,7 @@ pub async fn test_update_correct_rv() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_update_wrong_rv() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_update_wrong_rv(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;

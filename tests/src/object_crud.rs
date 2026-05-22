@@ -3,8 +3,7 @@ use serde_json::Value;
 
 use crate::{assert_status, parse_body, register_widget_schema, widget, TestApp};
 
-pub async fn test_create_schema_then_object() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_create_schema_then_object(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -42,8 +41,7 @@ pub async fn test_create_schema_then_object() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_full_crud_flow() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -100,8 +98,7 @@ pub async fn test_full_crud_flow() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_list_single_page() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_list_single_page(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -127,8 +124,7 @@ pub async fn test_list_single_page() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_list_two_pages() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_list_two_pages(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -169,8 +165,7 @@ pub async fn test_list_two_pages() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_list_resume_position() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_list_resume_position(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -224,8 +219,7 @@ pub async fn test_list_resume_position() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_list_exhausted() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_list_exhausted(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;

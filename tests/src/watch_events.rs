@@ -9,8 +9,7 @@ use crate::{
     TestApp, WatchEventType,
 };
 
-pub async fn test_watch_schema_added() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_watch_schema_added(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     let mut events = watch_events(&client, "/apis/kapi.io/v1/Schema?watch=true").await;
 
@@ -39,8 +38,7 @@ pub async fn test_watch_schema_added() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_watch_object_events() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
 

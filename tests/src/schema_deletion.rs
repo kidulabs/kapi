@@ -3,8 +3,7 @@ use serde_json::Value;
 
 use crate::{assert_status, parse_body, register_widget_schema, widget, TestApp};
 
-pub async fn test_delete_schema_no_objects() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_delete_schema_no_objects(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -17,8 +16,7 @@ pub async fn test_delete_schema_no_objects() -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_delete_schema_with_objects() -> Result<(), String> {
-    let app = TestApp::new();
+pub async fn test_delete_schema_with_objects(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;

@@ -14,6 +14,7 @@ use tower::ServiceExt;
 use kapi::event::{EventBus, EventPublisher};
 use kapi::object::types::{WatchEvent, WatchEventType};
 use kapi::store::memory::InMemoryStore;
+use kapi::store::sqlite::SQLiteStore;
 use kapi::store::ObjectStore;
 use kapi::AppConfig;
 
@@ -29,15 +30,8 @@ pub struct TestApp {
     pub event_bus: Arc<dyn EventPublisher>,
 }
 
-impl Default for TestApp {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl TestApp {
-    pub fn new() -> Self {
-        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+    pub fn with_store(store: Arc<dyn ObjectStore>) -> Self {
         let event_bus: Arc<dyn EventPublisher> = Arc::new(EventBus::default());
 
         let config = AppConfig {
@@ -60,6 +54,27 @@ impl TestApp {
             router: self.router.clone(),
         }
     }
+}
+
+pub struct TestStore {
+    pub name: &'static str,
+    pub factory: Box<dyn Fn() -> Arc<dyn ObjectStore>>,
+}
+
+pub fn all_test_stores() -> Vec<TestStore> {
+    vec![
+        TestStore {
+            name: "memory",
+            factory: Box::new(|| Arc::new(InMemoryStore::new())),
+        },
+        TestStore {
+            name: "sqlite",
+            factory: Box::new(|| {
+                let store = SQLiteStore::new(":memory:").expect("failed to create SQLite store");
+                Arc::new(store)
+            }),
+        },
+    ]
 }
 
 #[derive(Clone)]
