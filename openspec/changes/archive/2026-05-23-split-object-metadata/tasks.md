@@ -52,4 +52,4 @@
 - [x] 8.1 Check if any items in `roadmap.md` are impacted by this change and update or remove them accordingly. (The "Label filtering" item should still remain pending — this change is a prerequisite, not the implementation.)
 - [x] 8.2 Run `cargo clippy -- -D warnings` to ensure no warnings.
 - [x] 8.3 Run `cargo doc --no-deps` to verify documentation builds without errors.
-- [ ] 8.4 Sync the delta specs to the main spec files using `/opsx-sync`.
+- [x] 8.4 Sync the delta specs to the main spec files using `/opsx-sync`.
