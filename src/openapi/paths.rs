@@ -156,7 +156,7 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "content": { "application/json": { "schema": schema_error_ref } }
                         },
                         "409": {
-                            "description": "Conflict — duplicate schema",
+                            "description": "AlreadyExists — duplicate schema",
                             "content": { "application/json": { "schema": schema_error_ref } }
                         },
                         "422": {
@@ -321,7 +321,7 @@ pub(crate) fn build_kind_paths(
                             "content": { "application/json": { "schema": error_ref } }
                         },
                         "409": {
-                            "description": "Conflict — object with same name already exists",
+                            "description": "AlreadyExists — object with same name already exists",
                             "content": { "application/json": { "schema": error_ref } }
                         },
                         "422": {

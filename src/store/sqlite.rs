@@ -177,9 +177,9 @@ impl ObjectStore for SQLiteStore {
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
                     // Primary key conflict → duplicate
-                    Err(AppError::Conflict {
-                        expected: 0,
-                        actual: 0,
+                    Err(AppError::AlreadyExists {
+                        kind: key.kind.clone(),
+                        name: name.clone(),
                     })
                 }
                 Err(e) => Err(AppError::Internal(e.into())),
@@ -502,7 +502,7 @@ mod tests {
             .create(&key, "my-widget", json!({"x": 2}))
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::Conflict { .. }));
+        assert!(matches!(err, AppError::AlreadyExists { .. }));
     }
 
     #[tokio::test]

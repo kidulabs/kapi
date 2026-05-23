@@ -50,9 +50,9 @@ impl ObjectStore for InMemoryStore {
     ) -> Result<StoredObject, AppError> {
         let entry = (key.clone(), name.to_string());
         if self.objects.contains_key(&entry) {
-            return Err(AppError::Conflict {
-                expected: 0,
-                actual: 0,
+            return Err(AppError::AlreadyExists {
+                kind: key.kind.clone(),
+                name: name.to_string(),
             });
         }
 
@@ -221,7 +221,7 @@ mod tests {
             .create(&key, "my-widget", json!({"x": 2}))
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::Conflict { .. }));
+        assert!(matches!(err, AppError::AlreadyExists { .. }));
     }
 
     #[tokio::test]

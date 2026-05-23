@@ -10,6 +10,9 @@ pub enum AppError {
     #[error("{what} '{identifier}' not found")]
     NotFound { what: String, identifier: String },
 
+    #[error("{kind} '{name}' already exists")]
+    AlreadyExists { kind: String, name: String },
+
     #[error("conflict: expected version {expected}, actual version {actual}")]
     Conflict { expected: u64, actual: u64 },
 
@@ -39,6 +42,12 @@ impl IntoResponse for AppError {
                 "NotFound",
                 format!("{what} '{identifier}' not found"),
                 json!({ "what": what, "identifier": identifier }),
+            ),
+            AppError::AlreadyExists { kind, name } => (
+                StatusCode::CONFLICT,
+                "AlreadyExists",
+                format!("{kind} '{name}' already exists"),
+                json!({ "kind": kind, "name": name }),
             ),
             AppError::Conflict { expected, actual } => (
                 StatusCode::CONFLICT,

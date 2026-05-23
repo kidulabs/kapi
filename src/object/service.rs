@@ -735,7 +735,7 @@ mod tests {
                 schema_data,
             )
             .await;
-        assert!(matches!(result, Err(AppError::Conflict { .. })));
+        assert!(matches!(result, Err(AppError::AlreadyExists { .. })));
     }
 
     // T30: Schema cache eviction on Schema delete
