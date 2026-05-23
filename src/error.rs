@@ -24,6 +24,9 @@ pub enum AppError {
     #[error("schema has objects: kind={kind}, count={count}")]
     SchemaHasObjects { kind: String, count: usize },
 
+    #[error("stored schema '{schema_name}' compilation failed: {reason}")]
+    StoredSchemaCompilationFailed { schema_name: String, reason: String },
+
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
 }
@@ -55,6 +58,13 @@ impl IntoResponse for AppError {
                 "InvalidSchema",
                 format!("invalid schema: {msg}"),
                 json!({ "message": msg }),
+            ),
+            // StoredSchemaCompilationFailed maps to HTTP 500 Internal Server Error
+            AppError::StoredSchemaCompilationFailed { schema_name, reason } => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "StoredSchemaCompilationFailed",
+                format!("stored schema '{schema_name}' compilation failed: {reason}"),
+                json!({ "schemaName": schema_name, "reason": reason }),
             ),
             // SchemaHasObjects maps to HTTP 409 Conflict
             AppError::SchemaHasObjects { kind, count } => (

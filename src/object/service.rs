@@ -29,7 +29,9 @@ pub struct ObjectService {
     event_bus: Arc<dyn EventPublisher>,
     /// Compiled meta-schema validator for Schema registration payloads (via trait object)
     meta_validator: Arc<dyn SchemaValidator>,
-    /// Compiled user schemas keyed by schema name (cached as trait objects)
+    /// Compiled user schemas keyed by schema name (cached as trait objects).
+    /// Starts empty at startup; populated lazily via `lookup_object_validator()`
+    /// on cache miss and during Schema registration.
     schema_cache: DashMap<String, Arc<dyn SchemaValidator>>,
 }
 
@@ -167,6 +169,12 @@ impl ObjectService {
             .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)
     }
 
+    /// Looks up the compiled schema validator for the given object key.
+    ///
+    /// First checks the in-memory `schema_cache`. On cache miss, fetches the
+    /// Schema from the store, compiles it on-demand, caches the result, and
+    /// returns it. On compilation failure, returns
+    /// `AppError::StoredSchemaCompilationFailed`.
     async fn lookup_object_validator(
         &self,
         key: &ResourceKey,
@@ -190,13 +198,20 @@ impl ObjectService {
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         let cache_key = format!("{}.{}", schema_data.target_kind, schema_data.target_group);
-        self.schema_cache
-            .get(&cache_key)
-            .ok_or_else(|| AppError::NotFound {
-                what: "compiled schema".to_string(),
-                identifier: cache_key.clone(),
+
+        if let Some(validator) = self.schema_cache.get(&cache_key) {
+            return Ok(validator.clone());
+        }
+
+        let compiled = JsonSchemaValidator::compile(&schema_data.json_schema)
+            .map_err(|e| AppError::StoredSchemaCompilationFailed {
+                schema_name: cache_key.clone(),
+                reason: e.to_string(),
             })
-            .map(|v| v.clone())
+            .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
+
+        self.schema_cache.insert(cache_key.clone(), compiled.clone());
+        Ok(compiled)
     }
 
     fn map_validation_errors(
@@ -799,5 +814,177 @@ mod tests {
             .create(schema_key, "Widget.example.io".to_string(), schema_data)
             .await;
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
+    }
+
+    // T31: Object creation after simulated restart (shared store, empty cache) succeeds
+    #[tokio::test]
+    async fn object_creation_after_restart_with_empty_cache_succeeds() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+        let meta_validator: Arc<dyn SchemaValidator> =
+            Arc::new(compile_meta_schema().expect("meta-schema should compile"));
+
+        let schema_key = ResourceKey {
+            group: "kapi.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Schema".to_string(),
+        };
+        let schema_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": {
+                "type": "object",
+                "properties": { "color": { "type": "string" } }
+            }
+        });
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+
+        // Service A: register schema and create an object
+        let service_a =
+            ObjectService::new(store.clone(), event_bus.clone(), meta_validator.clone());
+        service_a
+            .create(
+                schema_key,
+                "Widget.example.io".to_string(),
+                schema_data,
+            )
+            .await
+            .expect("schema registration should succeed");
+        service_a
+            .create(
+                widget_key.clone(),
+                "widget-1".to_string(),
+                json!({"color": "red"}),
+            )
+            .await
+            .expect("first object should succeed");
+
+        // Service B: same store, fresh cache (simulating restart)
+        let service_b = ObjectService::new(store, event_bus, meta_validator);
+        assert!(!service_b.schema_cache.contains_key("Widget.example.io"));
+
+        let result = service_b
+            .create(
+                widget_key,
+                "widget-2".to_string(),
+                json!({"color": "blue"}),
+            )
+            .await;
+        assert!(result.is_ok());
+        assert!(service_b.schema_cache.contains_key("Widget.example.io"));
+    }
+
+    // T32: Cache miss triggers compilation, subsequent requests use cached validator
+    #[tokio::test]
+    async fn cache_miss_triggers_compilation_and_subsequent_uses_cache() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+        let meta_validator: Arc<dyn SchemaValidator> =
+            Arc::new(compile_meta_schema().expect("meta-schema should compile"));
+
+        let schema_key = ResourceKey {
+            group: "kapi.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Schema".to_string(),
+        };
+        let schema_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": {
+                "type": "object",
+                "properties": {
+                    "color": { "type": "string" },
+                    "size": { "type": "integer" }
+                }
+            }
+        });
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+
+        // Register schema via service A
+        let service_a =
+            ObjectService::new(store.clone(), event_bus.clone(), meta_validator.clone());
+        service_a
+            .create(schema_key, "Widget.example.io".to_string(), schema_data)
+            .await
+            .expect("schema registration should succeed");
+
+        // Service B starts with empty cache
+        let service_b = ObjectService::new(store, event_bus, meta_validator);
+        assert!(!service_b.schema_cache.contains_key("Widget.example.io"));
+
+        // First creation triggers lazy compilation
+        let first = service_b
+            .create(
+                widget_key.clone(),
+                "widget-1".to_string(),
+                json!({"color": "red", "size": 1}),
+            )
+            .await;
+        assert!(first.is_ok());
+        assert!(service_b.schema_cache.contains_key("Widget.example.io"));
+
+        // Second creation uses cached validator
+        let second = service_b
+            .create(
+                widget_key,
+                "widget-2".to_string(),
+                json!({"color": "blue", "size": 2}),
+            )
+            .await;
+        assert!(second.is_ok());
+    }
+
+    // T33: Stored schema with invalid jsonSchema returns StoredSchemaCompilationFailed
+    #[tokio::test]
+    async fn stored_schema_invalid_jsonschema_returns_compilation_failed() {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+        let meta_validator: Arc<dyn SchemaValidator> =
+            Arc::new(compile_meta_schema().expect("meta-schema should compile"));
+
+        // Bypass service to store a schema with invalid jsonSchema directly
+        let schema_key = ResourceKey {
+            group: "kapi.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Schema".to_string(),
+        };
+        let invalid_schema = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": { "type": "not-a-real-type" }
+        });
+        store
+            .create(&schema_key, "Widget.example.io", invalid_schema)
+            .await
+            .expect("store create should succeed");
+
+        // Service with empty cache should fail to compile the stored schema
+        let service = ObjectService::new(store, event_bus, meta_validator);
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let result = service
+            .create(widget_key, "my-widget".to_string(), json!({"color": "red"}))
+            .await;
+        assert!(
+            matches!(result, Err(AppError::StoredSchemaCompilationFailed { .. })),
+            "expected StoredSchemaCompilationFailed, got {:?}",
+            result
+        );
     }
 }

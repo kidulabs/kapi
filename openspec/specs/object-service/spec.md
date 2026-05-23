@@ -9,14 +9,15 @@ The system SHALL define an `ObjectService` struct containing:
 - `meta_validator: Arc<dyn SchemaValidator>` — compiled meta-schema for Schema validation
 - `schema_cache: DashMap<String, Arc<dyn SchemaValidator>>` — compiled user schemas keyed by schema name (e.g., `"Widget.example.io"`)
 
-#### Scenario: Service construction with schema warmup
-- **WHEN** `ObjectService::new(store, event_bus, meta_validator)` is called with `store: Arc<dyn ObjectStore>`, `event_bus: Arc<dyn EventPublisher>`, and `meta_validator: Arc<dyn SchemaValidator>`
-- **THEN** the service is constructed, all existing Schema objects are loaded from the store and compiled into the `schema_cache`, and the service is ready to accept requests
+#### Scenario: Service construction without schema warmup
+- **WHEN** `ObjectService::new(store, event_bus, meta_validator)` is called
+- **THEN** the service is constructed with an empty `schema_cache`
+- **AND** no store query is performed during construction
 
 ### Requirement: create validates and stores objects
 The `create(key, name, data)` method SHALL:
-1. If `key.kind == "Schema"`: validate `data` against `meta_validator`, compile `data.jsonSchema` via `validator_for()`, cache the compiled validator under the `name` parameter (which is generated as `{targetKind}.{targetGroup}` by the handler)
-2. If `key.kind != "Schema"`: look up the Schema from the store, validate `data` against the cached compiled schema (with lazy compilation fallback if not in cache)
+1. If `key.kind == "Schema"`: validate `data` against `meta_validator`, compile `data.jsonSchema` via `compile_jsonschema()`, cache the compiled validator under the `name` parameter (which is generated as `{targetKind}.{targetGroup}` by the handler)
+2. If `key.kind != "Schema"`: look up the Schema from the store via `lookup_object_validator()`, which compiles on cache miss if the schema exists in the store
 3. Call `store.create(key, name, data)`
 4. Call `event_bus.publish(key, WatchEvent::Added(obj))`
 5. Return the created `StoredObject`
@@ -49,6 +50,11 @@ The `create(key, name, data)` method SHALL:
 - **WHEN** creating an object for a kind whose Schema exists in the store but is not in the cache
 - **THEN** the schema is compiled on-demand, cached, and the object is validated against it
 
+#### Scenario: Create object with stored schema that fails compilation
+- **WHEN** creating an object for a kind whose Schema exists in the store but whose `jsonSchema` fails compilation
+- **THEN** `lookup_object_validator()` returns `AppError::StoredSchemaCompilationFailed`
+- **AND** no object is created
+
 ### Requirement: get delegates to store
 The `get(key, name)` method SHALL delegate to `store.get(key, name)` without additional validation.
 
@@ -74,6 +80,10 @@ The `update(object)` method SHALL:
 3. Call `store.update(object)`
 4. Call `event_bus.publish(key, WatchEvent::Modified(obj))`
 5. Return the updated `StoredObject`
+
+#### Scenario: Update object with schema not in cache but in store
+- **WHEN** updating an object for a kind whose Schema exists in the store but is not in the cache
+- **THEN** `lookup_object_validator()` compiles the schema on-demand, caches it, and the object is validated against it
 
 #### Scenario: Update with correct version
 - **WHEN** `update` is called with a matching `resourceVersion`
