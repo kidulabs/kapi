@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::{ContinueToken, ListOptions, StoredObject};
+use crate::object::types::{ContinueToken, ListOptions, ObjectMeta, StoredObject};
 use crate::routes::AppState;
 use crate::store::ResourceKey;
 
@@ -73,22 +73,25 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<StoredObject>), AppError> {
     // Branch on kind: Schema objects generate their name from payload fields,
     // while regular objects require a client-supplied metadata.name
-    let name = if path.kind == "Schema" {
+    let meta = if path.kind == "Schema" {
         // Schema registration: generate name from targetKind.targetGroup
-        extract_schema_name(&body).ok_or_else(|| {
+        let name = extract_schema_name(&body).ok_or_else(|| {
             AppError::InvalidSchema(
                 "Schema registration requires targetKind and targetGroup fields".to_string(),
             )
-        })?
+        })?;
+        ObjectMeta { name }
     } else {
         // Regular object: extract name from metadata.name
-        body.get("metadata")
+        let name = body
+            .get("metadata")
             .and_then(|m| m.get("name"))
             .and_then(|n| n.as_str())
             .ok_or_else(|| {
                 AppError::Internal(anyhow::anyhow!("missing metadata.name in request body"))
             })?
-            .to_string()
+            .to_string();
+        ObjectMeta { name }
     };
 
     // Remove metadata from body before passing to service
@@ -103,7 +106,7 @@ pub async fn create(
         kind: path.kind,
     };
 
-    let stored = state.object_service().create(key, name, body).await?;
+    let stored = state.object_service().create(key, meta, body).await?;
     Ok((StatusCode::CREATED, Json(stored)))
 }
 

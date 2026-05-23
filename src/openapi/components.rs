@@ -57,18 +57,28 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                 "required": ["group", "version", "kind"]
             }),
         ),
-        // ObjectMetadata: metadata with versioning and timestamps
+        // ObjectMeta: user-controlled metadata
         (
-            "ObjectMetadata".to_string(),
+            "ObjectMeta".to_string(),
             json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string" },
+                    "name": { "type": "string" }
+                },
+                "required": ["name"]
+            }),
+        ),
+        // SystemMetadata: server-managed lifecycle fields
+        (
+            "SystemMetadata".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
                     "resourceVersion": { "type": "integer", "format": "int64" },
                     "createdAt": { "type": "string", "format": "date-time" },
                     "updatedAt": { "type": "string", "format": "date-time" }
                 },
-                "required": ["name", "resourceVersion", "createdAt", "updatedAt"]
+                "required": ["resourceVersion", "createdAt", "updatedAt"]
             }),
         ),
         // UserData: envelope holding arbitrary JSON data
@@ -89,10 +99,11 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                 "type": "object",
                 "properties": {
                     "key": { "$ref": "#/components/schemas/ResourceKey" },
-                    "metadata": { "$ref": "#/components/schemas/ObjectMetadata" },
+                    "metadata": { "$ref": "#/components/schemas/ObjectMeta" },
+                    "system": { "$ref": "#/components/schemas/SystemMetadata" },
                     "data": { "$ref": "#/components/schemas/UserData" }
                 },
-                "required": ["key", "metadata", "data"]
+                "required": ["key", "metadata", "system", "data"]
             }),
         ),
         // ListResponse: paginated list of StoredObjects
@@ -194,7 +205,7 @@ pub(crate) fn build_kind_data_component(
 
 /// Builds the StoredObject envelope component for a registered kind.
 ///
-/// Mirrors the wire format: `{ key, metadata, data }` where `data` references
+/// Mirrors the wire format: `{ key, metadata, system, data }` where `data` references
 /// the kind-specific data component.
 pub(crate) fn build_kind_stored_object_component(comp_name: &str) -> (String, Value) {
     let stored_name = format!("{comp_name}StoredObject");
@@ -202,10 +213,11 @@ pub(crate) fn build_kind_stored_object_component(comp_name: &str) -> (String, Va
         "type": "object",
         "properties": {
             "key": { "$ref": "#/components/schemas/ResourceKey" },
-            "metadata": { "$ref": "#/components/schemas/ObjectMetadata" },
+            "metadata": { "$ref": "#/components/schemas/ObjectMeta" },
+            "system": { "$ref": "#/components/schemas/SystemMetadata" },
             "data": { "$ref": format!("#/components/schemas/{comp_name}") }
         },
-        "required": ["key", "metadata", "data"]
+        "required": ["key", "metadata", "system", "data"]
     });
     (stored_name, schema)
 }

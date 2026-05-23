@@ -7,7 +7,7 @@ The `ObjectStore` trait defines a pluggable storage backend for all objects, inc
 ```rust
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
-    async fn create(&self, key: &ResourceKey, name: &str, data: Value)
+    async fn create(&self, key: &ResourceKey, meta: ObjectMeta, data: Value)
         -> Result<StoredObject, AppError>;
     async fn get(&self, key: &ResourceKey, name: &str)
         -> Result<StoredObject, AppError>;
@@ -24,7 +24,7 @@ pub trait ObjectStore: Send + Sync {
 
 - **Schema is also an object** — there's one store for everything. Schema objects use kind `"Schema"` in group `kapi.io`.
 - **`create`/`get`/`list`** take `(key, name)` — the object doesn't exist yet (create) or the caller may not have the full object (get, list).
-- **`update`** takes the full `StoredObject`. The implementation peeks at `object.metadata.resource_version` for optimistic concurrency control. On match, applies data, bumps version, updates `updated_at`. On mismatch, returns `Conflict`.
+- **`update`** takes the full `StoredObject`. The implementation peeks at `object.system.resource_version` for optimistic concurrency control. On match, applies data, bumps version, updates `updated_at`. On mismatch, returns `Conflict`.
 - **`delete`** is unconditional — no version check. Returns the deleted object.
 - **`key` and `name`** from the incoming object during `update` are trusted from the URL, not the client payload. The handler validates the match before calling the store.
 

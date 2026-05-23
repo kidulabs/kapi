@@ -171,7 +171,7 @@ impl Stream for WatchStream {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::types::{ObjectMetadata, StoredObject, UserData, WatchEventType};
+    use crate::object::types::{ObjectMeta, StoredObject, SystemMetadata, UserData, WatchEventType};
     use chrono::Utc;
     use tokio_stream::StreamExt;
 
@@ -188,8 +188,10 @@ mod tests {
             event_type: WatchEventType::Added,
             object: StoredObject {
                 key: make_key(),
-                metadata: ObjectMetadata {
+                metadata: ObjectMeta {
                     name: "test".into(),
+                },
+                system: SystemMetadata {
                     resource_version: 1,
                     created_at: Utc::now(),
                     updated_at: Utc::now(),

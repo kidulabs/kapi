@@ -13,14 +13,14 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let rv = created["metadata"]["resourceVersion"]
+    let rv = created["system"]["resourceVersion"]
         .as_u64()
         .unwrap_or(0);
-    let created_at = created["metadata"]["createdAt"]
+    let created_at = created["system"]["createdAt"]
         .as_str()
         .unwrap_or("")
         .to_string();
-    let updated_at = created["metadata"]["updatedAt"]
+    let updated_at = created["system"]["updatedAt"]
         .as_str()
         .unwrap_or("")
         .to_string();
@@ -28,7 +28,8 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
 
     let update_body = serde_json::json!({
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
-        "metadata": { "name": "occ-correct", "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
+        "metadata": { "name": "occ-correct" },
+        "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "data": { "value": { "color": "blue", "size": 2 } }
     });
 
@@ -37,7 +38,7 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
-    let new_rv = updated["metadata"]["resourceVersion"]
+    let new_rv = updated["system"]["resourceVersion"]
         .as_u64()
         .unwrap_or(0);
     assert!(
@@ -61,14 +62,14 @@ pub async fn test_update_wrong_rv(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let rv = created["metadata"]["resourceVersion"]
+    let rv = created["system"]["resourceVersion"]
         .as_u64()
         .unwrap_or(0);
-    let created_at = created["metadata"]["createdAt"]
+    let created_at = created["system"]["createdAt"]
         .as_str()
         .unwrap_or("")
         .to_string();
-    let updated_at = created["metadata"]["updatedAt"]
+    let updated_at = created["system"]["updatedAt"]
         .as_str()
         .unwrap_or("")
         .to_string();
@@ -77,7 +78,8 @@ pub async fn test_update_wrong_rv(app: &TestApp) -> Result<(), String> {
     let wrong_rv = rv + 99;
     let update_body = serde_json::json!({
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
-        "metadata": { "name": "occ-wrong", "resourceVersion": wrong_rv, "createdAt": created_at, "updatedAt": updated_at },
+        "metadata": { "name": "occ-wrong" },
+        "system": { "resourceVersion": wrong_rv, "createdAt": created_at, "updatedAt": updated_at },
         "data": { "value": { "color": "yellow", "size": 4 } }
     });
 

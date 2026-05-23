@@ -15,10 +15,10 @@ The system SHALL define an `ObjectService` struct containing:
 - **AND** no store query is performed during construction
 
 ### Requirement: create validates and stores objects
-The `create(key, name, data)` method SHALL:
-1. If `key.kind == "Schema"`: validate `data` against `meta_validator`, compile `data.jsonSchema` via `compile_jsonschema()`, cache the compiled validator under the `name` parameter (which is generated as `{targetKind}.{targetGroup}` by the handler)
+The `create(key, meta, data)` method SHALL:
+1. If `key.kind == "Schema"`: validate `data` against `meta_validator`, compile `data.jsonSchema` via `compile_jsonschema()`, cache the compiled validator under the name from `meta.name` (which is generated as `{targetKind}.{targetGroup}` by the handler)
 2. If `key.kind != "Schema"`: look up the Schema from the store via `lookup_object_validator()`, which compiles on cache miss if the schema exists in the store
-3. Call `store.create(key, name, data)`
+3. Call `store.create(key, meta, data)`
 4. Call `event_bus.publish(key, WatchEvent::Added(obj))`
 5. Return the created `StoredObject`
 

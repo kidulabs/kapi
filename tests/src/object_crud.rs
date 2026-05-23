@@ -54,14 +54,14 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let rv = created["metadata"]["resourceVersion"]
+    let rv = created["system"]["resourceVersion"]
         .as_u64()
         .unwrap_or(0);
-    let created_at = created["metadata"]["createdAt"]
+    let created_at = created["system"]["createdAt"]
         .as_str()
         .unwrap_or("")
         .to_string();
-    let updated_at = created["metadata"]["updatedAt"]
+    let updated_at = created["system"]["updatedAt"]
         .as_str()
         .unwrap_or("")
         .to_string();
@@ -69,7 +69,8 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
 
     let update_body = serde_json::json!({
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
-        "metadata": { "name": "crud-widget", "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
+        "metadata": { "name": "crud-widget" },
+        "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "data": { "value": { "color": "green", "size": 20 } }
     });
     let resp = client
@@ -77,7 +78,7 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
-    let new_rv = updated["metadata"]["resourceVersion"]
+    let new_rv = updated["system"]["resourceVersion"]
         .as_u64()
         .unwrap_or(0);
     assert!(

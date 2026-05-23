@@ -11,7 +11,7 @@ use serde_json::Value;
 use crate::error::AppError;
 use crate::event::EventPublisher;
 use crate::object::types::{
-    ListOptions, ListResponse, SchemaData, StoredObject, WatchEvent, WatchEventType,
+    ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, WatchEvent, WatchEventType,
 };
 use crate::schema::{JsonSchemaValidator, SchemaValidator};
 use crate::store::{ObjectStore, ResourceKey};
@@ -67,15 +67,15 @@ impl ObjectService {
     pub async fn create(
         &self,
         key: ResourceKey,
-        name: String,
+        meta: ObjectMeta,
         data: Value,
     ) -> Result<StoredObject, AppError> {
         if key.kind == "Schema" {
             // Schema path: meta-schema validate → compile → cache → store → publish
-            self.validate_and_create_schema(key, name, data).await
+            self.validate_and_create_schema(key, meta, data).await
         } else {
             // Object path: lookup schema → validate → store → publish
-            self.validate_and_create_object(key, name, data).await
+            self.validate_and_create_object(key, meta, data).await
         }
     }
 
@@ -229,13 +229,13 @@ impl ObjectService {
     async fn validate_and_create_schema(
         &self,
         key: ResourceKey,
-        name: String,
+        meta: ObjectMeta,
         data: Value,
     ) -> Result<StoredObject, AppError> {
         let schema_data = self.validate_meta_schema(&data)?;
         let compiled = self.compile_jsonschema(&schema_data)?;
-        let stored = self.store.create(&key, &name, data).await?;
-        self.schema_cache.insert(name.clone(), compiled);
+        let stored = self.store.create(&key, meta.clone(), data).await?;
+        self.schema_cache.insert(meta.name.clone(), compiled);
         self.event_bus.publish(
             &key,
             WatchEvent {
@@ -250,7 +250,7 @@ impl ObjectService {
     async fn validate_and_create_object(
         &self,
         key: ResourceKey,
-        name: String,
+        meta: ObjectMeta,
         data: Value,
     ) -> Result<StoredObject, AppError> {
         let validator = self.lookup_object_validator(&key).await?;
@@ -260,7 +260,7 @@ impl ObjectService {
             return Err(AppError::SchemaValidation(errors));
         }
 
-        let stored = self.store.create(&key, &name, data).await?;
+        let stored = self.store.create(&key, meta, data).await?;
         self.event_bus.publish(
             &key,
             WatchEvent {
@@ -424,7 +424,7 @@ mod tests {
         });
         // Name is generated as "{targetKind}.{targetGroup}" by the handler
         service
-            .create(schema_key, "Widget.example.io".to_string(), schema_data)
+            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
             .await
             .expect("schema registration should succeed");
     }
@@ -448,7 +448,7 @@ mod tests {
         let result = service
             .create(
                 schema_key.clone(),
-                "Widget.example.io".to_string(),
+                ObjectMeta { name: "Widget.example.io".to_string() },
                 schema_data,
             )
             .await;
@@ -482,7 +482,7 @@ mod tests {
         // Name would be generated as "Widget.example.io" by the handler,
         // but this test calls service.create() directly
         let result = service
-            .create(schema_key, "Widget.example.io".to_string(), invalid_data)
+            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, invalid_data)
             .await;
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
@@ -506,7 +506,7 @@ mod tests {
 
         // Name would be generated as "Widget.example.io" by the handler
         let result = service
-            .create(schema_key, "Widget.example.io".to_string(), invalid_schema)
+            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, invalid_schema)
             .await;
         // This should fail during compilation of jsonSchema
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
@@ -523,7 +523,7 @@ mod tests {
         };
 
         let result = service
-            .create(widget_key, "my-widget".to_string(), json!({}))
+            .create(widget_key, ObjectMeta { name: "my-widget".to_string() }, json!({}))
             .await;
         assert!(matches!(result, Err(AppError::NotFound { .. })));
     }
@@ -543,7 +543,7 @@ mod tests {
         let invalid_data = json!({ "color": "blue", "size": "not-a-number" });
 
         let result = service
-            .create(widget_key, "my-widget".to_string(), invalid_data)
+            .create(widget_key, ObjectMeta { name: "my-widget".to_string() }, invalid_data)
             .await;
         assert!(matches!(result, Err(AppError::SchemaValidation(_))));
     }
@@ -562,20 +562,20 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
-                "my-widget".to_string(),
+                ObjectMeta { name: "my-widget".to_string() },
                 json!({ "color": "blue", "size": 10 }),
             )
             .await
             .unwrap();
 
-        let v1 = created.metadata.resource_version;
+        let v1 = created.system.resource_version;
         let mut updated_obj = created;
         updated_obj.data.value = json!({ "color": "red", "size": 20 });
-        updated_obj.metadata.resource_version = v1;
+        updated_obj.system.resource_version = v1;
 
         let result = service.update(updated_obj).await;
         assert!(result.is_ok());
-        assert!(result.unwrap().metadata.resource_version > v1);
+        assert!(result.unwrap().system.resource_version > v1);
     }
 
     // T25: Update with wrong version → Conflict, no event published
@@ -592,7 +592,7 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
-                "my-widget".to_string(),
+                ObjectMeta { name: "my-widget".to_string() },
                 json!({ "color": "blue", "size": 10 }),
             )
             .await
@@ -600,7 +600,7 @@ mod tests {
 
         let mut wrong_version_obj = created;
         wrong_version_obj.data.value = json!({ "color": "red" });
-        wrong_version_obj.metadata.resource_version = 999;
+        wrong_version_obj.system.resource_version = 999;
 
         let result = service.update(wrong_version_obj).await;
         assert!(matches!(result, Err(AppError::Conflict { .. })));
@@ -624,7 +624,7 @@ mod tests {
         service
             .create(
                 schema_key.clone(),
-                "Widget.example.io".to_string(),
+                ObjectMeta { name: "Widget.example.io".to_string() },
                 schema_data,
             )
             .await
@@ -658,7 +658,7 @@ mod tests {
         service
             .create(
                 widget_key.clone(),
-                "my-widget".to_string(),
+                ObjectMeta { name: "my-widget".to_string() },
                 json!({ "color": "blue", "size": 10 }),
             )
             .await
@@ -692,7 +692,7 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
-                "my-widget".to_string(),
+                ObjectMeta { name: "my-widget".to_string() },
                 json!({ "color": "blue", "size": 10 }),
             )
             .await
@@ -721,7 +721,7 @@ mod tests {
         service
             .create(
                 schema_key.clone(),
-                "Widget.example.io".to_string(),
+                ObjectMeta { name: "Widget.example.io".to_string() },
                 schema_data.clone(),
             )
             .await
@@ -731,7 +731,7 @@ mod tests {
         let result = service
             .create(
                 schema_key.clone(),
-                "Widget.example.io".to_string(),
+                ObjectMeta { name: "Widget.example.io".to_string() },
                 schema_data,
             )
             .await;
@@ -756,7 +756,7 @@ mod tests {
         service
             .create(
                 schema_key.clone(),
-                "Widget.example.io".to_string(),
+                ObjectMeta { name: "Widget.example.io".to_string() },
                 schema_data,
             )
             .await
@@ -788,7 +788,7 @@ mod tests {
         });
 
         let result = service
-            .create(schema_key, "Widget.example.io".to_string(), schema_data)
+            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
             .await;
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
@@ -811,7 +811,7 @@ mod tests {
         });
 
         let result = service
-            .create(schema_key, "Widget.example.io".to_string(), schema_data)
+            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
             .await;
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
@@ -851,7 +851,7 @@ mod tests {
         service_a
             .create(
                 schema_key,
-                "Widget.example.io".to_string(),
+                ObjectMeta { name: "Widget.example.io".to_string() },
                 schema_data,
             )
             .await
@@ -859,7 +859,7 @@ mod tests {
         service_a
             .create(
                 widget_key.clone(),
-                "widget-1".to_string(),
+                ObjectMeta { name: "widget-1".to_string() },
                 json!({"color": "red"}),
             )
             .await
@@ -872,7 +872,7 @@ mod tests {
         let result = service_b
             .create(
                 widget_key,
-                "widget-2".to_string(),
+                ObjectMeta { name: "widget-2".to_string() },
                 json!({"color": "blue"}),
             )
             .await;
@@ -916,7 +916,7 @@ mod tests {
         let service_a =
             ObjectService::new(store.clone(), event_bus.clone(), meta_validator.clone());
         service_a
-            .create(schema_key, "Widget.example.io".to_string(), schema_data)
+            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
             .await
             .expect("schema registration should succeed");
 
@@ -928,7 +928,7 @@ mod tests {
         let first = service_b
             .create(
                 widget_key.clone(),
-                "widget-1".to_string(),
+                ObjectMeta { name: "widget-1".to_string() },
                 json!({"color": "red", "size": 1}),
             )
             .await;
@@ -939,7 +939,7 @@ mod tests {
         let second = service_b
             .create(
                 widget_key,
-                "widget-2".to_string(),
+                ObjectMeta { name: "widget-2".to_string() },
                 json!({"color": "blue", "size": 2}),
             )
             .await;
@@ -967,7 +967,7 @@ mod tests {
             "jsonSchema": { "type": "not-a-real-type" }
         });
         store
-            .create(&schema_key, "Widget.example.io", invalid_schema)
+            .create(&schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, invalid_schema)
             .await
             .expect("store create should succeed");
 
@@ -979,7 +979,7 @@ mod tests {
             kind: "Widget".to_string(),
         };
         let result = service
-            .create(widget_key, "my-widget".to_string(), json!({"color": "red"}))
+            .create(widget_key, ObjectMeta { name: "my-widget".to_string() }, json!({"color": "red"}))
             .await;
         assert!(
             matches!(result, Err(AppError::StoredSchemaCompilationFailed { .. })),

@@ -54,14 +54,14 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let rv = created["metadata"]["resourceVersion"]
+    let rv = created["system"]["resourceVersion"]
         .as_u64()
         .unwrap_or(0);
-    let created_at = created["metadata"]["createdAt"]
+    let created_at = created["system"]["createdAt"]
         .as_str()
         .unwrap_or("")
         .to_string();
-    let updated_at = created["metadata"]["updatedAt"]
+    let updated_at = created["system"]["updatedAt"]
         .as_str()
         .unwrap_or("")
         .to_string();
@@ -79,7 +79,8 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
 
     let update_body = serde_json::json!({
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
-        "metadata": { "name": "watch-test", "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
+        "metadata": { "name": "watch-test" },
+        "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "data": { "value": { "color": "orange", "size": 99 } }
     });
     let resp = client

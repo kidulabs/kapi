@@ -53,8 +53,13 @@ pub struct SchemaData {
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ObjectMetadata {
+pub struct ObjectMeta {
     pub name: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SystemMetadata {
     pub resource_version: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -63,6 +68,7 @@ pub struct ObjectMetadata {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct StoredObject {
     pub key: ResourceKey,
-    pub metadata: ObjectMetadata,
+    pub metadata: ObjectMeta,
+    pub system: SystemMetadata,
     pub data: UserData,
 }
