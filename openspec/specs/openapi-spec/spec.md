@@ -118,7 +118,7 @@ The `GET` list endpoint for each kind SHALL document the `?watch=true` query par
 
 ### Requirement: Response codes documented for all operations
 All dynamic paths SHALL document appropriate HTTP response codes:
-- POST: 201 (Created), 404 (NotFound for unregistered kind), 409 (Conflict for duplicate), 422 (SchemaValidation)
+- POST: 201 (Created), 404 (NotFound for unregistered kind), 409 (Conflict for version mismatch), 409 (AlreadyExists for duplicate), 422 (SchemaValidation)
 - GET (item): 200 (OK), 404 (NotFound)
 - PUT: 200 (OK), 404 (NotFound), 409 (Conflict for version mismatch), 422 (SchemaValidation)
 - DELETE: 200 (OK), 404 (NotFound), 409 (SchemaHasObjects for Schema deletion)
@@ -126,7 +126,11 @@ All dynamic paths SHALL document appropriate HTTP response codes:
 
 #### Scenario: POST documents error responses
 - **WHEN** the spec is generated for a dynamic kind
-- **THEN** the POST operation documents 404, 409, and 422 response schemas referencing `AppError`
+- **THEN** the POST operation documents 404, 409 (Conflict), 409 (AlreadyExists), and 422 response schemas referencing `AppError`
+
+#### Scenario: POST documents AlreadyExists response
+- **WHEN** the spec is generated for a dynamic kind
+- **THEN** the POST operation includes a 409 response with `code: "AlreadyExists"` and `details` containing `kind` and `name` fields
 
 ### Requirement: GET /swagger-ui/ serves HTML page (optional)
 If implemented, the system SHALL provide a `GET /swagger-ui/` endpoint that returns an HTML page loading Swagger UI from a CDN and configured to fetch the spec from `/openapi`.

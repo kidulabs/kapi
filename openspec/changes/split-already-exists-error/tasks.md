@@ -33,7 +33,7 @@
 - [x] 6.1 Run `cargo clippy` — no new warnings
 - [x] 6.2 Run `cargo test` — all tests pass
 - [x] 6.3 Run integration tests in `tests/` if they exist and cover error scenarios
-- [ ] 6.4 Manually verify a duplicate create returns `{ "code": "AlreadyExists", "details": { "kind": "...", "name": "..." } }` with HTTP 409
+- [x] 6.4 Manually verify a duplicate create returns `{ "code": "AlreadyExists", "details": { "kind": "...", "name": "..." } }` with HTTP 409
 
 ## 7. Update documentation
 

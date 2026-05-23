@@ -9,7 +9,7 @@ The system SHALL define an `AppError` enum that is the sole error type used acro
 
 #### Scenario: Error variants cover all application failure modes
 - **WHEN** an operation fails
-- **THEN** the error SHALL be representable as one of: `NotFound`, `Conflict`, `SchemaValidation`, or `Internal`
+- **THEN** the error SHALL be representable as one of: `NotFound`, `Conflict`, `AlreadyExists`, `SchemaValidation`, `SchemaHasObjects`, `InvalidSchema`, `StoredSchemaCompilationFailed`, or `Internal`
 
 ### Requirement: NotFound errors carry structured context
 The system SHALL produce `NotFound` errors with `what` and `identifier` fields so that error messages are unambiguous.
@@ -23,11 +23,29 @@ The system SHALL produce `NotFound` errors with `what` and `identifier` fields s
 - **THEN** the error SHALL be `NotFound { what: "object", identifier: "my-widget" }`
 
 ### Requirement: Conflict errors carry version information
-The system SHALL produce `Conflict` errors with `expected` and `actual` version fields for optimistic concurrency failures.
+The system SHALL produce `Conflict` errors with `expected` and `actual` version fields **exclusively** for optimistic concurrency control failures. The `Conflict` variant SHALL NOT be used for duplicate resource creation.
 
 #### Scenario: Optimistic concurrency mismatch
 - **WHEN** an update specifies `resourceVersion=5` but the stored version is `7`
 - **THEN** the error SHALL be `Conflict { expected: 5, actual: 7 }`
+
+### Requirement: AlreadyExists error represents duplicate resource creation
+The system SHALL produce `AlreadyExists { kind: String, name: String }` errors when a `create` operation targets a resource name that already exists within the same scope. The `kind` field SHALL contain the resource kind (e.g., "Widget", "Schema"), and the `name` field SHALL contain the resource name.
+
+#### Scenario: Duplicate object creation
+- **WHEN** creating an object with a name that already exists
+- **THEN** the error SHALL be `AlreadyExists { kind: "Widget", name: "my-widget" }`
+
+#### Scenario: Duplicate schema creation
+- **WHEN** creating a Schema with a name that already exists
+- **THEN** the error SHALL be `AlreadyExists { kind: "Schema", name: "Widget.example.io" }`
+
+### Requirement: AlreadyExists maps to HTTP 409
+The system SHALL map `AlreadyExists` to HTTP 409 Conflict with JSON body `{ "error": "...", "code": "AlreadyExists", "details": { "kind": "...", "name": "..." } }`.
+
+#### Scenario: AlreadyExists response body
+- **WHEN** a handler returns `AlreadyExists { kind: "Widget".into(), name: "my-widget".into() }`
+- **THEN** the response is HTTP 409 with JSON body containing `"code": "AlreadyExists"` and `"details": { "kind": "Widget", "name": "my-widget" }`
 
 ### Requirement: Schema validation errors are structured
 The system SHALL produce `SchemaValidation` errors as a list of `ValidationError` objects, each with a `path` (JSON pointer) and `message`.

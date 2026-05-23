@@ -44,7 +44,7 @@ The `create(key, name, data)` method SHALL:
 
 #### Scenario: Create duplicate object
 - **WHEN** creating an object with a name that already exists
-- **THEN** the store returns `Conflict` and no event is published
+- **THEN** the store returns `AlreadyExists` and no event is published
 
 #### Scenario: Create object with schema not in cache but in store
 - **WHEN** creating an object for a kind whose Schema exists in the store but is not in the cache
@@ -158,7 +158,7 @@ The system SHALL map `SchemaValidationError` from `SchemaValidator::validate()` 
 The service SHALL publish events only after successful store operations. If the store returns an error, no event is published.
 
 #### Scenario: Failed create does not publish
-- **WHEN** `create` fails due to a duplicate conflict
+- **WHEN** `create` fails due to a duplicate (AlreadyExists) or validation error
 - **THEN** no `Added` event is published
 
 #### Scenario: Failed update does not publish
