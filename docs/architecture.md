@@ -91,7 +91,7 @@ src/
 │   └── meta_schema.rs      # Meta-schema constant + SchemaValidator trait
 │                           # + JsonSchemaValidator wrapper + tests
 ├── object/
-│   ├── types.rs            # Core types (StoredObject, ObjectMetadata, etc.)
+│   ├── types.rs            # Core types (StoredObject, ObjectMeta, SystemMetadata, etc.)
 │   ├── service.rs          # ObjectService orchestrator + tests
 │   └── handler.rs          # Axum route handlers
 ├── event/
@@ -113,12 +113,12 @@ src/
 ```
 POST /apis/example.io/v1/Widget
   │
-  ▼ Handler: extract group/version/kind/body, strip metadata
+  ▼ Handler: extract group/version/kind/body, extract ObjectMeta, strip metadata
   │
-  ▼ ObjectService::create(key, name, data)
+  ▼ ObjectService::create(key, meta, data)
   │   ├── Schema path: validate meta-schema → compile jsonSchema → cache
   │   ├── Object path:  look up Schema → validate against compiled schema
-  │   ├── store.create(key, name, data) → StoredObject
+  │   ├── store.create(key, meta, data) → StoredObject
   │   └── event_bus.publish(key, WatchEvent::Added(obj))
   │
   ▼ Response: 201 Created + StoredObject JSON
@@ -128,16 +128,16 @@ POST /apis/example.io/v1/Widget
 
 ```
 PUT /apis/example.io/v1/Widget/my-widget
-  │  Body: StoredObject (with metadata.resourceVersion for OCC)
+  │  Body: StoredObject (with system.resourceVersion for OCC)
   │
   ▼ Handler: validate URL key/name match body
   │
   ▼ ObjectService::update(stored_object)
   │   ├── Validate data payload against schema
-  │   ├── store.update(object) — OCC check on resourceVersion
+  │   ├── store.update(object) — OCC check on system.resourceVersion
   │   └── event_bus.publish(key, WatchEvent::Modified(obj))
   │
-  ▼ Response: 200 OK + StoredObject (new resourceVersion)
+  ▼ Response: 200 OK + StoredObject (new system.resourceVersion)
 ```
 
 ### Watch Events
@@ -202,9 +202,9 @@ DELETE /apis/kapi.io/v1/Schema/{name}
 | Schema validation | `Arc<dyn SchemaValidator>` | Isolates jsonschema crate behind trait; swappable |
 | Schema deletion | Block if objects exist (409) | Prevent accidental data loss |
 | Schema compilation | At registration time | Reject invalid schemas at registration with 422 |
-| Optimistic concurrency | Embedded resourceVersion on StoredObject | Version travels with the object; cleaner trait signature |
+| Optimistic concurrency | Embedded system.resourceVersion on StoredObject | Version travels with the object; cleaner trait signature |
 | Update contract | `update(StoredObject)` not decomposed params | What comes out goes back in; symmetric contract |
 | Delete | Unconditional (no version check) | Deletes are idempotent; simplifies contract |
-| Wire format | camelCase metadata fields | Standard for JSON APIs; matches K8s conventions |
+| Wire format | `metadata` (user) + `system` (server) fields | Clear ownership boundary; camelCase for JSON APIs |
 | Validation scope | Schema validates data only | Metadata is server-managed; users define only their domain |
 | Binary construction | `AppConfig + create_app() + run()` in lib | main.rs is ~15 lines; all wiring in lib for testability |

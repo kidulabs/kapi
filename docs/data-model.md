@@ -17,13 +17,24 @@ struct ResourceKey {
 - `Hash` + `Eq` — used as a map key for per-kind event channels
 - Serialized as-is on the wire (no renaming)
 
-### ObjectMetadata
+### ObjectMeta
+
+User-controlled metadata fields. Clients set these on create and echo them back on updates.
+
+```rust
+struct ObjectMeta {
+    name: String,             // unique within a (group, version, kind)
+}
+```
+
+Wire format uses camelCase (currently only `name`, no effect).
+
+### SystemMetadata
 
 Server-managed lifecycle fields. Clients receive these and echo them back on updates, but never interpret them.
 
 ```rust
-struct ObjectMetadata {
-    name: String,             // unique within a (group, version, kind)
+struct SystemMetadata {
     resource_version: u64,    // monotonic, global counter
     created_at: DateTime<Utc>,
     updated_at: DateTime<Utc>,
@@ -49,7 +60,8 @@ The complete unit of storage and retrieval. Everything stored in the system is a
 ```rust
 struct StoredObject {
     key: ResourceKey,
-    metadata: ObjectMetadata,
+    metadata: ObjectMeta,
+    system: SystemMetadata,
     data: UserData,
 }
 ```
@@ -158,7 +170,9 @@ data: {"eventType":"Modified","object":{...}}
         "kind": "deployments"
     },
     "metadata": {
-        "name": "my-app",
+        "name": "my-app"
+    },
+    "system": {
         "resourceVersion": 42,
         "createdAt": "2024-01-01T00:00:00Z",
         "updatedAt": "2024-01-01T00:00:00Z"
@@ -179,8 +193,8 @@ data: {"eventType":"Modified","object":{...}}
 
 ## Optimistic Concurrency
 
-- Every `StoredObject` carries a `resourceVersion` (monotonic global u64 counter)
-- Updates require the client to send back the `resourceVersion` from the object they last read
+- Every `StoredObject` carries a `system.resourceVersion` (monotonic global u64 counter)
+- Updates require the client to send back the `system.resourceVersion` from the object they last read
 - If the stored version doesn't match, the server returns `409 Conflict`
 - The client must re-fetch the object and retry with the updated version
 - Deletes are unconditional (no version check)

@@ -69,12 +69,13 @@ mod tests {
     }
 
     #[test]
-    fn build_static_components_contains_all_ten() {
+    fn build_static_components_contains_all_eleven() {
         let components = build_static_components();
         let names: Vec<&str> = components.iter().map(|(n, _)| n.as_str()).collect();
         let expected = [
             "ResourceKey",
-            "ObjectMetadata",
+            "ObjectMeta",
+            "SystemMetadata",
             "UserData",
             "StoredObject",
             "ListResponse",
@@ -102,10 +103,14 @@ mod tests {
         let props = obj["properties"].as_object().unwrap();
         assert!(props.contains_key("key"));
         assert!(props.contains_key("metadata"));
+        assert!(props.contains_key("system"));
         assert!(props.contains_key("data"));
         assert_eq!(props["key"]["$ref"], "#/components/schemas/ResourceKey");
+        assert_eq!(props["metadata"]["$ref"], "#/components/schemas/ObjectMeta");
+        assert_eq!(props["system"]["$ref"], "#/components/schemas/SystemMetadata");
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "key"));
+        assert!(required.iter().any(|r| r == "system"));
     }
 
     #[test]
@@ -180,7 +185,11 @@ mod tests {
         assert_eq!(props["key"]["$ref"], "#/components/schemas/ResourceKey");
         assert_eq!(
             props["metadata"]["$ref"],
-            "#/components/schemas/ObjectMetadata"
+            "#/components/schemas/ObjectMeta"
+        );
+        assert_eq!(
+            props["system"]["$ref"],
+            "#/components/schemas/SystemMetadata"
         );
         assert_eq!(
             props["data"]["$ref"],
@@ -189,6 +198,7 @@ mod tests {
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "key"));
         assert!(required.iter().any(|r| r == "metadata"));
+        assert!(required.iter().any(|r| r == "system"));
         assert!(required.iter().any(|r| r == "data"));
     }
 
@@ -362,7 +372,7 @@ mod tests {
             }
         });
         service
-            .create(schema_key, "Widget.example.io".to_string(), schema_data)
+            .create(schema_key, crate::object::types::ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
             .await
             .unwrap();
 
@@ -410,7 +420,7 @@ mod tests {
         service
             .create(
                 schema_key.clone(),
-                "Widget.example.io".to_string(),
+                crate::object::types::ObjectMeta { name: "Widget.example.io".to_string() },
                 schema_data.clone(),
             )
             .await

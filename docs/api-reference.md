@@ -44,7 +44,9 @@ POST /apis/kapi.io/v1/Schema
         "kind": "Schema"
     },
     "metadata": {
-        "name": "Widget.example.io",
+        "name": "Widget.example.io"
+    },
+    "system": {
         "resourceVersion": 1,
         "createdAt": "2024-01-01T00:00:00Z",
         "updatedAt": "2024-01-01T00:00:00Z"
@@ -131,7 +133,9 @@ The `metadata.name` field is extracted by the handler. All other fields are vali
         "kind": "Widget"
     },
     "metadata": {
-        "name": "my-widget",
+        "name": "my-widget"
+    },
+    "system": {
         "resourceVersion": 1,
         "createdAt": "2024-01-01T00:00:00Z",
         "updatedAt": "2024-01-01T00:00:00Z"
@@ -178,7 +182,7 @@ GET /apis/{group}/{version}/{kind}/{name}
 
 ### Update an Object
 
-Requires the full StoredObject with the correct `resourceVersion`.
+Requires the full StoredObject with the correct `system.resourceVersion`.
 
 ```
 PUT /apis/{group}/{version}/{kind}/{name}
@@ -190,7 +194,9 @@ PUT /apis/{group}/{version}/{kind}/{name}
 {
     "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
     "metadata": {
-        "name": "my-widget",
+        "name": "my-widget"
+    },
+    "system": {
         "resourceVersion": 1,
         "createdAt": "2024-01-01T00:00:00Z",
         "updatedAt": "2024-01-01T00:00:00Z"
@@ -202,7 +208,7 @@ PUT /apis/{group}/{version}/{kind}/{name}
 }
 ```
 
-**Response:** `200 OK` — updated StoredObject with bumped `resourceVersion`
+**Response:** `200 OK` — updated StoredObject with bumped `system.resourceVersion`
 
 **Errors:** `409` (version conflict), `422` (validation failure), `404`
 

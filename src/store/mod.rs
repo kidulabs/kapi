@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::{ListOptions, ListResponse, StoredObject};
+use crate::object::types::{ListOptions, ListResponse, ObjectMeta, StoredObject};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceKey {
@@ -19,7 +19,7 @@ pub trait ObjectStore: Send + Sync {
     async fn create(
         &self,
         key: &ResourceKey,
-        name: &str,
+        meta: ObjectMeta,
         data: Value,
     ) -> Result<StoredObject, AppError>;
     async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;

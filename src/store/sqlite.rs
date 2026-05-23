@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::{ContinueToken, ListOptions, ListResponse, ObjectMetadata, StoredObject, UserData};
+use crate::object::types::{ContinueToken, ListOptions, ListResponse, ObjectMeta, StoredObject, SystemMetadata, UserData};
 use crate::store::{ObjectStore, ResourceKey};
 
 /// SQLite-backed implementation of `ObjectStore`.
@@ -99,8 +99,8 @@ impl SQLiteStore {
         let updated_at = DateTime::parse_from_rfc3339(&updated_at).map_err(|e| AppError::Internal(e.into()))?;
         Ok(StoredObject {
             key: ResourceKey { group, version, kind },
-            metadata: ObjectMetadata {
-                name,
+            metadata: ObjectMeta { name },
+            system: SystemMetadata {
                 resource_version: resource_version as u64,
                 created_at: created_at.with_timezone(&Utc),
                 updated_at: updated_at.with_timezone(&Utc),
@@ -134,11 +134,10 @@ impl ObjectStore for SQLiteStore {
     async fn create(
         &self,
         key: &ResourceKey,
-        name: &str,
+        meta: ObjectMeta,
         data: Value,
     ) -> Result<StoredObject, AppError> {
         let key = key.clone();
-        let name = name.to_string();
         let conn = Arc::clone(&self.conn);
         let next_version = Arc::clone(&self.next_version);
 
@@ -155,7 +154,7 @@ impl ObjectStore for SQLiteStore {
                 "INSERT INTO objects (resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
-                    key.group, key.version, key.kind, name,
+                    key.group, key.version, key.kind, meta.name,
                     data_json, version as i64, created_at, updated_at
                 ],
             );
@@ -164,8 +163,8 @@ impl ObjectStore for SQLiteStore {
                 Ok(_) => {
                     Ok(StoredObject {
                         key,
-                        metadata: ObjectMetadata {
-                            name,
+                        metadata: meta,
+                        system: SystemMetadata {
                             resource_version: version,
                             created_at: now,
                             updated_at: now,
@@ -179,7 +178,7 @@ impl ObjectStore for SQLiteStore {
                     // Primary key conflict → duplicate
                     Err(AppError::AlreadyExists {
                         kind: key.kind.clone(),
-                        name: name.clone(),
+                        name: meta.name.clone(),
                     })
                 }
                 Err(e) => Err(AppError::Internal(e.into())),
@@ -314,7 +313,7 @@ impl ObjectStore for SQLiteStore {
 
             let data_json = serde_json::to_string(&object.data.value).map_err(|e| AppError::Internal(e.into()))?;
             let updated_at = now.to_rfc3339();
-            let expected_version = object.metadata.resource_version as i64;
+            let expected_version = object.system.resource_version as i64;
 
             let c = conn.lock().unwrap();
             let rows = c.execute(
@@ -373,10 +372,10 @@ impl ObjectStore for SQLiteStore {
 
             Ok(StoredObject {
                 key: object.key,
-                metadata: ObjectMetadata {
-                    name: object.metadata.name,
+                metadata: object.metadata,
+                system: SystemMetadata {
                     resource_version: new_version,
-                    created_at: object.metadata.created_at,
+                    created_at: object.system.created_at,
                     updated_at: now,
                 },
                 data: object.data,
@@ -473,18 +472,21 @@ mod tests {
         let key = test_key();
         let data = json!({"color": "blue", "size": 10});
 
-        let created = store.create(&key, "my-widget", data.clone()).await.unwrap();
+        let created = store
+            .create(&key, ObjectMeta { name: "my-widget".to_string() }, data.clone())
+            .await
+            .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
         assert_eq!(created.data.value, data);
         assert_eq!(created.key, key);
-        assert_eq!(created.metadata.resource_version, 1);
+        assert_eq!(created.system.resource_version, 1);
 
         let retrieved = store.get(&key, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
         assert_eq!(retrieved.data.value, created.data.value);
         assert_eq!(
-            retrieved.metadata.resource_version,
-            created.metadata.resource_version
+            retrieved.system.resource_version,
+            created.system.resource_version
         );
     }
 
@@ -494,12 +496,12 @@ mod tests {
         let key = test_key();
 
         store
-            .create(&key, "my-widget", json!({"x": 1}))
+            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
             .await
             .unwrap();
 
         let err = store
-            .create(&key, "my-widget", json!({"x": 2}))
+            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 2}))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::AlreadyExists { .. }));
@@ -519,9 +521,9 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store.create(&key, "c", json!({})).await.unwrap();
-        store.create(&key, "a", json!({})).await.unwrap();
-        store.create(&key, "b", json!({})).await.unwrap();
+        store.create(&key, ObjectMeta { name: "c".to_string() }, json!({})).await.unwrap();
+        store.create(&key, ObjectMeta { name: "a".to_string() }, json!({})).await.unwrap();
+        store.create(&key, ObjectMeta { name: "b".to_string() }, json!({})).await.unwrap();
 
         let res = store
             .list(
@@ -545,7 +547,7 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(&key, &format!("item-{i}"), json!({}))
+                .create(&key, ObjectMeta { name: format!("item-{i}") }, json!({}))
                 .await
                 .unwrap();
         }
@@ -573,7 +575,7 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(&key, &format!("item-{i}"), json!({}))
+                .create(&key, ObjectMeta { name: format!("item-{i}") }, json!({}))
                 .await
                 .unwrap();
         }
@@ -612,18 +614,20 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, "my-widget", json!({"x": 1}))
+            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
             .await
             .unwrap();
-        let v1 = created.metadata.resource_version;
+        let v1 = created.system.resource_version;
 
         let object = StoredObject {
             key: key.clone(),
-            metadata: ObjectMetadata {
+            metadata: ObjectMeta {
                 name: "my-widget".to_string(),
+            },
+            system: SystemMetadata {
                 resource_version: v1,
-                created_at: created.metadata.created_at,
-                updated_at: created.metadata.updated_at,
+                created_at: created.system.created_at,
+                updated_at: created.system.updated_at,
             },
             data: UserData {
                 value: json!({"x": 2}),
@@ -631,7 +635,7 @@ mod tests {
         };
 
         let updated = store.update(object).await.unwrap();
-        assert!(updated.metadata.resource_version > v1);
+        assert!(updated.system.resource_version > v1);
         assert_eq!(updated.data.value, json!({"x": 2}));
     }
 
@@ -641,17 +645,19 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, "my-widget", json!({"x": 1}))
+            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
             .await
             .unwrap();
 
         let object = StoredObject {
             key: key.clone(),
-            metadata: ObjectMetadata {
+            metadata: ObjectMeta {
                 name: "my-widget".to_string(),
+            },
+            system: SystemMetadata {
                 resource_version: 99,
-                created_at: created.metadata.created_at,
-                updated_at: created.metadata.updated_at,
+                created_at: created.system.created_at,
+                updated_at: created.system.updated_at,
             },
             data: UserData {
                 value: json!({"x": 2}),
@@ -669,8 +675,10 @@ mod tests {
 
         let object = StoredObject {
             key: key.clone(),
-            metadata: ObjectMetadata {
+            metadata: ObjectMeta {
                 name: "nonexistent".to_string(),
+            },
+            system: SystemMetadata {
                 resource_version: 1,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
@@ -690,7 +698,7 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, "my-widget", json!({"x": 1}))
+            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
             .await
             .unwrap();
 
@@ -740,7 +748,7 @@ mod tests {
             let store = SQLiteStore::new(db_path.to_str().unwrap()).unwrap();
             let key = test_key();
             store
-                .create(&key, "persistent", json!({"data": "hello"}))
+                .create(&key, ObjectMeta { name: "persistent".to_string() }, json!({"data": "hello"}))
                 .await
                 .unwrap();
         }
