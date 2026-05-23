@@ -49,5 +49,5 @@ rules:
     - Order tasks by dependency
     - Include clippy and cargo check verification steps
     - For coding tasks, add comments that are not verbose but explain the intent of complex code sections to make the code walkthrough easier.
-    - Add tasks for checking existing documentation and updating it if necessary when making changes to the codebase.
+    - Add tasks for checking existing documentation docs directory and updating it if necessary when making changes to the codebase.
     - Add tasks to check if any items in roadmap are impacted by the changes and update or remove them accordingly.
