@@ -118,7 +118,15 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                 "get": {
                     "summary": "List all registered Schema objects",
                     "operationId": "listSchemas",
-                    "parameters": [],
+                    "parameters": [
+                        {
+                            "name": "fieldSelector",
+                            "in": "query",
+                            "required": false,
+                            "schema": { "type": "string" },
+                            "description": "Filter watch events by field selector (e.g., metadata.name=my-obj). Only valid with watch=true."
+                        }
+                    ],
                     "responses": {
                         "200": {
                             "description": "A list of Schema objects",
@@ -283,6 +291,13 @@ pub(crate) fn build_kind_paths(
                             "required": false,
                             "schema": { "type": "boolean" },
                             "description": "Enable SSE watch stream"
+                        },
+                        {
+                            "name": "fieldSelector",
+                            "in": "query",
+                            "required": false,
+                            "schema": { "type": "string" },
+                            "description": "Filter watch events by field selector (e.g., metadata.name=my-obj). Only valid with watch=true."
                         }
                     ],
                     "responses": {
@@ -293,6 +308,10 @@ pub(crate) fn build_kind_paths(
                                     "schema": list_ref
                                 }
                             }
+                        },
+                        "400": {
+                            "description": "Invalid field selector — unsupported field or malformed syntax, or fieldSelector on non-watch request",
+                            "content": { "application/json": { "schema": error_ref } }
                         }
                     }
                 },

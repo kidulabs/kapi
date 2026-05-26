@@ -19,7 +19,13 @@ pub enum AppError {
     #[error("schema validation failed")]
     SchemaValidation(Vec<ValidationError>),
 
+    // fieldSelector query parameter parsing failed (unsupported field, malformed syntax)
+    // Maps to HTTP 400 Bad Request in into_response
+    #[error("invalid field selector: {0}")]
+    InvalidFieldSelector(String),
+
     // The schema itself is broken (meta-schema validation or compilation failure)
+
     #[error("invalid schema: {0}")]
     InvalidSchema(String),
 
@@ -60,6 +66,13 @@ impl IntoResponse for AppError {
                 "SchemaValidation",
                 "schema validation failed".to_string(),
                 json!({ "errors": errors }),
+            ),
+            // InvalidFieldSelector maps to HTTP 400 with the error message
+            AppError::InvalidFieldSelector(msg) => (
+                StatusCode::BAD_REQUEST,
+                "InvalidFieldSelector",
+                format!("invalid field selector: {msg}"),
+                json!({ "message": msg }),
             ),
             // InvalidSchema maps to HTTP 422 Unprocessable Entity
             AppError::InvalidSchema(msg) => (

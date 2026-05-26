@@ -14,7 +14,7 @@ Request → TraceLayer → CorsLayer → Handler → ObjectService → Store
 - **Handlers** (`object/handler.rs`): pure translation, no business logic
 - **ObjectService** (`object/service.rs`): single orchestrator — validation, storage, event publishing
 - **Store** (`store/`): pluggable `ObjectStore` trait — `InMemoryStore` (DashMap) and `SQLiteStore` (rusqlite + spawn_blocking)
-- **EventBus** (`event/bus.rs`): per-kind `tokio::broadcast` channels, `EventPublisher` trait
+- **EventBus** (`event/bus.rs`): per-kind `Vec<Watcher>` with `WatchFilter` + `mpsc::Sender` per watcher (predicate routing), `EventPublisher` trait
 - **Schema** (`schema/`): `SchemaValidator` trait wrapping `jsonschema` crate, compiled validators cached in `DashMap`
 
 ## Workspace structure

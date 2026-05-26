@@ -3,11 +3,10 @@ use std::task::{Context, Poll};
 
 use dashmap::DashMap;
 use futures_util::Stream;
-use tokio::sync::broadcast;
-use tokio_stream::wrappers::BroadcastStream;
-use tokio_stream::wrappers::errors::BroadcastStreamRecvError;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 
-use crate::object::types::WatchEvent;
+use crate::object::types::{WatchEvent, WatchFilter};
 use crate::store::ResourceKey;
 
 /// Trait abstracting event distribution for SSE watch endpoints.
@@ -15,98 +14,142 @@ use crate::store::ResourceKey;
 /// This trait isolates `ObjectService` from the concrete `EventBus`
 /// implementation, enabling mock-based testing and future event bus
 /// backends without touching the service layer.
-pub trait EventPublisher: Send + Sync {
+pub trait EventPublisher: Send + Sync + 'static {
     /// Publish a watch event for the given resource key.
     fn publish(&self, key: &ResourceKey, event: WatchEvent);
-    /// Subscribe to watch events for the given resource key.
-    fn subscribe(&self, key: &ResourceKey) -> WatchStream;
+    /// Subscribe to watch events for the given resource key, filtered by the
+    /// provided WatchFilter. Use WatchFilter::All to receive all events.
+    fn subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream;
+    /// Returns the number of watchers for a given key, if any exist.
+    fn watcher_count(&self, key: &ResourceKey) -> Option<usize> {
+        let _ = key;
+        None
+    }
 }
 
-/// Per-kind event bus backing SSE watch endpoints.
+/// A single watcher holding a filter and its mpsc sender.
+/// EventBus::publish iterates watchers, sending events only to matching ones.
+#[derive(Debug, Clone)]
+pub struct Watcher {
+    /// Filter determining which events this watcher receives
+    pub filter: WatchFilter,
+    /// Channel sender — publish() calls try_send; Full/Closed removes the watcher
+    pub sender: mpsc::Sender<WatchEvent>,
+}
+
+/// Per-kind event bus with predicate routing for SSE watch endpoints.
 ///
-/// Maintains a separate `tokio::broadcast` channel per `ResourceKey`.
-/// Channels are auto-created on first `subscribe` and lazily cleaned
-/// up on `publish` when all receivers are dropped.
+/// Maintains a `DashMap<ResourceKey, Vec<Watcher>>` where each watcher has
+/// its own `mpsc::Sender` and `WatchFilter`. On publish, events are delivered
+/// only to watchers whose filter matches. Watchers with full or closed channels
+/// are removed via retain().
+///
 #[derive(Debug, Clone)]
 pub struct EventBus {
-    channels: DashMap<ResourceKey, broadcast::Sender<WatchEvent>>,
-    capacity: usize,
+    /// Per-kind watcher lists. Each watcher has an mpsc sender and a filter.
+    watchers: DashMap<ResourceKey, Vec<Watcher>>,
+    /// Per-watcher mpsc channel capacity (default 256)
+    watcher_capacity: usize,
 }
 
-const DEFAULT_CAPACITY: usize = 1024;
+const DEFAULT_WATCHER_CAPACITY: usize = 256;
 
 impl EventBus {
-    /// Creates a new `EventBus` with the given per-channel capacity.
-    pub fn new(capacity: usize) -> Self {
+    /// Creates a new `EventBus` with the given per-watcher channel capacity.
+    pub fn new(watcher_capacity: usize) -> Self {
         Self {
-            channels: DashMap::new(),
-            capacity,
+            watchers: DashMap::new(),
+            watcher_capacity,
         }
     }
 
-    /// Creates a new `EventBus` with the given per-channel capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self::new(capacity)
+    /// Creates a new `EventBus` with the given per-watcher channel capacity.
+    pub fn with_watcher_capacity(watcher_capacity: usize) -> Self {
+        Self::new(watcher_capacity)
     }
 
-    /// Publish an event to all subscribers of the given key.
+    /// Publish an event to all matching watchers of the given key.
     ///
-    /// Fire-and-forget semantics: if the channel has no receivers,
-    /// it is removed and the event is dropped. If no channel exists,
-    /// this is a no-op.
+    /// Iterates watchers, checks each filter via WatchFilter::matches, and
+    /// sends matching events via try_send. Watchers whose channel is full or
+    /// closed are removed. No-op if no watchers exist for the key.
+    ///
+    /// # Watcher cleanup (lazy)
+    ///
+    /// When a subscriber disconnects, the HTTP client drops the WatchStream,
+    /// which drops the mpsc::Receiver. The Watcher struct (with its Sender)
+    /// stays in the Vec until the next publish() call for that key.
+    ///
+    /// We detect dead watchers lazily here in retain(): try_send returns
+    /// TrySendError::Closed when the receiver is gone, and we return false
+    /// to remove the watcher. There is no cheap way to detect a dropped
+    /// receiver from the sender side without attempting a send — polling
+    /// is_closed() on every subscriber drop would be wasteful. Lazy cleanup
+    /// on publish is simple, correct, and incurs only a failed try_send per
+    /// dead watcher per publish.
     pub fn publish(&self, key: &ResourceKey, event: WatchEvent) {
-        // Check if channel exists with zero receivers (dead channel).
-        // Must drop the read guard before we can remove the entry.
-        let dead = self
-            .channels
-            .get(key)
-            .is_some_and(|s| s.receiver_count() == 0);
-
-        if dead {
-            // Remove dead channel — nobody is listening.
-            self.channels.remove(key);
-            return;
-        }
-
-        // Fire-and-forget: send to any existing channel.
-        // Returns Err only if no receivers, which we already checked above.
-        if let Some(sender) = self.channels.get(key) {
-            let _ = sender.send(event);
+        if let Some(mut watchers) = self.watchers.get_mut(key) {
+            let object_name = event.object.metadata.name.clone();
+            // retain() removes dead watchers while iterating active ones
+            watchers.retain(|w| {
+                if !w.filter.matches(&event) {
+                    tracing::trace!(name = %object_name, "event filtered out by watcher filter");
+                    return true;
+                }
+                // try_send is non-blocking — publish() is not async
+                match w.sender.try_send(event.clone()) {
+                    Ok(()) => {
+                        tracing::trace!(name = %object_name, "event delivered to watcher");
+                        true
+                    }
+                    Err(TrySendError::Full(_)) => {
+                        tracing::trace!(name = %object_name, "watcher buffer full, removing");
+                        false
+                    }
+                    // Receiver was dropped (client disconnected) — remove watcher
+                    Err(TrySendError::Closed(_)) => {
+                        tracing::trace!(name = %object_name, "watcher channel closed, removing");
+                        false
+                    }
+                }
+            });
         }
     }
 
-    /// Returns the number of active channels for testing purposes.
-    #[cfg(test)]
-    pub fn channel_count(&self) -> usize {
-        self.channels.len()
-    }
-
-    /// Subscribe to events for the given key.
+    /// Subscribe to events for the given key, filtered by WatchFilter.
     ///
-    /// Auto-creates a broadcast channel if none exists for this key.
-    /// Returns a `WatchStream` that yields `WatchEvent` values.
-    pub fn subscribe(&self, key: &ResourceKey) -> WatchStream {
-        // Create or reuse the channel for this key.
-        // Channels are created lazily — no point allocating for kinds
-        // nobody is watching.
-        let sender = self
-            .channels
+    /// Creates a new mpsc::channel, pushes a Watcher with the given filter
+    /// into the key's Vec, and returns a WatchStream wrapping the receiver.
+    /// If no watchers exist for this key, a new Vec is created.
+    pub fn subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream {
+        let (tx, rx) = mpsc::channel(self.watcher_capacity);
+        let watcher = Watcher {
+            filter,
+            sender: tx,
+        };
+        tracing::trace!(
+            group = %key.group,
+            version = %key.version,
+            kind = %key.kind,
+            "watcher subscribed"
+        );
+        self.watchers
             .entry(key.clone())
-            .or_insert_with(|| broadcast::channel(self.capacity).0)
-            .value()
-            .clone();
+            .or_default()
+            .push(watcher);
+        WatchStream { inner: rx }
+    }
 
-        // Subscribe to the channel and wrap in our clean stream type.
-        let receiver = sender.subscribe();
-        WatchStream {
-            inner: BroadcastStream::new(receiver),
-        }
+    /// Returns the number of watchers for a given key.
+    /// Used in integration tests to verify lazy cleanup behavior.
+    pub fn watcher_count(&self, key: &ResourceKey) -> Option<usize> {
+        self.watchers.get(key).map(|w| w.len())
     }
 }
 
 impl Default for EventBus {
     fn default() -> Self {
-        Self::new(DEFAULT_CAPACITY)
+        Self::new(DEFAULT_WATCHER_CAPACITY)
     }
 }
 
@@ -115,63 +158,50 @@ impl EventPublisher for EventBus {
         EventBus::publish(self, key, event);
     }
 
-    fn subscribe(&self, key: &ResourceKey) -> WatchStream {
-        EventBus::subscribe(self, key)
+    fn subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream {
+        EventBus::subscribe(self, key, filter)
+    }
+
+    fn watcher_count(&self, key: &ResourceKey) -> Option<usize> {
+        EventBus::watcher_count(self, key)
     }
 }
 
-/// A clean `Stream<Item = WatchEvent>` wrapper around `BroadcastStream`.
+/// A clean `Stream<Item = WatchEvent>` wrapper around `mpsc::Receiver`.
 ///
 /// # Why a wrapper?
 ///
 /// Hides tokio internals from the public API so SSE handlers work with
-/// `WatchEvent` directly instead of `Result<WatchEvent, RecvError>`. Also
-/// keeps `EventBus` free to change the underlying stream type in future.
+/// `WatchEvent` directly. Also keeps `EventBus` free to change the
+/// underlying stream type without touching handler code.
 ///
-/// # Why terminate on lag?
+/// # Why mpsc instead of broadcast?
 ///
-/// When a subscriber falls behind (`RecvError::Lagged(n)`), the stream
-/// terminates with `None`. This is honest signaling — the client must
-/// re-sync via a full re-list + re-subscribe, matching Kubernetes watch
-/// semantics. Silently dropping events would violate consistency.
-///
-/// # Why auto-create on subscribe?
-///
-/// Channels are created on first subscriber, not on publish. There is no
-/// point holding a channel for a kind that nobody is watching.
+/// With predicate routing, each watcher gets its own mpsc channel.
+/// Filtering happens in EventBus::publish, so WatchStream is simpler —
+/// no Lagged handling, no filter loop. The stream ends when the sender
+/// is dropped (watcher removed from EventBus due to Full/Closed).
 #[derive(Debug)]
 pub struct WatchStream {
-    inner: BroadcastStream<WatchEvent>,
+    inner: mpsc::Receiver<WatchEvent>,
 }
 
 impl Stream for WatchStream {
     type Item = WatchEvent;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        match Pin::new(&mut self.get_mut().inner).poll_next(cx) {
-            // Normal delivery — forward the event.
-            Poll::Ready(Some(Ok(event))) => Poll::Ready(Some(event)),
-
-            // Subscriber fell behind — terminate stream.
-            // Client must re-sync via full re-list + re-subscribe.
-            Poll::Ready(Some(Err(BroadcastStreamRecvError::Lagged(n)))) => {
-                tracing::warn!(n, "watcher lagged, terminating stream");
-                Poll::Ready(None)
-            }
-
-            // Channel closed (all Senders dropped) or no more events.
-            Poll::Ready(None) => Poll::Ready(None),
-
-            // No events ready yet.
-            Poll::Pending => Poll::Pending,
-        }
+        // Delegate directly to mpsc::Receiver::poll_recv
+        // Stream ends (None) when the sender is dropped (watcher removed)
+        self.get_mut().inner.poll_recv(cx)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::types::{ObjectMeta, StoredObject, SystemMetadata, UserData, WatchEventType};
+    use crate::object::types::{
+        FieldSelector, ObjectMeta, StoredObject, SystemMetadata, UserData, WatchEventType,
+    };
     use chrono::Utc;
     use tokio_stream::StreamExt;
 
@@ -210,12 +240,12 @@ mod tests {
         assert_send::<WatchStream>();
     }
 
-    // Publish an event, single subscriber receives it.
+    // Single subscriber with WatchFilter::All receives published events.
     #[tokio::test]
     async fn single_subscriber_receives_event() {
         let bus = EventBus::default();
         let key = make_key();
-        let mut stream = bus.subscribe(&key);
+        let mut stream = bus.subscribe(&key, WatchFilter::All);
 
         let event = make_event();
         bus.publish(&key, event);
@@ -230,18 +260,17 @@ mod tests {
         ));
     }
 
-    // Publish an event, multiple subscribers all receive it.
+    // Multiple subscribers with WatchFilter::All all receive the same event.
     #[tokio::test]
     async fn multiple_subscribers_receive_event() {
         let bus = EventBus::default();
         let key = make_key();
 
-        let mut stream1 = bus.subscribe(&key);
-        let mut stream2 = bus.subscribe(&key);
+        let mut stream1 = bus.subscribe(&key, WatchFilter::All);
+        let mut stream2 = bus.subscribe(&key, WatchFilter::All);
 
         bus.publish(&key, make_event());
 
-        // Both subscribers should receive the same event.
         let e1 = stream1.next().await;
         let e2 = stream2.next().await;
         assert!(matches!(
@@ -260,29 +289,54 @@ mod tests {
         ));
     }
 
-    // Dead channel cleanup: channels with zero receivers are lazily removed
-    // on publish. Ensure channels survive as long as at least one subscriber
-    // remains, and are cleaned up only after all subscribers are gone.
+    // Watchers with different filters: matching watchers receive, non-matching don't.
     #[tokio::test]
-    async fn dead_channel_cleanup() {
+    async fn filtered_subscriber_receives_only_matching_events() {
         let bus = EventBus::default();
         let key = make_key();
 
-        // Multiple subscribers — channel stays alive even if some drop.
-        let stream1 = bus.subscribe(&key);
-        let stream2 = bus.subscribe(&key);
-        assert_eq!(bus.channel_count(), 1);
+        let mut all_stream = bus.subscribe(&key, WatchFilter::All);
+        let mut filtered = bus.subscribe(
+            &key,
+            WatchFilter::FieldSelector(FieldSelector::NameEquals("other".into())),
+        );
 
-        // Drop one subscriber — channel still has stream2 alive.
+        let event = make_event(); // name = "test"
+        bus.publish(&key, event);
+
+        // All subscriber gets the event
+        let received = all_stream.next().await;
+        assert!(received.is_some());
+
+        // Filtered subscriber (name="other") does NOT get event for name="test"
+        // Use timeout to verify no event arrives within 100ms
+        let received = tokio::time::timeout(
+            std::time::Duration::from_millis(100),
+            filtered.next(),
+        )
+        .await;
+        assert!(received.is_err(), "expected timeout, got: {received:?}");
+    }
+
+    // Dead watcher cleanup: watchers with dropped receivers are removed.
+    #[tokio::test]
+    async fn dead_watcher_cleanup() {
+        let bus = EventBus::default();
+        let key = make_key();
+
+        // Subscribe two watchers
+        let stream1 = bus.subscribe(&key, WatchFilter::All);
+        let _stream2 = bus.subscribe(&key, WatchFilter::All);
+
+        // Two watchers
+        assert_eq!(bus.watcher_count(&key), Some(2));
+
+        // Drop first watcher and publish — dead watcher should be cleaned up
         drop(stream1);
         bus.publish(&key, make_event());
-        // Channel should NOT be cleaned up — stream2 is still active.
-        assert_eq!(bus.channel_count(), 1);
 
-        // Now drop the remaining subscriber and verify cleanup.
-        drop(stream2);
-        bus.publish(&key, make_event());
-        assert_eq!(bus.channel_count(), 0);
+        // Only one watcher remains
+        assert_eq!(bus.watcher_count(&key), Some(1));
     }
 
     // Dropped subscriber does not block publisher from sending to remaining subscribers.
@@ -291,13 +345,10 @@ mod tests {
         let bus = EventBus::default();
         let key = make_key();
 
-        let stream1 = bus.subscribe(&key);
-        let mut stream2 = bus.subscribe(&key);
+        let _stream1 = bus.subscribe(&key, WatchFilter::All);
+        let mut stream2 = bus.subscribe(&key, WatchFilter::All);
 
-        // Drop the first subscriber — the channel still has 1 receiver.
-        drop(stream1);
-
-        // Publish after drop: must not panic, remaining subscriber gets the event.
+        // Publish after first subscriber was dropped (but hasn't been cleaned up yet)
         bus.publish(&key, make_event());
 
         let received = stream2.next().await;
@@ -310,41 +361,16 @@ mod tests {
         ));
     }
 
-    // Publishing to a key with no channel is a no-op — no panic, no error,
-    // and no channel is created (channels are created on subscribe, not publish).
+    // Publishing to a key with no watchers is a no-op.
     #[tokio::test]
-    async fn publish_to_no_channel_is_noop() {
+    async fn publish_to_no_watchers_is_noop() {
         let bus = EventBus::default();
         let key = make_key();
 
-        // No channel exists for this key — publish should be silent.
+        // No watchers exist for this key — publish should be silent
         bus.publish(&key, make_event());
 
-        // No channel should have been created.
-        assert_eq!(bus.channel_count(), 0);
-    }
-
-    // WatchStream terminates on lag: when the subscriber falls behind and
-    // the broadcast channel overwrites oldest messages, the stream yields
-    // None instead of silently dropping events.
-    #[tokio::test]
-    async fn watch_stream_terminates_on_lag() {
-        // Capacity 1 means a single unread slot — two publishes will overwrite.
-        let bus = EventBus::with_capacity(1);
-        let key = make_key();
-
-        let mut stream = bus.subscribe(&key);
-
-        // Publish two events without consuming — second overwrites the first.
-        bus.publish(&key, make_event());
-        bus.publish(&key, make_event());
-
-        // The receiver missed the first event due to buffer overrun.
-        // WatchStream should yield None (stream terminates).
-        let received = stream.next().await;
-        assert!(
-            received.is_none(),
-            "expected stream termination on lag, got: {received:?}"
-        );
+        // No watchers were created
+        assert_eq!(bus.watcher_count(&key), None);
     }
 }

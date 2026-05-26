@@ -18,8 +18,9 @@ Request → TraceLayer → CorsLayer → Handler → ObjectService → Store
                                     (trait — Arc<dyn>)           (trait — Arc<dyn>)
                                            │                                  │
                                            ▼                                  ▼
-                                     EventBus                      JsonSchemaValidator
-                                 (broadcast channels)              (wraps jsonschema crate)
+                                      EventBus                      JsonSchemaValidator
+                            (predicate routing — Vec<Watcher>       (wraps jsonschema crate)
+                             with WatchFilter + mpsc::Sender)
 
                        ┌──────────────────┐
                        │    AppState      │
@@ -72,7 +73,7 @@ Pluggable via the `ObjectStore` async trait. Two implementations are available: 
 
 ### 5. Event Bus (event/bus.rs)
 
-Pluggable via the `EventPublisher` trait. The production implementation is `EventBus` using per-kind `tokio::broadcast` channels. Channels are auto-created on first `subscribe` and lazily cleaned up on `publish` when all receivers are dropped.
+Pluggable via the `EventPublisher` trait. The production implementation is `EventBus` using predicate routing with per-kind `Vec<Watcher>`. Each `Watcher` holds a `WatchFilter` and an `mpsc::Sender<WatchEvent>`. On `publish`, events are delivered only to watchers whose filter matches the event. Dead watchers (disconnected clients) are lazily removed via `retain()` on the next publish.
 
 ## Module Tree
 
@@ -143,14 +144,17 @@ PUT /apis/example.io/v1/Widget/my-widget
 ### Watch Events
 
 ```
-GET /apis/example.io/v1/Widget?watch=true
+GET /apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=my-widget
   │
-  ▼ Handler: detect ?watch=true
+  ▼ Handler: detect ?watch=true, parse fieldSelector into WatchFilter
+  │   (400 if fieldSelector on non-watch request or unsupported field)
   │
-  ▼ ObjectService::subscribe(key) → WatchStream
-  │   (delegates to EventBus::subscribe)
+  ▼ ObjectService::subscribe(key, filter) → WatchStream
+  │   (delegates to EventBus::subscribe with WatchFilter)
+  │   (EventBus creates mpsc::channel + Watcher, filters on publish)
   │
   ▼ Response: SSE stream of WatchEvent (Added/Modified/Deleted)
+  │   only events matching the WatchFilter are delivered
 ```
 
 ### Schema Registration
@@ -197,7 +201,7 @@ DELETE /apis/kapi.io/v1/Schema/{name}
 | v1 storage | In-memory (DashMap) + SQLite (rusqlite) | Zero ops for dev, persistent option for production; trait makes swapping trivial |
 | API paths | Kube-style `/apis/{group}/{version}/{kind}` | Familiar to kube users, supports multiple API groups |
 | Watch semantics | `?watch=true` on list endpoint | Kube-native pattern, handler branches on query param |
-| Event bus | Per-kind `tokio::broadcast` channels | Each kind gets its own channel; swappable for testing |
+| Event bus | Predicate routing — `Vec<Watcher>` with `WatchFilter` + `mpsc::Sender` per watcher | Eliminates unnecessary work — filtered watchers only receive matching events; swappable for testing |
 | Concurrency | Global monotonic `AtomicU64` | Enables "give me events since version N" for watch resume |
 | Schema validation | `Arc<dyn SchemaValidator>` | Isolates jsonschema crate behind trait; swappable |
 | Schema deletion | Block if objects exist (409) | Prevent accidental data loss |

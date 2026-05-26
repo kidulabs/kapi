@@ -239,7 +239,24 @@ event: message
 data: {"eventType":"Added","object":{...}}
 ```
 
-Watch streams terminate if the client falls behind. The client must re-list and re-subscribe.
+### Filtering by field selector
+
+Add `?fieldSelector=metadata.name=<name>` to watch only events for a specific object:
+
+```
+GET /apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=my-widget
+```
+
+Only events where `object.metadata.name == "my-widget"` will be delivered. The syntax follows Kubernetes convention: `fieldSelector=metadata.name=<value>`.
+
+**Supported fields:**
+| Field | Description |
+|-------|-------------|
+| `metadata.name` | Filter by exact object name |
+
+**Errors:** `400` for unsupported fields, malformed syntax (missing `=` sign), or `fieldSelector` on a non-watch request.
+
+Watch streams terminate when the client disconnects or the watcher's buffer is full. The client must re-list and re-subscribe.
 
 ---
 
@@ -274,6 +291,7 @@ All errors follow this format:
 | 404 | `NotFound` | Resource not found |
 | 409 | `Conflict` | OCC version mismatch or duplicate |
 | 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
+| 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field, malformed syntax, or fieldSelector on non-watch request) |
 | 422 | `SchemaValidation` | Object data doesn't match schema |
 | 422 | `InvalidSchema` | Schema registration failed validation |
 | 500 | `Internal` | Unexpected server error |
