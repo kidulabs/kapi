@@ -8,7 +8,12 @@
 
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
 - [ ] **Periodic event bus cleanup** — Background task to scan and remove dead channels from EventBus
-- [ ] ** Label filtering** - Add label support like k8s
+- [ ] **Label filtering** — Add `labelSelector` query param for watch and list, `labels` field on `ObjectMeta`
+- [ ] **Watch filtering** — `fieldSelector`/`labelSelector` on list (non-watch) requests
+- [ ] **Watch resume** — `resourceVersion` param for watch resume with ring buffer replay
+- [ ] **Watch bookmarks** — Periodic bookmark events with current resourceVersion
+- [ ] **Field selector variants** — `NameNotEquals` and `NameIn` field selectors
+- [ ] **Watch filter combinators** — `WatchFilter::And` for composing field and label selectors
 
 ## Deferred Improvements
 

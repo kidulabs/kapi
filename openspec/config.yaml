@@ -35,6 +35,8 @@ rules:
     - Keep proposals under 500 words
     - Always include a "Non-goals" section
     - Reference existing specs in openspec/specs/ before proposing new ones
+    - In context, if there are any suggestions about future improvements or features, add them to proposal as "Future Work" section. Also add a line item to the roadmap if it is not already there.
+  spec:
   specs:
     - Use SHALL/MUST for normative requirements (avoid should/may)
     - Every requirement MUST have at least one scenario
