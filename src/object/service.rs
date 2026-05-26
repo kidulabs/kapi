@@ -12,6 +12,7 @@ use crate::error::AppError;
 use crate::event::EventPublisher;
 use crate::object::types::{
     ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, WatchEvent, WatchEventType,
+    WatchFilter,
 };
 use crate::schema::{JsonSchemaValidator, SchemaValidator};
 use crate::store::{ObjectStore, ResourceKey};
@@ -138,12 +139,12 @@ impl ObjectService {
         }
     }
 
-    /// Subscribe to watch events for the given key.
+    /// Subscribe to watch events for the given key, filtered by WatchFilter.
     ///
     /// Delegates to the internal `EventPublisher` so handlers don't need
     /// to know the event bus exists.
-    pub fn subscribe(&self, key: &ResourceKey) -> crate::event::WatchStream {
-        self.event_bus.subscribe(key)
+    pub fn subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> crate::event::WatchStream {
+        self.event_bus.subscribe(key, filter)
     }
 
     // --- Private helper methods ---

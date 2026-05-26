@@ -41,6 +41,12 @@ async fn main() {
         println!();
         run_test!("watch_schema_added", watch_events::test_watch_schema_added);
         run_test!("watch_object_events", watch_events::test_watch_object_events);
+        run_test!("watch_by_name_matching", watch_events::test_watch_by_name_matching_events);
+        run_test!("watch_by_name_non_matching_filtered", watch_events::test_watch_by_name_non_matching_filtered);
+        run_test!("watch_invalid_field_selector", watch_events::test_watch_invalid_field_selector);
+        run_test!("field_selector_non_watch_400", watch_events::test_field_selector_on_non_watch_returns_400);
+        run_test!("watch_by_name_and_all_simultaneous", watch_events::test_watch_by_name_and_watch_all_simultaneously);
+        run_test!("watcher_cleanup_on_disconnect", watch_events::test_watcher_cleanup_on_client_disconnect);
 
         println!();
         run_test!("delete_schema_no_objects", schema_deletion::test_delete_schema_no_objects);

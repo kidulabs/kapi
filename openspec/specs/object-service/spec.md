@@ -128,12 +128,16 @@ The `schema_cache` SHALL be keyed by the Schema's `name` field (e.g., `"Widget.e
 - **WHEN** a Schema with name `"Widget.example.io"` is deleted
 - **THEN** the cache entry for `"Widget.example.io"` is removed
 
-### Requirement: Service provides subscribe() for SSE watch
-The system SHALL provide an `ObjectService::subscribe(&self, key: &ResourceKey) -> WatchStream` method that delegates to the internal `EventPublisher::subscribe()`.
+### Requirement: Service provides subscribe() with WatchFilter for SSE watch
+The system SHALL provide an `ObjectService::subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream` method that delegates to the internal `EventPublisher::subscribe(key, filter)`.
 
-#### Scenario: Subscribe returns a WatchStream
-- **WHEN** `object_service.subscribe(&key)` is called
-- **THEN** a `WatchStream` is returned for the given resource key
+#### Scenario: Subscribe with WatchFilter::All returns a WatchStream
+- **WHEN** `object_service.subscribe(&key, WatchFilter::All)` is called
+- **THEN** a `WatchStream` is returned that delivers all events for the given resource key
+
+#### Scenario: Subscribe with WatchFilter::FieldSelector returns a filtered WatchStream
+- **WHEN** `object_service.subscribe(&key, WatchFilter::FieldSelector(FieldSelector::NameEquals("my-widget".into())))` is called
+- **THEN** a `WatchStream` is returned that delivers only events matching the filter
 
 ### Requirement: Schema compilation uses JsonSchemaValidator
 The system SHALL compile user schemas during `create` and `update` operations using `JsonSchemaValidator::compile(&schema_data.json_schema)` instead of calling `draft202012::options().build()` directly.

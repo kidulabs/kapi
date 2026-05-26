@@ -23,6 +23,35 @@ pub struct ValidationError {
     pub message: String,
 }
 
+// FieldSelector implements Kubernetes-compatible field-based filtering
+// Currently supports only metadata.name (fieldSelector=metadata.name=<value>)
+// Extensible: NameNotEquals, NameIn variants can be added later
+#[derive(Debug, Clone)]
+pub enum FieldSelector {
+    NameEquals(String),
+}
+
+// WatchFilter determines which events a watcher receives
+// Used by EventBus for predicate routing: publish() only delivers to matching watchers
+#[derive(Debug, Clone)]
+pub enum WatchFilter {
+    All,
+    FieldSelector(FieldSelector),
+}
+
+impl WatchFilter {
+    // Returns true if the event should be delivered to a watcher with this filter
+    // All matches everything; FieldSelector delegates to field-level comparison
+    pub fn matches(&self, event: &WatchEvent) -> bool {
+        match self {
+            WatchFilter::All => true,
+            WatchFilter::FieldSelector(fs) => match fs {
+                FieldSelector::NameEquals(name) => event.object.metadata.name == *name,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
 pub enum WatchEventType {
     Added,
@@ -71,4 +100,57 @@ pub struct StoredObject {
     pub metadata: ObjectMeta,
     pub system: SystemMetadata,
     pub data: UserData,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn make_event(name: &str) -> WatchEvent {
+        WatchEvent {
+            event_type: WatchEventType::Added,
+            object: StoredObject {
+                key: ResourceKey {
+                    group: "test.io".into(),
+                    version: "v1".into(),
+                    kind: "Test".into(),
+                },
+                metadata: ObjectMeta { name: name.into() },
+                system: SystemMetadata {
+                    resource_version: 1,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                },
+                data: UserData {
+                    value: serde_json::json!({}),
+                },
+            },
+        }
+    }
+
+    #[test]
+    fn watch_filter_all_matches_all_events() {
+        assert!(WatchFilter::All.matches(&make_event("foo")));
+        assert!(WatchFilter::All.matches(&make_event("bar")));
+    }
+
+    #[test]
+    fn watch_filter_field_selector_name_equals_matches_correct_name() {
+        let filter = WatchFilter::FieldSelector(FieldSelector::NameEquals("target".into()));
+        assert!(filter.matches(&make_event("target")));
+    }
+
+    #[test]
+    fn watch_filter_field_selector_name_equals_rejects_wrong_name() {
+        let filter = WatchFilter::FieldSelector(FieldSelector::NameEquals("target".into()));
+        assert!(!filter.matches(&make_event("other")));
+    }
+
+    #[test]
+    fn field_selector_name_equals_equality() {
+        let fs = FieldSelector::NameEquals("foo".into());
+        // Match same name
+        let event = make_event("foo");
+        assert!(WatchFilter::FieldSelector(fs).matches(&event));
+    }
 }

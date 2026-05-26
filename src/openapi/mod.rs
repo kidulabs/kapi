@@ -69,7 +69,7 @@ mod tests {
     }
 
     #[test]
-    fn build_static_components_contains_all_eleven() {
+    fn build_static_components_contains_all_twelve() {
         let components = build_static_components();
         let names: Vec<&str> = components.iter().map(|(n, _)| n.as_str()).collect();
         let expected = [
@@ -82,6 +82,7 @@ mod tests {
             "WatchEvent",
             "WatchEventType",
             "ValidationError",
+            "InvalidFieldSelector",
             "AppError",
             "SchemaData",
         ];
@@ -126,6 +127,21 @@ mod tests {
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "error"));
         assert!(required.iter().any(|r| r == "code"));
+    }
+
+    #[test]
+    fn build_static_components_invalid_field_selector_shape() {
+        let components = build_static_components();
+        let ifs = components
+            .iter()
+            .find(|(n, _)| n == "InvalidFieldSelector")
+            .unwrap();
+        let obj = ifs.1.as_object().unwrap();
+        assert_eq!(obj["type"], "object");
+        let props = obj["properties"].as_object().unwrap();
+        assert!(props.contains_key("error"));
+        assert!(props.contains_key("code"));
+        assert!(props.contains_key("details"));
     }
 
     #[test]
@@ -308,6 +324,48 @@ mod tests {
         assert_eq!(watch["in"], "query");
         assert_eq!(watch["schema"]["type"], "boolean");
         assert_eq!(watch["required"], false);
+    }
+
+    #[test]
+    fn build_kind_paths_list_has_field_selector_param() {
+        let schema_data = crate::object::types::SchemaData {
+            target_group: "example.io".to_string(),
+            target_version: "v1".to_string(),
+            target_kind: "Widget".to_string(),
+            json_schema: serde_json::json!({ "type": "object" }),
+        };
+        let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
+        let (_path, collection) = paths
+            .iter()
+            .find(|(p, _)| p == "/apis/example.io/v1/Widget")
+            .unwrap();
+        let params = collection["get"]["parameters"].as_array().unwrap();
+        let field_selector = params.iter().find(|p| p["name"] == "fieldSelector").unwrap();
+        assert_eq!(field_selector["in"], "query");
+        assert_eq!(field_selector["schema"]["type"], "string");
+        assert_eq!(field_selector["required"], false);
+    }
+
+    #[test]
+    fn build_kind_paths_list_has_400_response() {
+        let schema_data = crate::object::types::SchemaData {
+            target_group: "example.io".to_string(),
+            target_version: "v1".to_string(),
+            target_kind: "Widget".to_string(),
+            json_schema: serde_json::json!({ "type": "object" }),
+        };
+        let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
+        let (_path, collection) = paths
+            .iter()
+            .find(|(p, _)| p == "/apis/example.io/v1/Widget")
+            .unwrap();
+        let responses = &collection["get"]["responses"];
+        assert!(responses.get("400").is_some(), "missing 400 response");
+        let resp = &responses["400"];
+        assert_eq!(
+            resp["content"]["application/json"]["schema"]["$ref"],
+            "#/components/schemas/AppError"
+        );
     }
 
     #[test]

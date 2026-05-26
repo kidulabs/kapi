@@ -115,3 +115,247 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
 
     Ok(())
 }
+
+pub async fn test_watch_by_name_matching_events(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    // Watch only events for "my-target-widget"
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=my-target-widget",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create a non-target object — should NOT arrive on this watch
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget("other-widget", "blue", 1),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    // Create the target object — should arrive
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget("my-target-widget", "red", 2),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    // We should receive exactly one event — only for the target name
+    let event = timeout(Duration::from_secs(3), events.recv())
+        .await
+        .map_err(|_| "timeout waiting for matching event".to_string())?
+        .ok_or("watch stream ended before event".to_string())?;
+
+    assert_eq!(
+        event.object.metadata.name, "my-target-widget",
+        "expected only events for target widget"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watch_by_name_non_matching_filtered(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    // Watch only events for "target"
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=target",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create a non-target object — should be filtered out
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget("other", "blue", 1),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    // Verify no event arrived for the non-target object
+    let result = timeout(Duration::from_millis(500), events.recv()).await;
+    assert!(
+        result.is_err(),
+        "should not receive event for non-target object"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watch_invalid_field_selector(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    // Unsupported field
+    let resp = client
+        .get("/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.namespace=default")
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "expected 400 for unsupported field"
+    );
+
+    // Malformed field selector
+    let resp = client
+        .get("/apis/example.io/v1/Widget?watch=true&fieldSelector=invalid-format")
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "expected 400 for malformed field selector"
+    );
+
+    Ok(())
+}
+
+pub async fn test_field_selector_on_non_watch_returns_400(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    // fieldSelector without watch=true
+    let resp = client
+        .get("/apis/example.io/v1/Widget?fieldSelector=metadata.name=my-widget")
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "expected 400 for fieldSelector on non-watch request"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watch_by_name_and_watch_all_simultaneously(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    // Two simultaneous watches: one filtered by name, one watching all
+    let mut named_events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=named-one",
+    )
+    .await;
+    let mut all_events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create the named object — both watchers should receive it
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget("named-one", "green", 3),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    // All watcher receives the event
+    let all_event = timeout(Duration::from_secs(3), all_events.recv())
+        .await
+        .map_err(|_| "timeout waiting for all watcher event".to_string())?
+        .ok_or("all watcher stream ended")?;
+    assert_eq!(all_event.object.metadata.name, "named-one");
+
+    // Named watcher also receives it
+    let named_event = timeout(Duration::from_secs(3), named_events.recv())
+        .await
+        .map_err(|_| "timeout waiting for named watcher event".to_string())?
+        .ok_or("named watcher stream ended")?;
+    assert_eq!(named_event.object.metadata.name, "named-one");
+
+    // Create an unnamed object — only the all watcher should receive it
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget("other", "yellow", 4),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    // All watcher receives the event for "other"
+    let all_event2 = timeout(Duration::from_secs(3), all_events.recv())
+        .await
+        .map_err(|_| "timeout waiting for all watcher second event".to_string())?
+        .ok_or("all watcher stream ended")?;
+    assert_eq!(all_event2.object.metadata.name, "other");
+
+    // Named watcher should NOT receive the event for "other"
+    let timeout_result = timeout(Duration::from_millis(500), named_events.recv()).await;
+    assert!(
+        timeout_result.is_err(),
+        "named watcher should not receive event for 'other'"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<(), String> {
+    use kapi::event::EventPublisher;
+    use kapi::object::types::{ObjectMeta, WatchEvent, WatchFilter};
+    use kapi::store::ResourceKey;
+
+    let key = ResourceKey {
+        group: "example.io".to_string(),
+        version: "v1".to_string(),
+        kind: "Widget".to_string(),
+    };
+
+    let event_bus: &dyn EventPublisher = &*app.event_bus;
+
+    // Subscribe a watcher with WatchFilter::All
+    let stream = event_bus.subscribe(&key, WatchFilter::All);
+
+    // Verify a watcher was created
+    let count = event_bus.watcher_count(&key);
+    assert_eq!(count, Some(1), "watcher should exist after subscribe");
+
+    // Drop the WatchStream (simulating HTTP client disconnect).
+    // The mpsc::Receiver inside WatchStream is dropped, but the Watcher
+    // (with its mpsc::Sender) stays in the Vec until the next publish().
+    drop(stream);
+
+    // Publish an event to trigger lazy retain() cleanup.
+    // retain() iterates watchers; try_send returns Closed on dead receivers.
+    // Use app.store to create a stored object so we don't need chrono for
+    // SystemMetadata (the store populates it).
+    let stored = app
+        .store
+        .create(
+            &key,
+            ObjectMeta {
+                name: "cleanup-test".to_string(),
+            },
+            serde_json::json!({}),
+        )
+        .await
+        .map_err(|e| format!("store create failed: {e}"))?;
+
+    event_bus.publish(
+        &key,
+        WatchEvent {
+            event_type: WatchEventType::Added,
+            object: stored,
+        },
+    );
+
+    // After publish, the dead watcher should be cleaned up
+    let count = event_bus.watcher_count(&key).unwrap_or(0);
+    assert_eq!(count, 0, "dead watcher should be cleaned up on publish");
+
+    Ok(())
+}

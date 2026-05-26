@@ -10,11 +10,14 @@ use axum::response::IntoResponse;
 use axum::response::sse::{Event, Sse};
 use futures_util::Stream;
 use futures_util::StreamExt;
+use futures_util::stream;
 use serde::Deserialize;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::{ContinueToken, ListOptions, ObjectMeta, StoredObject};
+use crate::object::types::{
+    ContinueToken, FieldSelector, ListOptions, ObjectMeta, StoredObject, WatchFilter,
+};
 use crate::routes::AppState;
 use crate::store::ResourceKey;
 
@@ -42,6 +45,8 @@ pub struct ListQuery {
     pub limit: Option<usize>,
     #[serde(rename = "continue")]
     pub continue_token: Option<String>,
+    #[serde(rename = "fieldSelector")]
+    pub field_selector: Option<String>,
 }
 
 /// Extracts the schema name from a Schema registration body.
@@ -143,10 +148,24 @@ pub async fn list(
         kind: path.kind,
     };
 
+    // Parse fieldSelector if present
+    let filter = match &query.field_selector {
+        Some(raw) => Some(parse_field_selector(raw)?),
+        None => None,
+    };
+
     // Branch on watch parameter
     if query.watch == Some(true) {
-        // Return SSE stream
-        return Ok(watch(state, key).into_response());
+        // Return SSE stream with optional fieldSelector filter
+        let filter = filter.unwrap_or(WatchFilter::All);
+        return Ok(watch(state, key, filter).into_response());
+    }
+
+    // fieldSelector on non-watch request returns 400
+    if filter.is_some() {
+        return Err(AppError::InvalidFieldSelector(
+            "fieldSelector is only valid with watch=true".to_string(),
+        ));
     }
 
     // Regular list
@@ -158,21 +177,53 @@ pub async fn list(
     Ok(Json(response).into_response())
 }
 
+/// Parses a `fieldSelector` query parameter value into a `WatchFilter`.
+///
+/// Supports Kubernetes-compatible syntax: `metadata.name=<value>`.
+/// Returns `InvalidFieldSelector` for unsupported fields or malformed input.
+pub fn parse_field_selector(raw: &str) -> Result<WatchFilter, AppError> {
+    let (field, value) = raw.split_once('=').ok_or_else(|| {
+        AppError::InvalidFieldSelector(format!(
+            "invalid field selector format: expected 'field=value', got '{raw}'"
+        ))
+    })?;
+    match field {
+        "metadata.name" => Ok(WatchFilter::FieldSelector(FieldSelector::NameEquals(
+            value.to_string(),
+        ))),
+        _ => Err(AppError::InvalidFieldSelector(format!(
+            "unsupported field '{field}': only 'metadata.name' is supported"
+        ))),
+    }
+}
+
 /// Watch logic — subscribes to event bus and returns SSE stream.
 ///
 /// Maps WatchEvent to axum SSE events with JSON data.
 fn watch(
     state: AppState,
     key: ResourceKey,
+    filter: WatchFilter,
 ) -> Sse<impl Stream<Item = Result<Event, std::convert::Infallible>>> {
-    // Subscribe to watch events for this key via ObjectService
-    let stream = state.object_service().subscribe(&key);
+    tracing::trace!(
+        group = %key.group,
+        version = %key.version,
+        kind = %key.kind,
+        "sse watch stream started"
+    );
 
-    // Map WatchEvent to SSE Event
+    let stream = state.object_service().subscribe(&key, filter);
+
     let sse_stream = stream.filter_map(|watch_event| async move {
         let json_data = serde_json::to_string(&watch_event).ok()?;
         Some(Ok(Event::default().event("message").data(json_data)))
     });
+
+    let sse_stream = stream::once(async move {
+        tracing::trace!("sse watch stream ended");
+        sse_stream
+    })
+    .flatten();
 
     Sse::new(sse_stream)
 }
@@ -232,4 +283,45 @@ pub async fn delete(
 
     let deleted = state.object_service().delete(key, path.name).await?;
     Ok(Json(deleted))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_field_selector_valid_metadata_name() {
+        let result = parse_field_selector("metadata.name=my-widget");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        assert!(matches!(
+            filter,
+            WatchFilter::FieldSelector(FieldSelector::NameEquals(name)) if name == "my-widget"
+        ));
+    }
+
+    #[test]
+    fn parse_field_selector_unsupported_field() {
+        let result = parse_field_selector("metadata.namespace=default");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("metadata.namespace")));
+    }
+
+    #[test]
+    fn parse_field_selector_malformed_input() {
+        let result = parse_field_selector("invalid-format");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("expected 'field=value'")));
+    }
+
+    #[test]
+    fn parse_field_selector_empty_value() {
+        let result = parse_field_selector("metadata.name=");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        assert!(matches!(
+            filter,
+            WatchFilter::FieldSelector(FieldSelector::NameEquals(name)) if name.is_empty()
+        ));
+    }
 }

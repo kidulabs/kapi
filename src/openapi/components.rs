@@ -156,6 +156,24 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                 "required": ["path", "message"]
             }),
         ),
+        // InvalidFieldSelector: invalid fieldSelector query parameter error
+        (
+            "InvalidFieldSelector".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" },
+                    "details": {
+                        "type": "object",
+                        "properties": {
+                            "message": { "type": "string" }
+                        }
+                    }
+                },
+                "required": ["error", "code"]
+            }),
+        ),
         // AppError: standard error response shape
         (
             "AppError".to_string(),

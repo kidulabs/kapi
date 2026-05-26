@@ -1,8 +1,4 @@
-## Purpose
-
-Define the event bus system for real-time resource watch notifications. The event bus enables clients to subscribe to resource changes via SSE (Server-Sent Events) using predicate routing with per-watcher mpsc channels.
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: EventBus per-kind watcher management
 The system SHALL maintain a `DashMap<ResourceKey, Vec<Watcher>>` where each `Watcher` holds a `WatchFilter` and a `mpsc::Sender<WatchEvent>`. The `EventBus` SHALL support configurable per-watcher channel capacity with a default of 256.
@@ -76,8 +72,16 @@ The system SHALL provide a `WatchStream` type that wraps `mpsc::Receiver<WatchEv
 ### Requirement: WatchStream is Send
 The `WatchStream` type SHALL be `Send` to support Axum SSE handlers across thread boundaries.
 
+#### Scenario: WatchStream is Send
+- **WHEN** the code is compiled
+- **THEN** `WatchStream` satisfies the `Send` trait bound
+
 ### Requirement: EventBus is Clone
 The `EventBus` type SHALL be `Clone` so it can be stored in Axum `State` and extracted by handlers.
+
+#### Scenario: EventBus clone
+- **WHEN** `EventBus::clone()` is called
+- **THEN** a new `EventBus` instance is created sharing the same `DashMap` of watchers
 
 ### Requirement: EventPublisher trait accepts WatchFilter
 The system SHALL define an `EventPublisher` trait with `publish(&self, key: &ResourceKey, event: WatchEvent)` and `subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream` methods. The trait SHALL require `Send + Sync`.
@@ -115,3 +119,21 @@ The system SHALL continue publishing to remaining watchers when one subscriber d
 - **AND** an event is published
 - **THEN** remaining subscribers with matching filters receive the event
 - **AND** no panic or error occurs
+
+## REMOVED Requirements
+
+### Requirement: EventBus per-kind channel management
+**Reason**: Replaced by per-kind watcher list with predicate routing. Broadcast channels are no longer used.
+**Migration**: Use `subscribe(key, filter)` instead of `subscribe(key)`. The `DashMap<ResourceKey, broadcast::Sender<WatchEvent>>` is replaced by `DashMap<ResourceKey, Vec<Watcher>>`.
+
+### Requirement: EventBus configurable capacity
+**Reason**: Replaced by configurable per-watcher channel capacity. The broadcast channel capacity is no longer relevant.
+**Migration**: Use `EventBus::with_watcher_capacity(n)` instead of `EventBus::with_capacity(n)`.
+
+### Requirement: WatchStream clean stream API
+**Reason**: Replaced by simpler `WatchStream` wrapping `mpsc::Receiver`. The `BroadcastStreamRecvError::Lagged` handling is no longer needed.
+**Migration**: `WatchStream` no longer handles `Lagged` errors. Stream termination happens when the `mpsc::Sender` is dropped (watcher removed from EventBus).
+
+### Requirement: WatchStream terminates on lag
+**Reason**: No longer applicable. With predicate routing, each watcher has its own `mpsc` channel. When the channel is full, `try_send` fails and the watcher is removed. The stream ends when the sender is dropped.
+**Migration**: Stream termination now happens via `mpsc::Receiver` returning `None` when the sender is dropped. No `Lagged` error handling needed.
