@@ -42,7 +42,7 @@ The get handler SHALL extract path parameters and call `ObjectService::get(key, 
 - **THEN** the response is 404 with `NotFound` error
 
 ### Requirement: List handler supports both list and watch modes
-The list handler SHALL check for `?watch=true` query parameter. If present, it SHALL subscribe to the event bus and return an SSE stream. If absent, it SHALL call `ObjectService::list(key, opts)` and return JSON.
+The list handler SHALL check for `?watch=true` query parameter. If present, it SHALL parse the `fieldSelector` query parameter into a `WatchFilter`, subscribe to the event bus with the filter, and return an SSE stream. If `fieldSelector` is not present, `WatchFilter::All` SHALL be used. If `fieldSelector` is present on a non-watch request, the handler SHALL return 400 Bad Request with `InvalidFieldSelector` error.
 
 #### Scenario: List returns JSON
 - **WHEN** GET `/apis/example.io/v1/Widget` without `?watch=true`
@@ -51,6 +51,26 @@ The list handler SHALL check for `?watch=true` query parameter. If present, it S
 #### Scenario: Watch returns SSE stream
 - **WHEN** GET `/apis/example.io/v1/Widget?watch=true`
 - **THEN** the response is an SSE stream of `WatchEvent` objects
+
+#### Scenario: Watch with fieldSelector filters by name
+- **WHEN** GET `/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=my-widget`
+- **THEN** the SSE stream only delivers events for objects with `metadata.name == "my-widget"`
+
+#### Scenario: Watch without fieldSelector returns all events
+- **WHEN** GET `/apis/example.io/v1/Widget?watch=true`
+- **THEN** the SSE stream delivers all events for the Widget kind
+
+#### Scenario: fieldSelector on non-watch request returns 400
+- **WHEN** GET `/apis/example.io/v1/Widget?fieldSelector=metadata.name=my-widget` (without `?watch=true`)
+- **THEN** the response is 400 Bad Request with `InvalidFieldSelector` error
+
+#### Scenario: Invalid fieldSelector returns 400
+- **WHEN** GET `/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.namespace=default`
+- **THEN** the response is 400 Bad Request with `InvalidFieldSelector` error indicating the field is not supported
+
+#### Scenario: Malformed fieldSelector returns 400
+- **WHEN** GET `/apis/example.io/v1/Widget?watch=true&fieldSelector=invalid-format`
+- **THEN** the response is 400 Bad Request with `InvalidFieldSelector` error indicating the format is invalid
 
 #### Scenario: Watch events have correct SSE format
 - **WHEN** an object is created while a watch is active
