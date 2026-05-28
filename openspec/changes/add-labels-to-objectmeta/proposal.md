@@ -8,7 +8,7 @@ Objects in kapi currently have only a `name` in their metadata. Labels — key-v
 - Add `labels` table to SQLite schema for SQL-level label filtering (Phase 3 dependency)
 - Update `InMemoryStore` to store and reconstruct labels from `ObjectMeta`
 - Update `SQLiteStore` to persist labels in a separate table, with diff-based updates (read existing → compute diff → apply changes in transaction)
-- Add label validation in `ObjectService` following Kubernetes semantics: alphanumeric + `-_.` for values (max 256 chars), alphanumeric + `-_.` + `/` for keys (max 256 chars), non-empty keys and values
+- Add label validation in `ObjectService` following structured label semantics: alphanumeric + `-_.` for values (max 256 chars), alphanumeric + `-_.` + `/` for keys (max 256 chars), non-empty keys and values
 - Update create/update handlers to extract labels from `metadata.labels` in request body (applies to both regular objects and Schema objects)
 - Add `InvalidLabel` error variant to `AppError` (maps to HTTP 400)
 - Update OpenAPI spec to document `labels` field on `ObjectMeta`
@@ -45,6 +45,6 @@ Objects in kapi currently have only a `name` in their metadata. Labels — key-v
 
 ## Future Work
 
-- Full Kubernetes label selector syntax parity (set-based operators: `in`, `notin`) — currently moderate syntax only (equality, inequality, existence, non-existence, AND)
+- Full label selector syntax parity (set-based operators: `in`, `notin`) — currently moderate syntax only (equality, inequality, existence, non-existence, AND)
 - Label indexing for high-cardinality label queries at scale
 - Annotations (free-form key-value metadata without selection semantics)

@@ -968,6 +968,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "jsonschema",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

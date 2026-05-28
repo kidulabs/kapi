@@ -3,9 +3,11 @@
 //! The service is the single entry point for object CRUD operations.
 //! Handlers call the service, never the store directly.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use regex::Regex;
 use serde_json::Value;
 
 use crate::error::AppError;
@@ -16,6 +18,105 @@ use crate::object::types::{
 };
 use crate::schema::{JsonSchemaValidator, SchemaValidator};
 use crate::store::{ObjectStore, ResourceKey};
+
+/// Validates a label key according to label validation rules.
+/// Keys must be non-empty, max 256 chars, matching `[a-zA-Z0-9][-_.a-zA-Z0-9]*`
+/// with optional `/` prefix separator (prefix: max 253 chars, DNS subdomain format).
+fn validate_label_key(key: &str) -> Result<(), AppError> {
+    if key.is_empty() {
+        return Err(AppError::InvalidLabel(
+            "label key must not be empty".to_string(),
+        ));
+    }
+    if key.len() > 256 {
+        return Err(AppError::InvalidLabel(format!(
+            "label key '{}' exceeds maximum length of 256 characters",
+            key
+        )));
+    }
+
+    let (_prefix, name) = if let Some(slash_pos) = key.find('/') {
+        let prefix = &key[..slash_pos];
+        let name = &key[slash_pos + 1..];
+        if prefix.is_empty() {
+            return Err(AppError::InvalidLabel(format!(
+                "label key '{}' has empty prefix before '/'",
+                key
+            )));
+        }
+        if prefix.len() > 253 {
+            return Err(AppError::InvalidLabel(format!(
+                "label key '{}' prefix exceeds maximum length of 253 characters",
+                key
+            )));
+        }
+        // Validate prefix as DNS subdomain: lowercase alphanumeric, hyphens, dots
+        let prefix_re =
+            Regex::new(r"^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$")
+                .unwrap();
+        if !prefix_re.is_match(prefix) {
+            return Err(AppError::InvalidLabel(format!(
+                "label key '{}' has invalid prefix '{}' (must be a valid DNS subdomain)",
+                key, prefix
+            )));
+        }
+        (Some(prefix), name)
+    } else {
+        (None, key)
+    };
+
+    if name.is_empty() {
+        return Err(AppError::InvalidLabel(format!(
+            "label key '{}' has empty name after '/'",
+            key
+        )));
+    }
+
+    // Validate name part: starts with alphanumeric, followed by [-_.a-zA-Z0-9]*
+    let name_re = Regex::new(r"^[a-zA-Z0-9][-_.a-zA-Z0-9]*$").unwrap();
+    if !name_re.is_match(name) {
+        return Err(AppError::InvalidLabel(format!(
+            "label key '{}' contains invalid characters (name part must match [a-zA-Z0-9][-_.a-zA-Z0-9]*)",
+            key
+        )));
+    }
+
+    Ok(())
+}
+
+/// Validates a label value according to label validation rules.
+/// Values must be max 256 chars, matching `[a-zA-Z0-9][-_.a-zA-Z0-9]*` or empty string.
+fn validate_label_value(key: &str, value: &str) -> Result<(), AppError> {
+    if value.is_empty() {
+        return Ok(()); // Empty values are allowed
+    }
+    if value.len() > 256 {
+        return Err(AppError::InvalidLabel(format!(
+            "label value for key '{}' exceeds maximum length of 256 characters",
+            key
+        )));
+    }
+
+    let value_re = Regex::new(r"^[a-zA-Z0-9][-_.a-zA-Z0-9]*$").unwrap();
+    if !value_re.is_match(value) {
+        return Err(AppError::InvalidLabel(format!(
+            "label value '{}' for key '{}' contains invalid characters (must match [a-zA-Z0-9][-_.a-zA-Z0-9]* or be empty)",
+            value, key
+        )));
+    }
+
+    Ok(())
+}
+
+/// Validates all labels in a HashMap according to label validation rules.
+/// Checks key format, value format, and length limits.
+fn validate_labels(labels: &HashMap<String, String>) -> Result<(), AppError> {
+    for (key, value) in labels {
+        validate_label_key(key)?;
+        validate_label_value(key, value)?;
+    }
+    Ok(())
+}
 
 /// ObjectService wraps store, event bus, and validators.
 ///
@@ -164,7 +265,10 @@ impl ObjectService {
         Ok(schema_data)
     }
 
-    fn compile_jsonschema(&self, schema_data: &SchemaData) -> Result<Arc<dyn SchemaValidator>, AppError> {
+    fn compile_jsonschema(
+        &self,
+        schema_data: &SchemaData,
+    ) -> Result<Arc<dyn SchemaValidator>, AppError> {
         JsonSchemaValidator::compile(&schema_data.json_schema)
             .map_err(|e| AppError::InvalidSchema(format!("failed to compile jsonSchema: {}", e)))
             .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)
@@ -211,7 +315,8 @@ impl ObjectService {
             })
             .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
 
-        self.schema_cache.insert(cache_key.clone(), compiled.clone());
+        self.schema_cache
+            .insert(cache_key.clone(), compiled.clone());
         Ok(compiled)
     }
 
@@ -233,6 +338,7 @@ impl ObjectService {
         meta: ObjectMeta,
         data: Value,
     ) -> Result<StoredObject, AppError> {
+        validate_labels(&meta.labels)?;
         let schema_data = self.validate_meta_schema(&data)?;
         let compiled = self.compile_jsonschema(&schema_data)?;
         let stored = self.store.create(&key, meta.clone(), data).await?;
@@ -254,6 +360,7 @@ impl ObjectService {
         meta: ObjectMeta,
         data: Value,
     ) -> Result<StoredObject, AppError> {
+        validate_labels(&meta.labels)?;
         let validator = self.lookup_object_validator(&key).await?;
 
         if !validator.is_valid(&data) {
@@ -278,10 +385,12 @@ impl ObjectService {
         object: StoredObject,
         data: Value,
     ) -> Result<StoredObject, AppError> {
+        validate_labels(&object.metadata.labels)?;
         let schema_data = self.validate_meta_schema(&data)?;
         let compiled = self.compile_jsonschema(&schema_data)?;
         let updated = self.store.update(object).await?;
-        self.schema_cache.insert(updated.metadata.name.clone(), compiled);
+        self.schema_cache
+            .insert(updated.metadata.name.clone(), compiled);
         self.event_bus.publish(
             &updated.key,
             WatchEvent {
@@ -298,6 +407,7 @@ impl ObjectService {
         object: StoredObject,
         data: Value,
     ) -> Result<StoredObject, AppError> {
+        validate_labels(&object.metadata.labels)?;
         let validator = self.lookup_object_validator(&object.key).await?;
 
         if !validator.is_valid(&data) {
@@ -391,6 +501,7 @@ mod tests {
     use crate::schema::meta_schema::compile_meta_schema;
     use crate::store::memory::InMemoryStore;
     use serde_json::json;
+    use std::collections::HashMap;
 
     // Helper to create a service with a fresh store and event bus
     fn make_service() -> ObjectService {
@@ -425,7 +536,14 @@ mod tests {
         });
         // Name is generated as "{targetKind}.{targetGroup}" by the handler
         service
-            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                schema_data,
+            )
             .await
             .expect("schema registration should succeed");
     }
@@ -449,7 +567,10 @@ mod tests {
         let result = service
             .create(
                 schema_key.clone(),
-                ObjectMeta { name: "Widget.example.io".to_string() },
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
                 schema_data,
             )
             .await;
@@ -483,7 +604,14 @@ mod tests {
         // Name would be generated as "Widget.example.io" by the handler,
         // but this test calls service.create() directly
         let result = service
-            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, invalid_data)
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                invalid_data,
+            )
             .await;
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
@@ -507,7 +635,14 @@ mod tests {
 
         // Name would be generated as "Widget.example.io" by the handler
         let result = service
-            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, invalid_schema)
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                invalid_schema,
+            )
             .await;
         // This should fail during compilation of jsonSchema
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
@@ -524,7 +659,14 @@ mod tests {
         };
 
         let result = service
-            .create(widget_key, ObjectMeta { name: "my-widget".to_string() }, json!({}))
+            .create(
+                widget_key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
             .await;
         assert!(matches!(result, Err(AppError::NotFound { .. })));
     }
@@ -544,7 +686,14 @@ mod tests {
         let invalid_data = json!({ "color": "blue", "size": "not-a-number" });
 
         let result = service
-            .create(widget_key, ObjectMeta { name: "my-widget".to_string() }, invalid_data)
+            .create(
+                widget_key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                invalid_data,
+            )
             .await;
         assert!(matches!(result, Err(AppError::SchemaValidation(_))));
     }
@@ -563,7 +712,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
-                ObjectMeta { name: "my-widget".to_string() },
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
                 json!({ "color": "blue", "size": 10 }),
             )
             .await
@@ -593,7 +745,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
-                ObjectMeta { name: "my-widget".to_string() },
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
                 json!({ "color": "blue", "size": 10 }),
             )
             .await
@@ -625,7 +780,10 @@ mod tests {
         service
             .create(
                 schema_key.clone(),
-                ObjectMeta { name: "Widget.example.io".to_string() },
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
                 schema_data,
             )
             .await
@@ -659,7 +817,10 @@ mod tests {
         service
             .create(
                 widget_key.clone(),
-                ObjectMeta { name: "my-widget".to_string() },
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
                 json!({ "color": "blue", "size": 10 }),
             )
             .await
@@ -693,7 +854,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
-                ObjectMeta { name: "my-widget".to_string() },
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
                 json!({ "color": "blue", "size": 10 }),
             )
             .await
@@ -722,7 +886,10 @@ mod tests {
         service
             .create(
                 schema_key.clone(),
-                ObjectMeta { name: "Widget.example.io".to_string() },
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
                 schema_data.clone(),
             )
             .await
@@ -732,7 +899,10 @@ mod tests {
         let result = service
             .create(
                 schema_key.clone(),
-                ObjectMeta { name: "Widget.example.io".to_string() },
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
                 schema_data,
             )
             .await;
@@ -757,7 +927,10 @@ mod tests {
         service
             .create(
                 schema_key.clone(),
-                ObjectMeta { name: "Widget.example.io".to_string() },
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
                 schema_data,
             )
             .await
@@ -789,7 +962,14 @@ mod tests {
         });
 
         let result = service
-            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                schema_data,
+            )
             .await;
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
@@ -812,7 +992,14 @@ mod tests {
         });
 
         let result = service
-            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                schema_data,
+            )
             .await;
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
@@ -852,7 +1039,10 @@ mod tests {
         service_a
             .create(
                 schema_key,
-                ObjectMeta { name: "Widget.example.io".to_string() },
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
                 schema_data,
             )
             .await
@@ -860,7 +1050,10 @@ mod tests {
         service_a
             .create(
                 widget_key.clone(),
-                ObjectMeta { name: "widget-1".to_string() },
+                ObjectMeta {
+                    name: "widget-1".to_string(),
+                    labels: HashMap::new(),
+                },
                 json!({"color": "red"}),
             )
             .await
@@ -873,7 +1066,10 @@ mod tests {
         let result = service_b
             .create(
                 widget_key,
-                ObjectMeta { name: "widget-2".to_string() },
+                ObjectMeta {
+                    name: "widget-2".to_string(),
+                    labels: HashMap::new(),
+                },
                 json!({"color": "blue"}),
             )
             .await;
@@ -917,7 +1113,14 @@ mod tests {
         let service_a =
             ObjectService::new(store.clone(), event_bus.clone(), meta_validator.clone());
         service_a
-            .create(schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                schema_data,
+            )
             .await
             .expect("schema registration should succeed");
 
@@ -929,7 +1132,10 @@ mod tests {
         let first = service_b
             .create(
                 widget_key.clone(),
-                ObjectMeta { name: "widget-1".to_string() },
+                ObjectMeta {
+                    name: "widget-1".to_string(),
+                    labels: HashMap::new(),
+                },
                 json!({"color": "red", "size": 1}),
             )
             .await;
@@ -940,7 +1146,10 @@ mod tests {
         let second = service_b
             .create(
                 widget_key,
-                ObjectMeta { name: "widget-2".to_string() },
+                ObjectMeta {
+                    name: "widget-2".to_string(),
+                    labels: HashMap::new(),
+                },
                 json!({"color": "blue", "size": 2}),
             )
             .await;
@@ -968,7 +1177,14 @@ mod tests {
             "jsonSchema": { "type": "not-a-real-type" }
         });
         store
-            .create(&schema_key, ObjectMeta { name: "Widget.example.io".to_string() }, invalid_schema)
+            .create(
+                &schema_key,
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                invalid_schema,
+            )
             .await
             .expect("store create should succeed");
 
@@ -980,12 +1196,96 @@ mod tests {
             kind: "Widget".to_string(),
         };
         let result = service
-            .create(widget_key, ObjectMeta { name: "my-widget".to_string() }, json!({"color": "red"}))
+            .create(
+                widget_key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "red"}),
+            )
             .await;
         assert!(
             matches!(result, Err(AppError::StoredSchemaCompilationFailed { .. })),
             "expected StoredSchemaCompilationFailed, got {:?}",
             result
         );
+    }
+
+    // --- validate_labels unit tests ---
+
+    #[test]
+    fn validate_labels_empty_map() {
+        let labels = HashMap::new();
+        assert!(validate_labels(&labels).is_ok());
+    }
+
+    #[test]
+    fn validate_labels_valid_simple_keys() {
+        let mut labels = HashMap::new();
+        labels.insert("app".to_string(), "nginx".to_string());
+        labels.insert("my-label".to_string(), "v1".to_string());
+        labels.insert("label_name.v2".to_string(), "prod".to_string());
+        assert!(validate_labels(&labels).is_ok());
+    }
+
+    #[test]
+    fn validate_labels_valid_prefixed_keys() {
+        let mut labels = HashMap::new();
+        labels.insert("app.example.io/name".to_string(), "myapp".to_string());
+        labels.insert("example.com/tier".to_string(), "frontend".to_string());
+        assert!(validate_labels(&labels).is_ok());
+    }
+
+    #[test]
+    fn validate_labels_empty_key_rejected() {
+        let mut labels = HashMap::new();
+        labels.insert("".to_string(), "value".to_string());
+        assert!(validate_labels(&labels).is_err());
+    }
+
+    #[test]
+    fn validate_labels_key_too_long() {
+        let mut labels = HashMap::new();
+        let long_key = "a".repeat(257);
+        labels.insert(long_key, "value".to_string());
+        assert!(validate_labels(&labels).is_err());
+    }
+
+    #[test]
+    fn validate_labels_key_invalid_chars() {
+        let mut labels = HashMap::new();
+        labels.insert("invalid key!".to_string(), "value".to_string());
+        assert!(validate_labels(&labels).is_err());
+    }
+
+    #[test]
+    fn validate_labels_value_too_long() {
+        let mut labels = HashMap::new();
+        let long_value = "a".repeat(257);
+        labels.insert("key".to_string(), long_value);
+        assert!(validate_labels(&labels).is_err());
+    }
+
+    #[test]
+    fn validate_labels_value_invalid_chars() {
+        let mut labels = HashMap::new();
+        labels.insert("key".to_string(), "invalid value!".to_string());
+        assert!(validate_labels(&labels).is_err());
+    }
+
+    #[test]
+    fn validate_labels_empty_value_allowed() {
+        let mut labels = HashMap::new();
+        labels.insert("key".to_string(), "".to_string());
+        assert!(validate_labels(&labels).is_ok());
+    }
+
+    #[test]
+    fn validate_labels_prefix_too_long() {
+        let mut labels = HashMap::new();
+        let long_prefix = "a".repeat(254);
+        labels.insert(format!("{}/name", long_prefix), "value".to_string());
+        assert!(validate_labels(&labels).is_err());
     }
 }

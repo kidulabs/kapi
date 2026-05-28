@@ -1,7 +1,7 @@
 ## MODIFIED Requirements
 
 ### Requirement: Label validation on create
-`ObjectService::create()` SHALL validate labels before persistence. Validation SHALL check key format, value format, and length limits according to Kubernetes label semantics. Validation SHALL occur after schema validation of the data payload but before store persistence.
+`ObjectService::create()` SHALL validate labels before persistence. Validation SHALL check key format, value format, and length limits according to label validation rules. Validation SHALL occur after schema validation of the data payload but before store persistence.
 
 #### Scenario: Create with valid labels
 - **WHEN** `create()` is called with valid labels
@@ -31,14 +31,14 @@
 - **THEN** an `AppError::InvalidLabel` error SHALL be returned and no persistence SHALL occur
 
 ### Requirement: Label validation function
-A `validate_labels()` function SHALL validate a `HashMap<String, String>` against Kubernetes label semantics. It SHALL return `Result<(), AppError>` with descriptive error messages identifying the offending key or value.
+A `validate_labels()` function SHALL validate a `HashMap<String, String>` against label validation rules. It SHALL return `Result<(), AppError>` with descriptive error messages identifying the offending key or value.
 
 #### Scenario: Validate empty labels map
 - **WHEN** `validate_labels()` is called with an empty `HashMap`
 - **THEN** validation SHALL pass
 
 #### Scenario: Validate key with prefix
-- **WHEN** `validate_labels()` is called with key `app.kubernetes.io/name`
+- **WHEN** `validate_labels()` is called with key `app.example.io/name`
 - **THEN** validation SHALL check prefix format (DNS subdomain, max 253 chars) and name format (max 256 chars, valid characters)
 
 #### Scenario: Validate empty value

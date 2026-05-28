@@ -44,7 +44,8 @@ POST /apis/kapi.io/v1/Schema
         "kind": "Schema"
     },
     "metadata": {
-        "name": "Widget.example.io"
+        "name": "Widget.example.io",
+        "labels": {}
     },
     "system": {
         "resourceVersion": 1,
@@ -114,14 +115,18 @@ POST /apis/{group}/{version}/{kind}
 ```json
 {
     "metadata": {
-        "name": "my-widget"
+        "name": "my-widget",
+        "labels": {
+            "app.example.io/name": "my-widget",
+            "tier": "frontend"
+        }
     },
     "color": "blue",
     "size": 10
 }
 ```
 
-The `metadata.name` field is extracted by the handler. All other fields are validated against the registered JSON Schema.
+The `metadata.name` field is extracted by the handler. The optional `metadata.labels` field is extracted and validated (see [Label Validation](#label-validation)). All other fields are validated against the registered JSON Schema.
 
 **Response:** `201 Created`
 
@@ -133,7 +138,11 @@ The `metadata.name` field is extracted by the handler. All other fields are vali
         "kind": "Widget"
     },
     "metadata": {
-        "name": "my-widget"
+        "name": "my-widget",
+        "labels": {
+            "app.example.io/name": "my-widget",
+            "tier": "frontend"
+        }
     },
     "system": {
         "resourceVersion": 1,
@@ -188,13 +197,17 @@ Requires the full StoredObject with the correct `system.resourceVersion`.
 PUT /apis/{group}/{version}/{kind}/{name}
 ```
 
-**Request body:** Full StoredObject with updated `data.value`.
+**Request body:** Full StoredObject with updated `data.value` and optionally updated `metadata.labels`.
 
 ```json
 {
     "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
     "metadata": {
-        "name": "my-widget"
+        "name": "my-widget",
+        "labels": {
+            "app.example.io/name": "my-widget",
+            "tier": "backend"
+        }
     },
     "system": {
         "resourceVersion": 1,
@@ -208,9 +221,11 @@ PUT /apis/{group}/{version}/{kind}/{name}
 }
 ```
 
+Labels are updated via diff-based strategy: the server reads the existing labels, computes the delta, and applies only the changed key-value pairs in the same transaction as the object update.
+
 **Response:** `200 OK` — updated StoredObject with bumped `system.resourceVersion`
 
-**Errors:** `409` (version conflict), `422` (validation failure), `404`
+**Errors:** `409` (version conflict), `422` (validation failure), `400` (invalid labels), `404`
 
 ### Delete an Object
 
@@ -247,7 +262,7 @@ Add `?fieldSelector=metadata.name=<name>` to watch only events for a specific ob
 GET /apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=my-widget
 ```
 
-Only events where `object.metadata.name == "my-widget"` will be delivered. The syntax follows Kubernetes convention: `fieldSelector=metadata.name=<value>`.
+Only events where `object.metadata.name == "my-widget"` will be delivered. The syntax follows the standard convention: `fieldSelector=metadata.name=<value>`.
 
 **Supported fields:**
 | Field | Description |
@@ -257,6 +272,67 @@ Only events where `object.metadata.name == "my-widget"` will be delivered. The s
 **Errors:** `400` for unsupported fields, malformed syntax (missing `=` sign), or `fieldSelector` on a non-watch request.
 
 Watch streams terminate when the client disconnects or the watcher's buffer is full. The client must re-list and re-subscribe.
+
+---
+
+## Label Validation
+
+Labels on `ObjectMeta` follow structured validation rules. Invalid labels cause the request to be rejected with `400 Bad Request` and error code `InvalidLabel`.
+
+### Key Rules
+
+| Rule | Constraint |
+|------|------------|
+| Non-empty | Key must not be empty |
+| Max length | 256 characters (including prefix if present) |
+| Name format | Must match `[a-zA-Z0-9][-_.a-zA-Z0-9]*` |
+| Optional prefix | `{prefix}/` — separated by `/` |
+| Prefix format | DNS subdomain: lowercase alphanumeric segments separated by dots, max 253 chars |
+| Prefix segments | Each segment matches `[a-z0-9]([-a-z0-9]*[a-z0-9])?` |
+
+**Valid key examples:**
+
+| Key | Notes |
+|-----|-------|
+| `app` | Simple name only |
+| `my-label` | Hyphen allowed in name |
+| `app.example.io/name` | Prefix + name |
+| `example.com/tier` | Prefix with dot separators |
+| `label_name.v2` | Underscore and dot in name |
+
+**Invalid key examples:**
+
+| Key | Reason |
+|-----|--------|
+| `` (empty) | Must not be empty |
+| `UPPERCASE/name` | Prefix must be lowercase DNS subdomain |
+| `/name` | Empty prefix before `/` |
+| `key with spaces` | Spaces not allowed in name |
+| `key!` | Special characters not allowed |
+
+### Value Rules
+
+| Rule | Constraint |
+|------|------------|
+| Empty allowed | Empty string is a valid value |
+| Max length | 256 characters |
+| Format | Must match `[a-zA-Z0-9][-_.a-zA-Z0-9]*` when non-empty |
+
+**Valid value examples:** `prod`, `v1.2.3`, `abc`, `` (empty)
+
+**Invalid value examples:** ` value` (leading space), `my value` (space), `value!` (special char)
+
+### Error Response
+
+```json
+{
+    "error": "invalid label: label key 'invalid key!' contains invalid characters",
+    "code": "InvalidLabel",
+    "details": {
+        "message": "label key 'invalid key!' contains invalid characters"
+    }
+}
+```
 
 ---
 
@@ -292,6 +368,7 @@ All errors follow this format:
 | 409 | `Conflict` | OCC version mismatch or duplicate |
 | 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
 | 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field, malformed syntax, or fieldSelector on non-watch request) |
+| 400 | `InvalidLabel` | Label key or value violates format or length rules |
 | 422 | `SchemaValidation` | Object data doesn't match schema |
 | 422 | `InvalidSchema` | Schema registration failed validation |
 | 500 | `Internal` | Unexpected server error |

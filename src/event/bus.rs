@@ -123,20 +123,14 @@ impl EventBus {
     /// If no watchers exist for this key, a new Vec is created.
     pub fn subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream {
         let (tx, rx) = mpsc::channel(self.watcher_capacity);
-        let watcher = Watcher {
-            filter,
-            sender: tx,
-        };
+        let watcher = Watcher { filter, sender: tx };
         tracing::trace!(
             group = %key.group,
             version = %key.version,
             kind = %key.kind,
             "watcher subscribed"
         );
-        self.watchers
-            .entry(key.clone())
-            .or_default()
-            .push(watcher);
+        self.watchers.entry(key.clone()).or_default().push(watcher);
         WatchStream { inner: rx }
     }
 
@@ -203,6 +197,7 @@ mod tests {
         FieldSelector, ObjectMeta, StoredObject, SystemMetadata, UserData, WatchEventType,
     };
     use chrono::Utc;
+    use std::collections::HashMap;
     use tokio_stream::StreamExt;
 
     fn make_key() -> ResourceKey {
@@ -220,6 +215,7 @@ mod tests {
                 key: make_key(),
                 metadata: ObjectMeta {
                     name: "test".into(),
+                    labels: HashMap::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,
@@ -310,11 +306,8 @@ mod tests {
 
         // Filtered subscriber (name="other") does NOT get event for name="test"
         // Use timeout to verify no event arrives within 100ms
-        let received = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            filtered.next(),
-        )
-        .await;
+        let received =
+            tokio::time::timeout(std::time::Duration::from_millis(100), filtered.next()).await;
         assert!(received.is_err(), "expected timeout, got: {received:?}");
     }
 

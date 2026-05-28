@@ -87,7 +87,7 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
         "info": {
             "title": "kapi API",
             "version": "0.1.0",
-            "description": "Dynamic Kubernetes-style API server"
+            "description": "Dynamic schema-driven API server"
         },
         "paths": all_paths,
         "components": {
@@ -245,10 +245,29 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
 /// Builds the request body schema for creating a Schema object.
 ///
 /// Schema name is auto-generated as `{targetKind}.{targetGroup}` by the handler.
-/// The client does not need to supply `metadata.name`.
+/// The client does not need to supply `metadata.name`, but can supply `metadata.labels`.
 pub(crate) fn schema_create_request_schema() -> Value {
+    let metadata_part = json!({
+        "type": "object",
+        "properties": {
+            "metadata": {
+                "type": "object",
+                "properties": {
+                    "labels": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Key-value labels for organizing and selecting objects"
+                    }
+                }
+            }
+        }
+    });
+
     json!({
-        "$ref": "#/components/schemas/SchemaData"
+        "allOf": [
+            metadata_part,
+            { "$ref": "#/components/schemas/SchemaData" }
+        ]
     })
 }
 
@@ -473,7 +492,12 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
             "metadata": {
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string", "description": "Object name, unique within this kind" }
+                    "name": { "type": "string", "description": "Object name, unique within this kind" },
+                    "labels": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Key-value labels for organizing and selecting objects"
+                    }
                 },
                 "required": ["name"]
             }

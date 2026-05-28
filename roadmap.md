@@ -10,7 +10,7 @@
 ## Pending
 
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
-- [ ] **Label filtering** — Add `labelSelector` query param for watch and list, `labels` field on `ObjectMeta`
+- [x] **Label filtering (partial)** — `labels` field on `ObjectMeta` with validation completed; `labelSelector` query param for watch and list pending
 - [ ] **Watch filtering on list requests** — `fieldSelector`/`labelSelector` on non-watch list requests (requires store-level filtering)
 - [ ] **Watch resume** — `resourceVersion` param for watch resume with ring buffer replay
 - [ ] **Watch bookmarks** — Periodic bookmark events with current resourceVersion
@@ -22,11 +22,18 @@
 
 - [ ] **OpenAPI spec caching** — Cache generated OpenAPI spec in `Arc<RwLock<Value>>`, rebuild on Schema mutation
 
+## Future Work
+
+- [ ] **Full label selector syntax parity** — Add set-based operators (`in`, `notin`, `exists`, `!exists`) to `labelSelector` query parameter for watch and list endpoints
+- [ ] **Label indexing** — Index label key-value pairs for efficient high-cardinality label queries at scale
+- [ ] **Annotations** — Free-form key-value metadata on `ObjectMeta` without selection semantics (no validation beyond key-value structure)
+
 ## Explorations
 
 - [ ] **Webhook-based schema validation** — Explore admission webhooks for custom validation beyond meta-schema
 - [ ] **PATCH endpoint support** — Evaluate adding strategic merge patch support
 - [ ] **Publish Framework** Should publish framework to be moved the storage layer?
+- [ ] **Validations** now label and other validations are scattered all around in service layer, should we push them near the storage? early to web handlers?
 
 ## Out of Scope
 

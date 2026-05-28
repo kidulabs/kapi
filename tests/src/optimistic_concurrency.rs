@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::Value;
 
-use crate::{assert_status, parse_body, register_widget_schema, widget, TestApp};
+use crate::{TestApp, assert_status, parse_body, register_widget_schema, widget};
 
 pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
     let client = app.client();
@@ -9,13 +9,14 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
     register_widget_schema(&client).await;
 
     let resp = client
-        .post("/apis/example.io/v1/Widget", widget("occ-correct", "red", 1))
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget("occ-correct", "red", 1),
+        )
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let rv = created["system"]["resourceVersion"]
-        .as_u64()
-        .unwrap_or(0);
+    let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
     let created_at = created["system"]["createdAt"]
         .as_str()
         .unwrap_or("")
@@ -38,9 +39,7 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
-    let new_rv = updated["system"]["resourceVersion"]
-        .as_u64()
-        .unwrap_or(0);
+    let new_rv = updated["system"]["resourceVersion"].as_u64().unwrap_or(0);
     assert!(
         new_rv > rv,
         "new resourceVersion should be greater than old"
@@ -62,9 +61,7 @@ pub async fn test_update_wrong_rv(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let rv = created["system"]["resourceVersion"]
-        .as_u64()
-        .unwrap_or(0);
+    let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
     let created_at = created["system"]["createdAt"]
         .as_str()
         .unwrap_or("")
@@ -89,10 +86,7 @@ pub async fn test_update_wrong_rv(app: &TestApp) -> Result<(), String> {
     assert_status(&resp, StatusCode::CONFLICT);
 
     let body: Value = parse_body(resp).await;
-    let error = body
-        .get("error")
-        .and_then(|e| e.as_str())
-        .unwrap_or("");
+    let error = body.get("error").and_then(|e| e.as_str()).unwrap_or("");
     assert!(
         error.contains("conflict") || error.contains("Conflict"),
         "error message should mention conflict, got: {error}"

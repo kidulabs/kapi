@@ -5,8 +5,8 @@ use serde_json::Value;
 use tokio::time::timeout;
 
 use crate::{
-    assert_status, parse_body, register_widget_schema, watch_events, widget, widget_schema,
-    TestApp, WatchEventType,
+    TestApp, WatchEventType, assert_status, parse_body, register_widget_schema, watch_events,
+    widget, widget_schema,
 };
 
 pub async fn test_watch_schema_added(app: &TestApp) -> Result<(), String> {
@@ -54,9 +54,7 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let rv = created["system"]["resourceVersion"]
-        .as_u64()
-        .unwrap_or(0);
+    let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
     let created_at = created["system"]["createdAt"]
         .as_str()
         .unwrap_or("")
@@ -98,9 +96,7 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
         modified.event_type
     );
 
-    let resp = client
-        .delete("/apis/example.io/v1/Widget/watch-test")
-        .await;
+    let resp = client.delete("/apis/example.io/v1/Widget/watch-test").await;
     assert_status(&resp, StatusCode::OK);
 
     let deleted = timeout(Duration::from_secs(3), events.recv())
@@ -176,10 +172,7 @@ pub async fn test_watch_by_name_non_matching_filtered(app: &TestApp) -> Result<(
 
     // Create a non-target object — should be filtered out
     let resp = client
-        .post(
-            "/apis/example.io/v1/Widget",
-            widget("other", "blue", 1),
-        )
+        .post("/apis/example.io/v1/Widget", widget("other", "blue", 1))
         .await;
     assert_status(&resp, StatusCode::CREATED);
 
@@ -247,11 +240,7 @@ pub async fn test_watch_by_name_and_watch_all_simultaneously(app: &TestApp) -> R
         "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=named-one",
     )
     .await;
-    let mut all_events = watch_events(
-        &client,
-        "/apis/example.io/v1/Widget?watch=true",
-    )
-    .await;
+    let mut all_events = watch_events(&client, "/apis/example.io/v1/Widget?watch=true").await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -280,10 +269,7 @@ pub async fn test_watch_by_name_and_watch_all_simultaneously(app: &TestApp) -> R
 
     // Create an unnamed object — only the all watcher should receive it
     let resp = client
-        .post(
-            "/apis/example.io/v1/Widget",
-            widget("other", "yellow", 4),
-        )
+        .post("/apis/example.io/v1/Widget", widget("other", "yellow", 4))
         .await;
     assert_status(&resp, StatusCode::CREATED);
 
@@ -339,6 +325,7 @@ pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<
             &key,
             ObjectMeta {
                 name: "cleanup-test".to_string(),
+                labels: std::collections::HashMap::new(),
             },
             serde_json::json!({}),
         )

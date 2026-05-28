@@ -1,6 +1,6 @@
 ## Context
 
-kapi objects currently carry only a `name` in `ObjectMeta`. Labels — arbitrary key-value string pairs — are the standard mechanism for organizing and selecting resources. This change adds labels as a first-class metadata field, with persistent storage in both backends and Kubernetes-compatible validation.
+kapi objects currently carry only a `name` in `ObjectMeta`. Labels — arbitrary key-value string pairs — are the standard mechanism for organizing and selecting resources. This change adds labels as a first-class metadata field, with persistent storage in both backends and structured validation.
 
 Current state:
 - `ObjectMeta { name: String }` — single field, `#[serde(rename_all = "camelCase")]`
@@ -14,7 +14,7 @@ Current state:
 **Goals:**
 - Labels stored, validated, serialized, and round-tripped correctly on all objects
 - SQLite labels stored in a separate table for future SQL-level filtering (Phase 3)
-- Label validation follows Kubernetes semantics (key/value format, length limits)
+- Label validation follows structured label semantics (key/value format, length limits)
 - Labels work on both regular objects and Schema objects
 - Label updates use diff-based strategy (read → diff → apply in transaction)
 - OpenAPI spec and Swagger UI reflect the new `labels` field
@@ -32,10 +32,10 @@ Current state:
 **Decision:** `labels: HashMap<String, String>` field on `ObjectMeta`, always serialized (empty `{}` when no labels).
 
 **Alternatives considered:**
-- `BTreeMap<String, String>` — deterministic ordering, but HashMap is the K8s convention and ordering is irrelevant for labels
+- `BTreeMap<String, String>` — deterministic ordering, but HashMap is the common convention and ordering is irrelevant for labels
 - `Option<HashMap<String, String>>` — avoids empty map allocation, but complicates serialization (need `skip_serializing_if`) and every consumer must handle `None`. Always-present is simpler.
 
-**Rationale:** Matches K8s API shape. `HashMap` is the natural Rust type for string→string maps. Always-present avoids `Option` handling at every call site.
+**Rationale:** Matches the standard API shape. `HashMap` is the natural Rust type for string→string maps. Always-present avoids `Option` handling at every call site.
 
 ### 2. Separate `labels` table in SQLite
 
@@ -73,19 +73,19 @@ CREATE INDEX IF NOT EXISTS idx_labels_gvkn ON labels(resource_group, api_version
 
 **Rationale:** Diff-based is semantically cleaner and writes only changed labels. For typical label counts (< 20), the performance difference is negligible, but the pattern scales better and is more auditable. The transaction ensures atomicity with the object update.
 
-### 4. Kubernetes label validation semantics
+### 4. Label validation semantics
 
-**Decision:** Validate labels with K8s-compatible rules:
+**Decision:** Validate labels with structured rules:
 - **Keys:** max 256 chars, `[a-zA-Z0-9][-_.a-zA-Z0-9]*` with optional `/` separator for prefix (`prefix/name` format). Prefix: max 253 chars, DNS subdomain format.
 - **Values:** max 256 chars, `[a-zA-Z0-9][-_.a-zA-Z0-9]*` or empty string.
 - Non-empty keys required.
 
 **Alternatives considered:**
 - No validation — accepts garbage, makes label selectors unreliable
-- Loose validation (any non-empty string) — simpler but diverges from K8s, causes surprises if users expect K8s compatibility
-- Full K8s validation (63-char name limit, 253-char prefix, strict DNS regex) — more restrictive than needed for a non-K8s system
+- Loose validation (any non-empty string) — simpler but allows arbitrary characters, causes surprises
+- Full strict validation (63-char name limit, 253-char prefix, strict DNS regex) — more restrictive than needed
 
-**Rationale:** Moderate K8s semantics: enough structure to be useful and predictable, without the full K8s strictness. The 256-char limit for both keys and values is generous but bounded. The `/` prefix separator is included because it's the standard K8s convention for namespaced label keys (e.g., `app.kubernetes.io/name`).
+**Rationale:** Moderate semantics: enough structure to be useful and predictable, without excessive strictness. The 256-char limit for both keys and values is generous but bounded. The `/` prefix separator is included because it's the standard convention for namespaced label keys (e.g., `app.example.io/name`).
 
 ### 5. Label extraction in handler, validation in service
 
@@ -111,4 +111,4 @@ CREATE INDEX IF NOT EXISTS idx_labels_gvkn ON labels(resource_group, api_version
 - **[Schema change]** Adding `labels` table is additive and idempotent (`CREATE TABLE IF NOT EXISTS`), but existing databases won't have it until restart. → Mitigation: `init_schema()` runs on every `SQLiteStore::new()`, so the table is created on next startup.
 - **[API contract change]** `ObjectMeta` serialization gains a `labels` field. Existing clients that don't send labels get `"labels": {}`. → Mitigation: This is additive, not breaking. Clients that ignore unknown fields are unaffected.
 - **[Update complexity]** Diff-based label updates add code complexity vs delete-all-then-insert. → Mitigation: The diff logic is straightforward (set operations on HashMap keys), and the pattern is well-understood.
-- **[Validation regex]** K8s label validation regex may reject labels users expect to work. → Mitigation: Error messages clearly indicate the format requirements. Future work can relax rules if needed.
+- **[Validation regex]** Label validation regex may reject labels users expect to work. → Mitigation: Error messages clearly indicate the format requirements. Future work can relax rules if needed.

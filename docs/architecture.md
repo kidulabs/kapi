@@ -47,7 +47,8 @@ These layers compose via `ServiceBuilder` and wrap the entire router.
 
 Thin Axum extractors and response builders. Handlers:
 - Extract path parameters (group, version, kind, name)
-- Deserialize request bodies
+- Extract and validate `metadata.labels` from request body
+- Deserialize request bodies (strip `metadata` before sending to store)
 - Call `ObjectService` methods
 - Convert results into HTTP responses
 
@@ -59,6 +60,7 @@ The central orchestrator that coordinates validation, storage, and event publish
 
 - **Schema objects** (kind == "Schema"): validate against meta-schema, compile nested jsonSchema, cache compiled validator
 - **Regular objects**: look up Schema from store, validate against cached compiled schema
+- **All mutations**: validate labels (`ObjectMeta.labels`) before persisting
 - **All mutations**: publish WatchEvent to EventBus after successful store operation
 
 `ObjectService` holds:
@@ -114,9 +116,10 @@ src/
 ```
 POST /apis/example.io/v1/Widget
   │
-  ▼ Handler: extract group/version/kind/body, extract ObjectMeta, strip metadata
+  ▼ Handler: extract group/version/kind/body, extract ObjectMeta + labels, strip metadata
   │
   ▼ ObjectService::create(key, meta, data)
+  │   ├── validate_labels(meta.labels) → 400 if invalid
   │   ├── Schema path: validate meta-schema → compile jsonSchema → cache
   │   ├── Object path:  look up Schema → validate against compiled schema
   │   ├── store.create(key, meta, data) → StoredObject
@@ -134,8 +137,10 @@ PUT /apis/example.io/v1/Widget/my-widget
   ▼ Handler: validate URL key/name match body
   │
   ▼ ObjectService::update(stored_object)
+  │   ├── validate_labels(stored_object.metadata.labels) → 400 if invalid
   │   ├── Validate data payload against schema
   │   ├── store.update(object) — OCC check on system.resourceVersion
+  │   │   └── diff-based label update (read existing → compute delta → apply)
   │   └── event_bus.publish(key, WatchEvent::Modified(obj))
   │
   ▼ Response: 200 OK + StoredObject (new system.resourceVersion)

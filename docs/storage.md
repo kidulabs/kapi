@@ -60,12 +60,65 @@ pub struct SQLiteStore {
 Key behaviors:
 
 - **Construction:** `SQLiteStore::new(path)` creates parent directories, opens (or creates) the SQLite database, and runs schema initialization automatically
-- **Schema:** Single `objects` table with composite primary key `(group, version, kind, name)`, JSON data column, RFC 3339 timestamps
+- **Schema:** Two tables:
+  - `objects` — composite primary key `(group, version, kind, name)`, JSON data column, RFC 3339 timestamps
+  - `labels` — separate table for label storage (see below)
 - **Versioning:** Global monotonic `AtomicU64` counter, initialized from `MAX(resource_version)` on startup
 - **Pagination:** SQL-level `ORDER BY name ASC` with `LIMIT` and `name > ?` skip condition for efficient cursor-based pagination
 - **Conflict detection:** `INSERT` relies on SQLite's primary key constraint for duplicate detection; `UPDATE` uses `resource_version` in WHERE clause for optimistic concurrency
 - **Thread safety:** Single connection behind `Arc<std::sync::Mutex>`, all blocking calls wrapped in `spawn_blocking`
 - **Configuration:** DB path read from `KAPI_DB_PATH` env var with fallback to `./kapi.db`
+
+### Labels Table
+
+Labels are stored in a separate `labels` table to support efficient querying without embedding JSON blobs.
+
+```sql
+CREATE TABLE IF NOT EXISTS labels (
+    resource_group  TEXT NOT NULL,
+    api_version     TEXT NOT NULL,
+    resource_kind   TEXT NOT NULL,
+    name            TEXT NOT NULL,
+    label_key       TEXT NOT NULL,
+    label_value     TEXT NOT NULL,
+    PRIMARY KEY (resource_group, api_version, resource_kind, name, label_key),
+    FOREIGN KEY (resource_group, api_version, resource_kind, name)
+        REFERENCES objects(resource_group, api_version, resource_kind, name)
+        ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_labels_gvkn
+    ON labels(resource_group, api_version, resource_kind, name);
+```
+
+Key design decisions:
+
+- **Composite primary key** `(resource_group, api_version, resource_kind, name, label_key)` — each label row is uniquely identified by its parent object and label key. This prevents duplicate label keys on the same object at the database level.
+- **`ON DELETE CASCADE`** — when an object is deleted from the `objects` table, all its labels are automatically removed by SQLite. No manual cleanup is needed.
+- **Index on `(group, version, kind, name)`** — accelerates label lookup by parent object, used by both single-object queries and batch list queries.
+
+#### Diff-based label updates
+
+On update, the store does not blindly delete and re-insert all labels. Instead it performs a diff:
+
+1. Read existing labels from the `labels` table for the object
+2. Compute keys to delete (in existing but not in new)
+3. Compute keys to upsert (in new but value differs, or not in existing)
+4. Apply deletes and upserts in the same transaction as the object update
+
+This minimizes write load and avoids unnecessary row churn for unchanged labels.
+
+#### Batch label queries
+
+When listing objects, the store fetches labels for all returned objects in a single query using an `IN` clause:
+
+```
+SELECT name, label_key, label_value
+FROM labels
+WHERE resource_group = ? AND api_version = ? AND resource_kind = ? AND name IN (...)
+```
+
+The results are grouped by `name` into a `HashMap<String, HashMap<String, String>>` and merged into the returned objects. This avoids N+1 queries for paginated lists.
 
 ## EventPublisher Trait
 
@@ -96,7 +149,7 @@ Key behaviors:
 - **Lazy channel creation:** Channels are created on first `subscribe`, not on `publish`. No allocation for kinds nobody is watching.
 - **Dead channel cleanup:** On `publish`, if a channel has zero receivers, it is removed. A single surviving subscriber keeps the channel alive.
 - **Fire-and-forget publishing:** `publish` never blocks. If there are no receivers, the event is silently dropped.
-- **WatchStream:** Wraps `BroadcastStream` to hide tokio internals. On lag (`RecvError::Lagged(n)`), the stream terminates with `None` — honest signaling matching Kubernetes watch semantics.
+- **WatchStream:** Wraps `BroadcastStream` to hide tokio internals. On lag (`RecvError::Lagged(n)`), the stream terminates with `None` — honest signaling matching watch semantics.
 
 ## WatchStream
 

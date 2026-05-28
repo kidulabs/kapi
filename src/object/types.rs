@@ -1,5 +1,7 @@
 pub use crate::store::ResourceKey;
 
+use std::collections::HashMap;
+
 use chrono::{DateTime, Utc};
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -23,7 +25,7 @@ pub struct ValidationError {
     pub message: String,
 }
 
-// FieldSelector implements Kubernetes-compatible field-based filtering
+// FieldSelector implements field-based filtering
 // Currently supports only metadata.name (fieldSelector=metadata.name=<value>)
 // Extensible: NameNotEquals, NameIn variants can be added later
 #[derive(Debug, Clone)]
@@ -84,6 +86,8 @@ pub struct SchemaData {
 #[serde(rename_all = "camelCase")]
 pub struct ObjectMeta {
     pub name: String,
+    #[serde(default)]
+    pub labels: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -115,7 +119,10 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta { name: name.into() },
+                metadata: ObjectMeta {
+                    name: name.into(),
+                    labels: HashMap::new(),
+                },
                 system: SystemMetadata {
                     resource_version: 1,
                     created_at: chrono::Utc::now(),

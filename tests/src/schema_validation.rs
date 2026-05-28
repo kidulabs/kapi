@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::json;
 
-use crate::{assert_status, TestApp};
+use crate::{TestApp, assert_status};
 
 pub async fn test_valid_schema_accepted(app: &TestApp) -> Result<(), String> {
     let client = app.client();
@@ -18,9 +18,7 @@ pub async fn test_valid_schema_accepted(app: &TestApp) -> Result<(), String> {
         }
     });
 
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", valid_schema)
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", valid_schema).await;
     assert_status(&resp, StatusCode::CREATED);
 
     Ok(())
@@ -38,9 +36,7 @@ pub async fn test_invalid_json_schema_rejected(app: &TestApp) -> Result<(), Stri
         }
     });
 
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", invalid_schema)
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", invalid_schema).await;
     assert_status(&resp, StatusCode::UNPROCESSABLE_ENTITY);
 
     Ok(())

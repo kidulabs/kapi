@@ -24,8 +24,12 @@ pub enum AppError {
     #[error("invalid field selector: {0}")]
     InvalidFieldSelector(String),
 
-    // The schema itself is broken (meta-schema validation or compilation failure)
+    // Label validation failure (key/value format, length limits)
+    // Maps to HTTP 400 Bad Request in into_response
+    #[error("invalid label: {0}")]
+    InvalidLabel(String),
 
+    // The schema itself is broken (meta-schema validation or compilation failure)
     #[error("invalid schema: {0}")]
     InvalidSchema(String),
 
@@ -74,6 +78,13 @@ impl IntoResponse for AppError {
                 format!("invalid field selector: {msg}"),
                 json!({ "message": msg }),
             ),
+            // InvalidLabel maps to HTTP 400 with the error message
+            AppError::InvalidLabel(msg) => (
+                StatusCode::BAD_REQUEST,
+                "InvalidLabel",
+                format!("invalid label: {msg}"),
+                json!({ "message": msg }),
+            ),
             // InvalidSchema maps to HTTP 422 Unprocessable Entity
             AppError::InvalidSchema(msg) => (
                 StatusCode::UNPROCESSABLE_ENTITY,
@@ -82,7 +93,10 @@ impl IntoResponse for AppError {
                 json!({ "message": msg }),
             ),
             // StoredSchemaCompilationFailed maps to HTTP 500 Internal Server Error
-            AppError::StoredSchemaCompilationFailed { schema_name, reason } => (
+            AppError::StoredSchemaCompilationFailed {
+                schema_name,
+                reason,
+            } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "StoredSchemaCompilationFailed",
                 format!("stored schema '{schema_name}' compilation failed: {reason}"),

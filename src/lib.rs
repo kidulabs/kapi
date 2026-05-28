@@ -21,8 +21,8 @@ use tracing::info;
 
 use crate::object::service::ObjectService;
 use crate::routes::{AppState, build_router};
-use crate::schema::meta_schema::compile_meta_schema;
 use crate::schema::SchemaValidator;
+use crate::schema::meta_schema::compile_meta_schema;
 
 /// Construct the full application [`Router`] from the given config.
 ///

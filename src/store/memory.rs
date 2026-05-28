@@ -140,6 +140,7 @@ impl ObjectStore for InMemoryStore {
             });
         }
 
+        guard.metadata.labels = object.metadata.labels;
         guard.data = object.data;
         guard.system.resource_version = self.next_version();
         guard.system.updated_at = Self::now();
@@ -177,6 +178,7 @@ fn encode_continue_token(name: &str) -> ContinueToken {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
 
     fn test_key() -> ResourceKey {
         ResourceKey {
@@ -193,7 +195,14 @@ mod tests {
         let data = json!({"color": "blue", "size": 10});
 
         let created = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, data.clone())
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                data.clone(),
+            )
             .await
             .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
@@ -216,12 +225,26 @@ mod tests {
         let key = test_key();
 
         store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
 
         let err = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 2}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 2}),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::AlreadyExists { .. }));
@@ -241,9 +264,39 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        store.create(&key, ObjectMeta { name: "c".to_string() }, json!({})).await.unwrap();
-        store.create(&key, ObjectMeta { name: "a".to_string() }, json!({})).await.unwrap();
-        store.create(&key, ObjectMeta { name: "b".to_string() }, json!({})).await.unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "c".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "a".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "b".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
 
         let res = store
             .list(
@@ -267,7 +320,14 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(&key, ObjectMeta { name: format!("item-{i}") }, json!({}))
+                .create(
+                    &key,
+                    ObjectMeta {
+                        name: format!("item-{i}"),
+                        labels: HashMap::new(),
+                    },
+                    json!({}),
+                )
                 .await
                 .unwrap();
         }
@@ -295,7 +355,14 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(&key, ObjectMeta { name: format!("item-{i}") }, json!({}))
+                .create(
+                    &key,
+                    ObjectMeta {
+                        name: format!("item-{i}"),
+                        labels: HashMap::new(),
+                    },
+                    json!({}),
+                )
                 .await
                 .unwrap();
         }
@@ -334,7 +401,14 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
         let v1 = created.system.resource_version;
@@ -343,6 +417,7 @@ mod tests {
             key: key.clone(),
             metadata: ObjectMeta {
                 name: "my-widget".to_string(),
+                labels: HashMap::new(),
             },
             system: SystemMetadata {
                 resource_version: v1,
@@ -365,7 +440,14 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
 
@@ -373,6 +455,7 @@ mod tests {
             key: key.clone(),
             metadata: ObjectMeta {
                 name: "my-widget".to_string(),
+                labels: HashMap::new(),
             },
             system: SystemMetadata {
                 resource_version: 99,
@@ -403,6 +486,7 @@ mod tests {
             key: key.clone(),
             metadata: ObjectMeta {
                 name: "nonexistent".to_string(),
+                labels: HashMap::new(),
             },
             system: SystemMetadata {
                 resource_version: 1,
@@ -424,7 +508,14 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
 
@@ -442,11 +533,25 @@ mod tests {
         let key = test_key();
 
         store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
         store
-            .create(&key, ObjectMeta { name: "other".to_string() }, json!({"x": 2}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "other".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 2}),
+            )
             .await
             .unwrap();
 

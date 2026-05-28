@@ -16,14 +16,14 @@ Objects SHALL carry a `labels` field of type `HashMap<String, String>` in their 
 - **THEN** the `metadata.labels` field SHALL always be present, even if empty
 
 ### Requirement: Label key validation
-Label keys SHALL be validated according to Kubernetes semantics. Keys MUST be non-empty, at most 256 characters, and match the pattern `[a-zA-Z0-9][-_.a-zA-Z0-9]*` with an optional `/` separator for prefix (`prefix/name` format). Prefixes MUST be at most 253 characters and follow DNS subdomain format.
+Label keys SHALL be validated according to structured label semantics. Keys MUST be non-empty, at most 256 characters, and match the pattern `[a-zA-Z0-9][-_.a-zA-Z0-9]*` with an optional `/` separator for prefix (`prefix/name` format). Prefixes MUST be at most 253 characters and follow DNS subdomain format.
 
 #### Scenario: Valid simple key
 - **WHEN** a label key is `app` or `my-label` or `label_name.v2`
 - **THEN** validation SHALL pass
 
 #### Scenario: Valid prefixed key
-- **WHEN** a label key is `app.kubernetes.io/name` or `example.com/tier`
+- **WHEN** a label key is `app.example.io/name` or `example.com/tier`
 - **THEN** validation SHALL pass
 
 #### Scenario: Empty key
@@ -39,7 +39,7 @@ Label keys SHALL be validated according to Kubernetes semantics. Keys MUST be no
 - **THEN** validation SHALL fail with an `InvalidLabel` error
 
 ### Requirement: Label value validation
-Label values SHALL be validated according to Kubernetes semantics. Values MUST be at most 256 characters and match the pattern `[a-zA-Z0-9][-_.a-zA-Z0-9]*` or be an empty string.
+Label values SHALL be validated according to structured label semantics. Values MUST be at most 256 characters and match the pattern `[a-zA-Z0-9][-_.a-zA-Z0-9]*` or be an empty string.
 
 #### Scenario: Valid value
 - **WHEN** a label value is `nginx`, `v1.2.3`, `prod-env`, or empty string

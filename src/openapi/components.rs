@@ -63,7 +63,11 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
             json!({
                 "type": "object",
                 "properties": {
-                    "name": { "type": "string" }
+                    "name": { "type": "string" },
+                    "labels": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" }
+                    }
                 },
                 "required": ["name"]
             }),

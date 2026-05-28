@@ -8,8 +8,12 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
+use std::collections::HashMap;
+
 use crate::error::AppError;
-use crate::object::types::{ContinueToken, ListOptions, ListResponse, ObjectMeta, StoredObject, SystemMetadata, UserData};
+use crate::object::types::{
+    ContinueToken, ListOptions, ListResponse, ObjectMeta, StoredObject, SystemMetadata, UserData,
+};
 use crate::store::{ObjectStore, ResourceKey};
 
 /// SQLite-backed implementation of `ObjectStore`.
@@ -27,7 +31,8 @@ impl SQLiteStore {
     /// Parent directories are created if missing.
     pub fn new(path: &str) -> Result<Self, AppError> {
         if let Some(parent) = Path::new(path).parent()
-            && !parent.as_os_str().is_empty() {
+            && !parent.as_os_str().is_empty()
+        {
             std::fs::create_dir_all(parent).map_err(|e| AppError::Internal(e.into()))?;
         }
 
@@ -41,7 +46,7 @@ impl SQLiteStore {
         Ok(store)
     }
 
-    /// Creates the objects table and index if they don't exist. Idempotent.
+    /// Creates the objects table, labels table, and indexes if they don't exist. Idempotent.
     fn init_schema(&self) -> Result<(), AppError> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -57,9 +62,35 @@ impl SQLiteStore {
                 PRIMARY KEY (resource_group, api_version, resource_kind, name)
             )",
             [],
-        ).map_err(|e| AppError::Internal(e.into()))?;
+        )
+        .map_err(|e| AppError::Internal(e.into()))?;
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_objects_gvkn ON objects(resource_group, api_version, resource_kind, name)",
+            [],
+        ).map_err(|e| AppError::Internal(e.into()))?;
+
+        // Enable foreign key support (required for ON DELETE CASCADE)
+        conn.execute("PRAGMA foreign_keys = ON", [])
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS labels (
+                resource_group  TEXT NOT NULL,
+                api_version     TEXT NOT NULL,
+                resource_kind   TEXT NOT NULL,
+                name            TEXT NOT NULL,
+                label_key       TEXT NOT NULL,
+                label_value     TEXT NOT NULL,
+                PRIMARY KEY (resource_group, api_version, resource_kind, name, label_key),
+                FOREIGN KEY (resource_group, api_version, resource_kind, name)
+                    REFERENCES objects(resource_group, api_version, resource_kind, name)
+                    ON DELETE CASCADE
+            )",
+            [],
+        )
+        .map_err(|e| AppError::Internal(e.into()))?;
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_labels_gvkn ON labels(resource_group, api_version, resource_kind, name)",
             [],
         ).map_err(|e| AppError::Internal(e.into()))?;
         Ok(())
@@ -83,6 +114,7 @@ impl SQLiteStore {
     }
 
     /// Converts raw column values from a query row into a `StoredObject`.
+    /// Labels are set to empty — callers must populate them via `query_labels()`.
     #[allow(clippy::too_many_arguments)]
     fn deserialize_row(
         group: String,
@@ -94,12 +126,22 @@ impl SQLiteStore {
         created_at: String,
         updated_at: String,
     ) -> Result<StoredObject, AppError> {
-        let data_value: Value = serde_json::from_str(&data).map_err(|e| AppError::Internal(e.into()))?;
-        let created_at = DateTime::parse_from_rfc3339(&created_at).map_err(|e| AppError::Internal(e.into()))?;
-        let updated_at = DateTime::parse_from_rfc3339(&updated_at).map_err(|e| AppError::Internal(e.into()))?;
+        let data_value: Value =
+            serde_json::from_str(&data).map_err(|e| AppError::Internal(e.into()))?;
+        let created_at =
+            DateTime::parse_from_rfc3339(&created_at).map_err(|e| AppError::Internal(e.into()))?;
+        let updated_at =
+            DateTime::parse_from_rfc3339(&updated_at).map_err(|e| AppError::Internal(e.into()))?;
         Ok(StoredObject {
-            key: ResourceKey { group, version, kind },
-            metadata: ObjectMeta { name },
+            key: ResourceKey {
+                group,
+                version,
+                kind,
+            },
+            metadata: ObjectMeta {
+                name,
+                labels: HashMap::new(),
+            },
             system: SystemMetadata {
                 resource_version: resource_version as u64,
                 created_at: created_at.with_timezone(&Utc),
@@ -107,6 +149,88 @@ impl SQLiteStore {
             },
             data: UserData { value: data_value },
         })
+    }
+
+    /// Queries labels from the `labels` table for a single object.
+    fn query_labels(
+        conn: &Connection,
+        group: &str,
+        version: &str,
+        kind: &str,
+        name: &str,
+    ) -> Result<HashMap<String, String>, AppError> {
+        let mut stmt = conn.prepare(
+            "SELECT label_key, label_value FROM labels WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4"
+        ).map_err(|e| AppError::Internal(e.into()))?;
+        let rows = stmt
+            .query_map(params![group, version, kind, name], |row| {
+                let key: String = row.get(0)?;
+                let value: String = row.get(1)?;
+                Ok((key, value))
+            })
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        let mut labels = HashMap::new();
+        for row in rows {
+            let (k, v) = row.map_err(|e| AppError::Internal(e.into()))?;
+            labels.insert(k, v);
+        }
+        Ok(labels)
+    }
+
+    /// Batch-fetches labels for multiple objects identified by (group, version, kind, name).
+    /// Returns a map from name → labels (all objects share the same group/version/kind).
+    fn batch_query_labels(
+        conn: &Connection,
+        group: &str,
+        version: &str,
+        kind: &str,
+        names: &[String],
+    ) -> Result<HashMap<String, HashMap<String, String>>, AppError> {
+        if names.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        // Build IN clause with placeholders
+        let placeholders: Vec<String> = (1..=names.len()).map(|i| format!("?{}", i)).collect();
+        let sql = format!(
+            "SELECT name, label_key, label_value FROM labels WHERE resource_group = ?{} AND api_version = ?{} AND resource_kind = ?{} AND name IN ({})",
+            names.len() + 1,
+            names.len() + 2,
+            names.len() + 3,
+            placeholders.join(", ")
+        );
+
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        for name in names {
+            params_vec.push(Box::new(name.clone()));
+        }
+        params_vec.push(Box::new(group.to_string()));
+        params_vec.push(Box::new(version.to_string()));
+        params_vec.push(Box::new(kind.to_string()));
+
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
+
+        let rows = stmt
+            .query_map(params_refs.as_slice(), |row| {
+                let name: String = row.get(0)?;
+                let key: String = row.get(1)?;
+                let value: String = row.get(2)?;
+                Ok((name, key, value))
+            })
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
+        for row in rows {
+            let (name, key, value) = row.map_err(|e| AppError::Internal(e.into()))?;
+            result.entry(name).or_default().insert(key, value);
+        }
+        Ok(result)
     }
 
     fn now() -> DateTime<Utc> {
@@ -124,13 +248,23 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
     let resource_version: i64 = row.get("resource_version")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
-    SQLiteStore::deserialize_row(group, version, kind, name, data, resource_version, created_at, updated_at)
-        .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
+    SQLiteStore::deserialize_row(
+        group,
+        version,
+        kind,
+        name,
+        data,
+        resource_version,
+        created_at,
+        updated_at,
+    )
+    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
 }
 
 #[async_trait]
 impl ObjectStore for SQLiteStore {
     /// Inserts a new object. Returns `Conflict` if the composite key already exists.
+    /// Labels are inserted into the `labels` table within the same transaction.
     async fn create(
         &self,
         key: &ResourceKey,
@@ -150,7 +284,11 @@ impl ObjectStore for SQLiteStore {
             let updated_at = now.to_rfc3339();
 
             let c = conn.lock().unwrap();
-            let result = c.execute(
+
+            // Use immediate transaction for atomicity of object + labels
+            let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
+
+            let result = tx.execute(
                 "INSERT INTO objects (resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
@@ -161,6 +299,22 @@ impl ObjectStore for SQLiteStore {
 
             match result {
                 Ok(_) => {
+                    // Insert labels if non-empty
+                    if !meta.labels.is_empty() {
+                        let mut stmt = tx.prepare(
+                            "INSERT INTO labels (resource_group, api_version, resource_kind, name, label_key, label_value)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                        ).map_err(|e| AppError::Internal(e.into()))?;
+                        for (label_key, label_value) in &meta.labels {
+                            stmt.execute(params![
+                                key.group, key.version, key.kind, meta.name,
+                                label_key, label_value
+                            ]).map_err(|e| AppError::Internal(e.into()))?;
+                        }
+                    }
+
+                    tx.commit().map_err(|e| AppError::Internal(e.into()))?;
+
                     Ok(StoredObject {
                         key,
                         metadata: meta,
@@ -189,6 +343,7 @@ impl ObjectStore for SQLiteStore {
     }
 
     /// Fetches a single object by composite key. Returns `NotFound` if missing.
+    /// Labels are queried from the `labels` table and populated on the returned object.
     async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
         let key = key.clone();
         let name = name.to_string();
@@ -200,7 +355,7 @@ impl ObjectStore for SQLiteStore {
                 "SELECT resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
-            let obj = stmt
+            let mut obj = stmt
                 .query_row(
                     params![key.group, key.version, key.kind, name],
                     row_to_object,
@@ -209,7 +364,12 @@ impl ObjectStore for SQLiteStore {
                 .map_err(|e| AppError::Internal(e.into()))?;
 
             match obj {
-                Some(obj) => Ok(obj),
+                Some(ref mut obj) => {
+                    obj.metadata.labels = SQLiteStore::query_labels(
+                        &c, &key.group, &key.version, &key.kind, &name
+                    )?;
+                    Ok(obj.clone())
+                }
                 None => Err(AppError::NotFound {
                     what: "object".to_string(),
                     identifier: format!("{}/{}", key.kind, name),
@@ -278,11 +438,22 @@ impl ObjectStore for SQLiteStore {
                 .map_err(|e| AppError::Internal(e.into()))?;
 
             let has_more = items.len() > limit;
-            let items: Vec<StoredObject> = if has_more {
+            let mut items: Vec<StoredObject> = if has_more {
                 items[..limit].to_vec()
             } else {
                 items
             };
+
+            // Batch-fetch labels for all returned objects
+            let names: Vec<String> = items.iter().map(|o| o.metadata.name.clone()).collect();
+            let labels_map = SQLiteStore::batch_query_labels(
+                &c, &key.group, &key.version, &key.kind, &names
+            )?;
+            for item in &mut items {
+                if let Some(labels) = labels_map.get(&item.metadata.name) {
+                    item.metadata.labels = labels.clone();
+                }
+            }
 
             let continue_token = if has_more {
                 items
@@ -303,6 +474,7 @@ impl ObjectStore for SQLiteStore {
 
     /// Updates an object with optimistic concurrency control.
     /// Returns `Conflict` if the resource_version doesn't match, `NotFound` if missing.
+    /// Labels are updated via diff-based strategy within the same transaction.
     async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
         let conn = Arc::clone(&self.conn);
         let next_version = Arc::clone(&self.next_version);
@@ -316,7 +488,11 @@ impl ObjectStore for SQLiteStore {
             let expected_version = object.system.resource_version as i64;
 
             let c = conn.lock().unwrap();
-            let rows = c.execute(
+
+            // Use immediate transaction for atomicity of object update + label diff
+            let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
+
+            let rows = tx.execute(
                 "UPDATE objects SET data = ?1, resource_version = ?2, updated_at = ?3
                  WHERE resource_group = ?4 AND api_version = ?5 AND resource_kind = ?6 AND name = ?7
                  AND resource_version = ?8",
@@ -334,7 +510,7 @@ impl ObjectStore for SQLiteStore {
 
             if rows == 0 {
                 // Zero rows updated: either version mismatch or object doesn't exist
-                let exists = c.query_row(
+                let exists = tx.query_row(
                     "SELECT 1 FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
                     params![
                         object.key.group,
@@ -347,8 +523,7 @@ impl ObjectStore for SQLiteStore {
 
                 return match exists {
                     Some(_) => {
-                        // Object exists but version didn't match — return conflict with actual version
-                        let actual: u64 = c.query_row(
+                        let actual: u64 = tx.query_row(
                             "SELECT resource_version FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
                             params![
                                 object.key.group,
@@ -370,6 +545,53 @@ impl ObjectStore for SQLiteStore {
                 };
             }
 
+            // Diff-based label update: read existing, compute diff, apply
+            let existing_labels = SQLiteStore::query_labels(
+                &tx, &object.key.group, &object.key.version, &object.key.kind, &object.metadata.name
+            )?;
+            let new_labels = &object.metadata.labels;
+
+            // Keys to delete: in existing but not in new
+            let to_delete: Vec<&String> = existing_labels
+                .keys()
+                .filter(|k| !new_labels.contains_key(*k))
+                .collect();
+
+            // Keys to upsert: in new but value differs from existing, or not in existing
+            let to_upsert: Vec<(&String, &String)> = new_labels
+                .iter()
+                .filter(|(k, v)| existing_labels.get(*k) != Some(*v))
+                .collect();
+
+            // Apply deletes
+            if !to_delete.is_empty() {
+                let mut del_stmt = tx.prepare(
+                    "DELETE FROM labels WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4 AND label_key = ?5"
+                ).map_err(|e| AppError::Internal(e.into()))?;
+                for key in &to_delete {
+                    del_stmt.execute(params![
+                        object.key.group, object.key.version, object.key.kind,
+                        object.metadata.name, key
+                    ]).map_err(|e| AppError::Internal(e.into()))?;
+                }
+            }
+
+            // Apply upserts
+            if !to_upsert.is_empty() {
+                let mut upsert_stmt = tx.prepare(
+                    "INSERT OR REPLACE INTO labels (resource_group, api_version, resource_kind, name, label_key, label_value)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                ).map_err(|e| AppError::Internal(e.into()))?;
+                for (key, value) in &to_upsert {
+                    upsert_stmt.execute(params![
+                        object.key.group, object.key.version, object.key.kind,
+                        object.metadata.name, key, value
+                    ]).map_err(|e| AppError::Internal(e.into()))?;
+                }
+            }
+
+            tx.commit().map_err(|e| AppError::Internal(e.into()))?;
+
             Ok(StoredObject {
                 key: object.key,
                 metadata: object.metadata,
@@ -386,6 +608,7 @@ impl ObjectStore for SQLiteStore {
     }
 
     /// Deletes an object unconditionally (no version check). Returns the deleted object.
+    /// Labels are automatically removed via ON DELETE CASCADE.
     async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
         let key = key.clone();
         let name = name.to_string();
@@ -399,7 +622,7 @@ impl ObjectStore for SQLiteStore {
                 "SELECT resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
-            let obj = stmt
+            let mut obj = stmt
                 .query_row(
                     params![key.group, key.version, key.kind, name],
                     row_to_object,
@@ -408,7 +631,13 @@ impl ObjectStore for SQLiteStore {
                 .map_err(|e| AppError::Internal(e.into()))?;
 
             let obj = match obj {
-                Some(obj) => obj,
+                Some(ref mut obj) => {
+                    // Query labels before deletion (CASCADE will remove them)
+                    obj.metadata.labels = SQLiteStore::query_labels(
+                        &c, &key.group, &key.version, &key.kind, &name
+                    )?;
+                    obj.clone()
+                }
                 None => {
                     return Err(AppError::NotFound {
                         what: "object".to_string(),
@@ -473,7 +702,14 @@ mod tests {
         let data = json!({"color": "blue", "size": 10});
 
         let created = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, data.clone())
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                data.clone(),
+            )
             .await
             .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
@@ -496,12 +732,26 @@ mod tests {
         let key = test_key();
 
         store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
 
         let err = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 2}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 2}),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::AlreadyExists { .. }));
@@ -521,9 +771,39 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store.create(&key, ObjectMeta { name: "c".to_string() }, json!({})).await.unwrap();
-        store.create(&key, ObjectMeta { name: "a".to_string() }, json!({})).await.unwrap();
-        store.create(&key, ObjectMeta { name: "b".to_string() }, json!({})).await.unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "c".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "a".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "b".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
 
         let res = store
             .list(
@@ -547,7 +827,14 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(&key, ObjectMeta { name: format!("item-{i}") }, json!({}))
+                .create(
+                    &key,
+                    ObjectMeta {
+                        name: format!("item-{i}"),
+                        labels: HashMap::new(),
+                    },
+                    json!({}),
+                )
                 .await
                 .unwrap();
         }
@@ -575,7 +862,14 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(&key, ObjectMeta { name: format!("item-{i}") }, json!({}))
+                .create(
+                    &key,
+                    ObjectMeta {
+                        name: format!("item-{i}"),
+                        labels: HashMap::new(),
+                    },
+                    json!({}),
+                )
                 .await
                 .unwrap();
         }
@@ -614,7 +908,14 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
         let v1 = created.system.resource_version;
@@ -623,6 +924,7 @@ mod tests {
             key: key.clone(),
             metadata: ObjectMeta {
                 name: "my-widget".to_string(),
+                labels: HashMap::new(),
             },
             system: SystemMetadata {
                 resource_version: v1,
@@ -645,7 +947,14 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
 
@@ -653,6 +962,7 @@ mod tests {
             key: key.clone(),
             metadata: ObjectMeta {
                 name: "my-widget".to_string(),
+                labels: HashMap::new(),
             },
             system: SystemMetadata {
                 resource_version: 99,
@@ -677,6 +987,7 @@ mod tests {
             key: key.clone(),
             metadata: ObjectMeta {
                 name: "nonexistent".to_string(),
+                labels: HashMap::new(),
             },
             system: SystemMetadata {
                 resource_version: 1,
@@ -698,7 +1009,14 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(&key, ObjectMeta { name: "my-widget".to_string() }, json!({"x": 1}))
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
             .await
             .unwrap();
 
@@ -748,7 +1066,14 @@ mod tests {
             let store = SQLiteStore::new(db_path.to_str().unwrap()).unwrap();
             let key = test_key();
             store
-                .create(&key, ObjectMeta { name: "persistent".to_string() }, json!({"data": "hello"}))
+                .create(
+                    &key,
+                    ObjectMeta {
+                        name: "persistent".to_string(),
+                        labels: HashMap::new(),
+                    },
+                    json!({"data": "hello"}),
+                )
                 .await
                 .unwrap();
         }

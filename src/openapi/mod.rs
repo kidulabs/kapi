@@ -47,6 +47,7 @@ mod tests {
     use super::paths::{build_kind_paths, build_openapi_spec, build_static_paths};
     use crate::store::ResourceKey;
     use serde_json::Value;
+    use std::collections::HashMap;
 
     #[test]
     fn component_name_splits_dots_and_pascal_cases() {
@@ -108,7 +109,10 @@ mod tests {
         assert!(props.contains_key("data"));
         assert_eq!(props["key"]["$ref"], "#/components/schemas/ResourceKey");
         assert_eq!(props["metadata"]["$ref"], "#/components/schemas/ObjectMeta");
-        assert_eq!(props["system"]["$ref"], "#/components/schemas/SystemMetadata");
+        assert_eq!(
+            props["system"]["$ref"],
+            "#/components/schemas/SystemMetadata"
+        );
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "key"));
         assert!(required.iter().any(|r| r == "system"));
@@ -199,10 +203,7 @@ mod tests {
         assert_eq!(obj["type"], "object");
         let props = obj["properties"].as_object().unwrap();
         assert_eq!(props["key"]["$ref"], "#/components/schemas/ResourceKey");
-        assert_eq!(
-            props["metadata"]["$ref"],
-            "#/components/schemas/ObjectMeta"
-        );
+        assert_eq!(props["metadata"]["$ref"], "#/components/schemas/ObjectMeta");
         assert_eq!(
             props["system"]["$ref"],
             "#/components/schemas/SystemMetadata"
@@ -263,9 +264,15 @@ mod tests {
         let rb = &collection["post"]["requestBody"];
         assert_eq!(rb["required"], true);
         let schema = &rb["content"]["application/json"]["schema"];
-        // Schema name is auto-generated — request body is just SchemaData, no metadata
+        // Schema create uses allOf: metadata (with labels) + SchemaData
+        let all_of = schema["allOf"].as_array().unwrap();
+        assert_eq!(all_of.len(), 2);
+        // First part: metadata with labels
+        let metadata = &all_of[0]["properties"]["metadata"]["properties"];
+        assert!(metadata.get("labels").is_some());
+        // Second part: SchemaData ref
         assert_eq!(
-            schema["$ref"],
+            all_of[1]["$ref"],
             "#/components/schemas/SchemaData"
         );
     }
@@ -340,7 +347,10 @@ mod tests {
             .find(|(p, _)| p == "/apis/example.io/v1/Widget")
             .unwrap();
         let params = collection["get"]["parameters"].as_array().unwrap();
-        let field_selector = params.iter().find(|p| p["name"] == "fieldSelector").unwrap();
+        let field_selector = params
+            .iter()
+            .find(|p| p["name"] == "fieldSelector")
+            .unwrap();
         assert_eq!(field_selector["in"], "query");
         assert_eq!(field_selector["schema"]["type"], "string");
         assert_eq!(field_selector["required"], false);
@@ -430,7 +440,14 @@ mod tests {
             }
         });
         service
-            .create(schema_key, crate::object::types::ObjectMeta { name: "Widget.example.io".to_string() }, schema_data)
+            .create(
+                schema_key,
+                crate::object::types::ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                schema_data,
+            )
             .await
             .unwrap();
 
@@ -478,7 +495,10 @@ mod tests {
         service
             .create(
                 schema_key.clone(),
-                crate::object::types::ObjectMeta { name: "Widget.example.io".to_string() },
+                crate::object::types::ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
                 schema_data.clone(),
             )
             .await

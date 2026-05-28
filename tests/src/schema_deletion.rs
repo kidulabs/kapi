@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::Value;
 
-use crate::{assert_status, parse_body, register_widget_schema, widget, TestApp};
+use crate::{TestApp, assert_status, parse_body, register_widget_schema, widget};
 
 pub async fn test_delete_schema_no_objects(app: &TestApp) -> Result<(), String> {
     let client = app.client();

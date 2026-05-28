@@ -14,6 +14,8 @@ use futures_util::stream;
 use serde::Deserialize;
 use serde_json::Value;
 
+use std::collections::HashMap;
+
 use crate::error::AppError;
 use crate::object::types::{
     ContinueToken, FieldSelector, ListOptions, ObjectMeta, StoredObject, WatchFilter,
@@ -63,6 +65,31 @@ fn extract_schema_name(body: &Value) -> Option<String> {
     Some(format!("{}.{}", target_kind, target_group))
 }
 
+/// Extracts labels from `metadata.labels` in the request body.
+///
+/// Returns an empty `HashMap` when `metadata.labels` is absent.
+/// Returns an error when `metadata.labels` is present but not an object
+/// with string values.
+fn extract_labels(body: &Value) -> Result<HashMap<String, String>, AppError> {
+    let labels_value = match body.get("metadata").and_then(|m| m.get("labels")) {
+        Some(v) => v,
+        None => return Ok(HashMap::new()),
+    };
+
+    let labels_obj = labels_value
+        .as_object()
+        .ok_or_else(|| AppError::InvalidLabel("metadata.labels must be an object".to_string()))?;
+
+    let mut labels = HashMap::with_capacity(labels_obj.len());
+    for (key, value) in labels_obj {
+        let str_value = value.as_str().ok_or_else(|| {
+            AppError::InvalidLabel(format!("label value for key '{}' must be a string", key))
+        })?;
+        labels.insert(key.clone(), str_value.to_string());
+    }
+    Ok(labels)
+}
+
 /// Creates a new object.
 ///
 /// Extracts group, version, kind from path, deserializes body as JSON,
@@ -76,6 +103,9 @@ pub async fn create(
     Path(path): Path<ObjectPath>,
     Json(mut body): Json<Value>,
 ) -> Result<(StatusCode, Json<StoredObject>), AppError> {
+    // Extract labels from metadata.labels (shared across both paths)
+    let labels = extract_labels(&body)?;
+
     // Branch on kind: Schema objects generate their name from payload fields,
     // while regular objects require a client-supplied metadata.name
     let meta = if path.kind == "Schema" {
@@ -85,7 +115,7 @@ pub async fn create(
                 "Schema registration requires targetKind and targetGroup fields".to_string(),
             )
         })?;
-        ObjectMeta { name }
+        ObjectMeta { name, labels }
     } else {
         // Regular object: extract name from metadata.name
         let name = body
@@ -96,7 +126,7 @@ pub async fn create(
                 AppError::Internal(anyhow::anyhow!("missing metadata.name in request body"))
             })?
             .to_string();
-        ObjectMeta { name }
+        ObjectMeta { name, labels }
     };
 
     // Remove metadata from body before passing to service
@@ -179,7 +209,7 @@ pub async fn list(
 
 /// Parses a `fieldSelector` query parameter value into a `WatchFilter`.
 ///
-/// Supports Kubernetes-compatible syntax: `metadata.name=<value>`.
+/// Supports standard syntax: `metadata.name=<value>`.
 /// Returns `InvalidFieldSelector` for unsupported fields or malformed input.
 pub fn parse_field_selector(raw: &str) -> Result<WatchFilter, AppError> {
     let (field, value) = raw.split_once('=').ok_or_else(|| {
@@ -304,14 +334,18 @@ mod tests {
     fn parse_field_selector_unsupported_field() {
         let result = parse_field_selector("metadata.namespace=default");
         assert!(result.is_err());
-        assert!(matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("metadata.namespace")));
+        assert!(
+            matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("metadata.namespace"))
+        );
     }
 
     #[test]
     fn parse_field_selector_malformed_input() {
         let result = parse_field_selector("invalid-format");
         assert!(result.is_err());
-        assert!(matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("expected 'field=value'")));
+        assert!(
+            matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("expected 'field=value'"))
+        );
     }
 
     #[test]

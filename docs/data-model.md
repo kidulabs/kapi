@@ -23,11 +23,34 @@ User-controlled metadata fields. Clients set these on create and echo them back 
 
 ```rust
 struct ObjectMeta {
-    name: String,             // unique within a (group, version, kind)
+    name: String,                         // unique within a (group, version, kind)
+    #[serde(default)]
+    labels: HashMap<String, String>,      // optional key-value metadata
 }
 ```
 
-Wire format uses camelCase (currently only `name`, no effect).
+Wire format uses camelCase (`name`, `labels`). The `labels` field defaults to `{}` when absent in the request body — the `#[serde(default)]` attribute ensures deserialization never fails on a missing field.
+
+Serialization examples:
+
+```json
+// With labels
+{
+    "name": "my-app",
+    "labels": {
+        "app.example.io/name": "my-app",
+        "tier": "frontend",
+        "environment": "prod"
+    }
+}
+
+// Minimal (labels omitted — deserializes to empty map)
+{
+    "name": "my-app"
+}
+```
+
+Labels are validated against structured validation rules (see [API Reference](api-reference.md#label-validation)).
 
 ### SystemMetadata
 
@@ -140,6 +163,7 @@ All errors conform to a standard JSON envelope:
 | `SchemaValidation` | 422 | Object data violates registered schema |
 | `InvalidSchema` | 422 | Schema registration fails meta-schema or compilation |
 | `SchemaHasObjects` | 409 | Attempting to delete a Schema that has existing objects |
+| `InvalidLabel` | 400 | Label key or value violates format or length rules |
 | `Internal` | 500 | Unexpected errors |
 
 ## Watch Semantics
@@ -170,7 +194,11 @@ data: {"eventType":"Modified","object":{...}}
         "kind": "deployments"
     },
     "metadata": {
-        "name": "my-app"
+        "name": "my-app",
+        "labels": {
+            "app.example.io/name": "my-app",
+            "environment": "prod"
+        }
     },
     "system": {
         "resourceVersion": 42,

@@ -1,7 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::Value;
 
-use crate::{assert_status, parse_body, register_widget_schema, widget, TestApp};
+use crate::{TestApp, assert_status, parse_body, register_widget_schema, widget};
 
 pub async fn test_create_schema_then_object(app: &TestApp) -> Result<(), String> {
     let client = app.client();
@@ -54,9 +54,7 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let rv = created["system"]["resourceVersion"]
-        .as_u64()
-        .unwrap_or(0);
+    let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
     let created_at = created["system"]["createdAt"]
         .as_str()
         .unwrap_or("")
@@ -78,9 +76,7 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
-    let new_rv = updated["system"]["resourceVersion"]
-        .as_u64()
-        .unwrap_or(0);
+    let new_rv = updated["system"]["resourceVersion"].as_u64().unwrap_or(0);
     assert!(
         new_rv > rv,
         "new resourceVersion should be greater than old"
@@ -91,9 +87,7 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::OK);
 
-    let resp = client
-        .get("/apis/example.io/v1/Widget/crud-widget")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget/crud-widget").await;
     assert_status(&resp, StatusCode::NOT_FOUND);
 
     Ok(())
@@ -133,7 +127,10 @@ pub async fn test_list_two_pages(app: &TestApp) -> Result<(), String> {
     for i in 0..4 {
         let name = format!("list-tp-{i}");
         let resp = client
-            .post("/apis/example.io/v1/Widget", widget(&name, "blue", i as i64))
+            .post(
+                "/apis/example.io/v1/Widget",
+                widget(&name, "blue", i as i64),
+            )
             .await;
         assert_status(&resp, StatusCode::CREATED);
     }
@@ -143,10 +140,7 @@ pub async fn test_list_two_pages(app: &TestApp) -> Result<(), String> {
     let page1: Value = parse_body(resp).await;
     let items1 = page1["items"].as_array().map(|a| a.len()).unwrap_or(0);
     assert_eq!(items1, 2, "page1 expected 2 items, got {items1}");
-    let token = page1["continue_token"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let token = page1["continue_token"].as_str().unwrap_or("").to_string();
     assert!(!token.is_empty(), "page1 should have continue token");
 
     let resp = client
@@ -191,10 +185,7 @@ pub async fn test_list_resume_position(app: &TestApp) -> Result<(), String> {
         .unwrap_or_default();
     assert_eq!(names1, vec!["a", "b"], "page1 should have [a, b]");
 
-    let token = page1["continue_token"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let token = page1["continue_token"].as_str().unwrap_or("").to_string();
 
     let resp = client
         .get(&format!(

@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
+use axum::Router;
 use axum::body::Body;
 use axum::http::{Method, Request, StatusCode};
-use axum::Router;
 use futures::StreamExt;
 use http_body_util::BodyExt;
 use http_body_util::BodyStream;
@@ -11,14 +11,15 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 
+use kapi::AppConfig;
 use kapi::event::{EventBus, EventPublisher};
 use kapi::object::types::{WatchEvent, WatchEventType};
+use kapi::store::ObjectStore;
 use kapi::store::memory::InMemoryStore;
 use kapi::store::sqlite::SQLiteStore;
-use kapi::store::ObjectStore;
-use kapi::AppConfig;
 
 pub mod object_crud;
+pub mod object_labels;
 pub mod optimistic_concurrency;
 pub mod schema_deletion;
 pub mod schema_validation;
@@ -204,10 +205,7 @@ pub fn parse_sse_events(buffer: &mut Vec<u8>) -> Vec<WatchEvent> {
     events
 }
 
-pub async fn watch_events(
-    client: &TestClient,
-    uri: &str,
-) -> mpsc::Receiver<WatchEvent> {
+pub async fn watch_events(client: &TestClient, uri: &str) -> mpsc::Receiver<WatchEvent> {
     let (tx, rx) = mpsc::channel(32);
     let client = client.clone();
     let uri = uri.to_string();
