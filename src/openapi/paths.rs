@@ -125,6 +125,13 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "required": false,
                             "schema": { "type": "string" },
                             "description": "Filter watch events by field selector (e.g., metadata.name=my-obj). Only valid with watch=true."
+                        },
+                        {
+                            "name": "labelSelector",
+                            "in": "query",
+                            "required": false,
+                            "schema": { "type": "string" },
+                            "description": "Filter watch events by label selector. Supports: key=value (equality), key!=value (inequality), key (existence), !key (non-existence), comma-separated (AND). Only valid with watch=true."
                         }
                     ],
                     "responses": {
@@ -317,6 +324,13 @@ pub(crate) fn build_kind_paths(
                             "required": false,
                             "schema": { "type": "string" },
                             "description": "Filter watch events by field selector (e.g., metadata.name=my-obj). Only valid with watch=true."
+                        },
+                        {
+                            "name": "labelSelector",
+                            "in": "query",
+                            "required": false,
+                            "schema": { "type": "string" },
+                            "description": "Filter watch events by label selector. Supports: key=value (equality), key!=value (inequality), key (existence), !key (non-existence), comma-separated (AND). Only valid with watch=true."
                         }
                     ],
                     "responses": {
@@ -329,7 +343,7 @@ pub(crate) fn build_kind_paths(
                             }
                         },
                         "400": {
-                            "description": "Invalid field selector — unsupported field or malformed syntax, or fieldSelector on non-watch request",
+                            "description": "Invalid field selector — unsupported field or malformed syntax, or fieldSelector on non-watch request. Invalid label selector — malformed syntax or labelSelector on non-watch request.",
                             "content": { "application/json": { "schema": error_ref } }
                         }
                     }

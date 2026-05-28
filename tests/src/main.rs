@@ -111,6 +111,36 @@ async fn main() {
 
         println!();
         run_test!(
+            "watch_by_label_selector_matching",
+            watch_events::test_watch_by_label_selector_matching
+        );
+        run_test!(
+            "watch_by_label_selector_non_matching",
+            watch_events::test_watch_by_label_selector_non_matching
+        );
+        run_test!(
+            "watch_by_label_selector_and_combinator",
+            watch_events::test_watch_by_label_selector_and_combinator
+        );
+        run_test!(
+            "watch_by_label_selector_not_exists",
+            watch_events::test_watch_by_label_selector_not_exists
+        );
+        run_test!(
+            "watch_invalid_label_selector",
+            watch_events::test_watch_invalid_label_selector
+        );
+        run_test!(
+            "watch_empty_label_selector",
+            watch_events::test_watch_empty_label_selector
+        );
+        run_test!(
+            "label_selector_non_watch_400",
+            watch_events::test_label_selector_on_non_watch_returns_400
+        );
+
+        println!();
+        run_test!(
             "delete_schema_no_objects",
             schema_deletion::test_delete_schema_no_objects
         );

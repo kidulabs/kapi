@@ -6,7 +6,7 @@ use tokio::time::timeout;
 
 use crate::{
     TestApp, WatchEventType, assert_status, parse_body, register_widget_schema, watch_events,
-    widget, widget_schema,
+    widget, widget_schema, widget_with_labels,
 };
 
 pub async fn test_watch_schema_added(app: &TestApp) -> Result<(), String> {
@@ -343,6 +343,234 @@ pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<
     // After publish, the dead watcher should be cleaned up
     let count = event_bus.watcher_count(&key).unwrap_or(0);
     assert_eq!(count, 0, "dead watcher should be cleaned up on publish");
+
+    Ok(())
+}
+
+// Label selector watch tests
+
+pub async fn test_watch_by_label_selector_matching(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create object with matching labels
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget_with_labels("matching", "blue", 1, serde_json::json!({"app": "nginx"})),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    let event = timeout(Duration::from_secs(3), events.recv())
+        .await
+        .map_err(|_| "timeout waiting for matching label event".to_string())?
+        .ok_or("watch stream ended before event".to_string())?;
+
+    assert_eq!(
+        event.object.metadata.name, "matching",
+        "expected event for matching object"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watch_by_label_selector_non_matching(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create object with non-matching labels
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget_with_labels(
+                "non-matching",
+                "red",
+                2,
+                serde_json::json!({"app": "apache"}),
+            ),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    // Verify no event arrived
+    let result = timeout(Duration::from_millis(500), events.recv()).await;
+    assert!(
+        result.is_err(),
+        "should not receive event for non-matching labels"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watch_by_label_selector_and_combinator(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,env=prod",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create object with both labels
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget_with_labels(
+                "both-labels",
+                "green",
+                3,
+                serde_json::json!({"app": "nginx", "env": "prod"}),
+            ),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    let event = timeout(Duration::from_secs(3), events.recv())
+        .await
+        .map_err(|_| "timeout waiting for AND combinator event".to_string())?
+        .ok_or("watch stream ended before event".to_string())?;
+
+    assert_eq!(
+        event.object.metadata.name, "both-labels",
+        "expected event for object with both labels"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watch_by_label_selector_not_exists(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true&labelSelector=!experimental",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create object without experimental label
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget_with_labels(
+                "no-experimental",
+                "yellow",
+                4,
+                serde_json::json!({"app": "nginx"}),
+            ),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    let event = timeout(Duration::from_secs(3), events.recv())
+        .await
+        .map_err(|_| "timeout waiting for !experimental event".to_string())?
+        .ok_or("watch stream ended before event".to_string())?;
+
+    assert_eq!(
+        event.object.metadata.name, "no-experimental",
+        "expected event for object without experimental label"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watch_invalid_label_selector(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    // Malformed selector (empty segment)
+    let resp = client
+        .get("/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,,env=prod")
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "expected 400 for empty segment in label selector"
+    );
+
+    // Empty value
+    let resp = client
+        .get("/apis/example.io/v1/Widget?watch=true&labelSelector=app=")
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "expected 400 for empty value in label selector"
+    );
+
+    Ok(())
+}
+
+pub async fn test_watch_empty_label_selector(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/Widget?watch=true&labelSelector=",
+    )
+    .await;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
+
+    // Create any object — should receive event (empty selector matches all)
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            widget("empty-selector", "purple", 5),
+        )
+        .await;
+    assert_status(&resp, StatusCode::CREATED);
+
+    let event = timeout(Duration::from_secs(3), events.recv())
+        .await
+        .map_err(|_| "timeout waiting for empty selector event".to_string())?
+        .ok_or("watch stream ended before event".to_string())?;
+
+    assert_eq!(
+        event.object.metadata.name, "empty-selector",
+        "expected event for empty selector (matches all)"
+    );
+
+    Ok(())
+}
+
+pub async fn test_label_selector_on_non_watch_returns_400(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    // labelSelector without watch=true
+    let resp = client
+        .get("/apis/example.io/v1/Widget?labelSelector=app=nginx")
+        .await;
+    assert_eq!(
+        resp.status(),
+        StatusCode::BAD_REQUEST,
+        "expected 400 for labelSelector on non-watch request"
+    );
 
     Ok(())
 }

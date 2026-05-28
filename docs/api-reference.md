@@ -169,6 +169,8 @@ GET /apis/{group}/{version}/{kind}
 | `watch` | boolean | Enable SSE watch stream |
 | `limit` | integer | Page size for paginated listing |
 | `continue` | string | Cursor from previous page (base64-encoded) |
+| `fieldSelector` | string | Filter watch events by field selector (only valid with `watch=true`) |
+| `labelSelector` | string | Filter watch events by label selector (only valid with `watch=true`) |
 
 **Response:** `200 OK`
 
@@ -271,6 +273,55 @@ Only events where `object.metadata.name == "my-widget"` will be delivered. The s
 
 **Errors:** `400` for unsupported fields, malformed syntax (missing `=` sign), or `fieldSelector` on a non-watch request.
 
+### Filtering by label selector
+
+Add `?labelSelector=<selector>` to watch only events for objects matching specific labels:
+
+```
+GET /apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx
+```
+
+Label selectors are evaluated against `object.metadata.labels`. An empty selector (`labelSelector=`) matches all objects.
+
+**Supported syntax:**
+| Syntax | Description | Example |
+|--------|-------------|---------|
+| `key=value` | Equality — label key must exist with exact value | `app=nginx` |
+| `key!=value` | Inequality — label key must not have this value **or must be absent** | `env!=prod` |
+| `key` | Existence — label key must be present (any value) | `gpu` |
+| `!key` | Non-existence — label key must not be present | `!experimental` |
+| Comma-separated | AND combinator — all requirements must match | `app=nginx,env=prod` |
+
+**Matching semantics:**
+
+- `key=value` requires the key to exist **and** have the specified value. Objects without the key do not match.
+- `key!=value` matches when the key has a different value **or when the key is absent entirely**. This follows Kubernetes semantics — absence satisfies inequality.
+- `key` (existence) matches when the key is present, even if its value is an empty string.
+- `!key` (non-existence) matches only when the key is not present in the labels map.
+- Comma-separated requirements use AND semantics — all must match for the event to be delivered.
+
+**Examples:**
+
+```
+# Watch objects with app=nginx
+?watch=true&labelSelector=app=nginx
+
+# Watch objects with app=nginx AND env=prod
+?watch=true&labelSelector=app=nginx,env=prod
+
+# Watch objects without the experimental label
+?watch=true&labelSelector=!experimental
+
+# Mixed operators
+?watch=true&labelSelector=app=nginx,!experimental,gpu
+```
+
+**Combining with fieldSelector:**
+
+When both `fieldSelector` and `labelSelector` are present on a watch request, `labelSelector` takes precedence and `fieldSelector` is ignored. Combining both selectors with AND semantics is planned for Phase 3.
+
+**Errors:** `400` for malformed selectors (empty value, whitespace in key, empty segments), or `labelSelector` on a non-watch request.
+
 Watch streams terminate when the client disconnects or the watcher's buffer is full. The client must re-list and re-subscribe.
 
 ---
@@ -368,6 +419,7 @@ All errors follow this format:
 | 409 | `Conflict` | OCC version mismatch or duplicate |
 | 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
 | 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field, malformed syntax, or fieldSelector on non-watch request) |
+| 400 | `InvalidLabelSelector` | Invalid labelSelector query parameter (malformed syntax, empty value, or labelSelector on non-watch request) |
 | 400 | `InvalidLabel` | Label key or value violates format or length rules |
 | 422 | `SchemaValidation` | Object data doesn't match schema |
 | 422 | `InvalidSchema` | Schema registration failed validation |

@@ -6,11 +6,14 @@
 - [x] **Predicate routing event bus** — Replaced `tokio::broadcast` with per-watcher `mpsc` channels + `WatchFilter` for filtered event delivery
 - [x] **Field selector watch filtering** — `?fieldSelector=metadata.name=<name>` query parameter on watch requests with strict validation (400 for unsupported fields, malformed syntax, or fieldSelector on non-watch requests)
 - [x] **OpenAPI spec for field selectors** — `fieldSelector` parameter and `400` response documented in generated OpenAPI 3.0.3 spec
+- [x] **Label selector watch filtering** — `?labelSelector=<selector>` query parameter on watch requests with moderate K8s syntax (equality, inequality, existence, non-existence, AND combinator)
+- [x] **OpenAPI spec for label selectors** — `labelSelector` parameter and `400` response documented in generated OpenAPI 3.0.3 spec
 
 ## Pending
 
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
-- [x] **Label filtering (partial)** — `labels` field on `ObjectMeta` with validation completed; `labelSelector` query param for watch and list pending
+- [x] **Label filtering (watch)** — `labels` field on `ObjectMeta` with validation; `labelSelector` query param for watch with moderate K8s syntax (equality, inequality, existence, non-existence, AND)
+- [ ] **Label filtering (list)** — `labelSelector` on non-watch list requests (requires store-level filtering — Phase 3)
 - [ ] **Watch filtering on list requests** — `fieldSelector`/`labelSelector` on non-watch list requests (requires store-level filtering)
 - [ ] **Watch resume** — `resourceVersion` param for watch resume with ring buffer replay
 - [ ] **Watch bookmarks** — Periodic bookmark events with current resourceVersion
@@ -24,7 +27,7 @@
 
 ## Future Work
 
-- [ ] **Full label selector syntax parity** — Add set-based operators (`in`, `notin`, `exists`, `!exists`) to `labelSelector` query parameter for watch and list endpoints
+- [ ] **Full label selector syntax parity** — Add set-based operators (`in`, `notin`) to `labelSelector` query parameter for full Kubernetes label selector support
 - [ ] **Label indexing** — Index label key-value pairs for efficient high-cardinality label queries at scale
 - [ ] **Annotations** — Free-form key-value metadata on `ObjectMeta` without selection semantics (no validation beyond key-value structure)
 

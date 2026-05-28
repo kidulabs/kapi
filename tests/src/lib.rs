@@ -166,6 +166,14 @@ pub fn widget(name: &str, color: &str, size: i64) -> Value {
     })
 }
 
+pub fn widget_with_labels(name: &str, color: &str, size: i64, labels: Value) -> Value {
+    serde_json::json!({
+        "metadata": { "name": name, "labels": labels },
+        "color": color,
+        "size": size
+    })
+}
+
 pub fn parse_sse_events(buffer: &mut Vec<u8>) -> Vec<WatchEvent> {
     let mut events = Vec::new();
 

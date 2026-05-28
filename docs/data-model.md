@@ -164,6 +164,8 @@ All errors conform to a standard JSON envelope:
 | `InvalidSchema` | 422 | Schema registration fails meta-schema or compilation |
 | `SchemaHasObjects` | 409 | Attempting to delete a Schema that has existing objects |
 | `InvalidLabel` | 400 | Label key or value violates format or length rules |
+| `InvalidLabelSelector` | 400 | labelSelector query parameter is malformed or used without watch=true |
+| `InvalidFieldSelector` | 400 | fieldSelector query parameter is malformed, unsupported field, or used without watch=true |
 | `Internal` | 500 | Unexpected errors |
 
 ## Watch Semantics
@@ -173,6 +175,32 @@ All errors conform to a standard JSON envelope:
 - Events use the `event: message` type in SSE
 - If a client falls behind (broadcast channel buffer overflow), the stream terminates with `None` — the client must re-sync by re-listing + re-subscribing
 - Channels are created lazily on first subscribe, cleaned up when all receivers drop
+
+### Watch Filtering
+
+Watch streams can be filtered using query parameters:
+
+**Field selector** (`fieldSelector`): filters by object name. Only `metadata.name=<value>` is supported.
+
+```
+GET /apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=my-widget
+```
+
+**Label selector** (`labelSelector`): filters by object labels evaluated against `object.metadata.labels`. Supports:
+
+| Syntax | Description |
+|--------|-------------|
+| `key=value` | Equality — key must exist with exact value |
+| `key!=value` | Inequality — key must not have this value **or must be absent** |
+| `key` | Existence — key must be present (any value) |
+| `!key` | Non-existence — key must not be present |
+| Comma-separated | AND combinator — all requirements must match |
+
+```
+GET /apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,env=prod
+```
+
+An empty `labelSelector=` matches all objects. When both `fieldSelector` and `labelSelector` are present, `labelSelector` takes precedence and `fieldSelector` is ignored. Both selectors are only valid with `watch=true` — using them on a plain list request returns `400 Bad Request`.
 
 ### SSE Wire Format
 

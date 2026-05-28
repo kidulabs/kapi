@@ -18,7 +18,8 @@ use std::collections::HashMap;
 
 use crate::error::AppError;
 use crate::object::types::{
-    ContinueToken, FieldSelector, ListOptions, ObjectMeta, StoredObject, WatchFilter,
+    ContinueToken, FieldSelector, LabelRequirement, LabelSelector, ListOptions, ObjectMeta,
+    StoredObject, WatchFilter,
 };
 use crate::routes::AppState;
 use crate::store::ResourceKey;
@@ -49,6 +50,8 @@ pub struct ListQuery {
     pub continue_token: Option<String>,
     #[serde(rename = "fieldSelector")]
     pub field_selector: Option<String>,
+    #[serde(rename = "labelSelector")]
+    pub label_selector: Option<String>,
 }
 
 /// Extracts the schema name from a Schema registration body.
@@ -179,22 +182,34 @@ pub async fn list(
     };
 
     // Parse fieldSelector if present
-    let filter = match &query.field_selector {
+    let field_filter = match &query.field_selector {
         Some(raw) => Some(parse_field_selector(raw)?),
+        None => None,
+    };
+
+    // Parse labelSelector if present
+    let label_filter = match &query.label_selector {
+        Some(raw) => Some(parse_label_selector(raw)?),
         None => None,
     };
 
     // Branch on watch parameter
     if query.watch == Some(true) {
-        // Return SSE stream with optional fieldSelector filter
-        let filter = filter.unwrap_or(WatchFilter::All);
+        // Determine the filter for watch: prefer labelSelector, fall back to fieldSelector
+        // (combining both with And is Phase 3)
+        let filter = label_filter.or(field_filter).unwrap_or(WatchFilter::All);
         return Ok(watch(state, key, filter).into_response());
     }
 
-    // fieldSelector on non-watch request returns 400
-    if filter.is_some() {
+    // fieldSelector or labelSelector on non-watch request returns 400 (Phase 3 will enable list filtering)
+    if field_filter.is_some() {
         return Err(AppError::InvalidFieldSelector(
             "fieldSelector is only valid with watch=true".to_string(),
+        ));
+    }
+    if label_filter.is_some() {
+        return Err(AppError::InvalidLabelSelector(
+            "labelSelector is only valid with watch=true".to_string(),
         ));
     }
 
@@ -225,6 +240,109 @@ pub fn parse_field_selector(raw: &str) -> Result<WatchFilter, AppError> {
             "unsupported field '{field}': only 'metadata.name' is supported"
         ))),
     }
+}
+
+/// Parses a `labelSelector` query parameter value into a `WatchFilter::LabelSelector`.
+///
+/// Supported syntax:
+/// - `key=value` — equality
+/// - `key!=value` — inequality
+/// - `key` — existence (key present, any value)
+/// - `!key` — non-existence (key not present)
+/// - Comma-separated — AND combinator (e.g., `app=nginx,env=prod`)
+///
+/// Returns `InvalidLabelSelector` for malformed selectors.
+/// Empty string returns a `LabelSelector` with no requirements (matches all).
+pub fn parse_label_selector(raw: &str) -> Result<WatchFilter, AppError> {
+    if raw.is_empty() {
+        return Ok(WatchFilter::LabelSelector(LabelSelector {
+            requirements: vec![],
+        }));
+    }
+
+    let requirements: Result<Vec<LabelRequirement>, AppError> = raw
+        .split(',')
+        .map(|segment| {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                return Err(AppError::InvalidLabelSelector(
+                    "empty segment in label selector".to_string(),
+                ));
+            }
+            parse_label_requirement(segment)
+        })
+        .collect();
+
+    Ok(WatchFilter::LabelSelector(LabelSelector {
+        requirements: requirements?,
+    }))
+}
+
+/// Parses a single label requirement string into a `LabelRequirement`.
+fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, AppError> {
+    // Check for inequality first (must be before equality check)
+    if let Some((key, value)) = segment.split_once("!=") {
+        let key = key.trim();
+        let value = value.trim();
+        validate_label_key(key)?;
+        if value.is_empty() {
+            return Err(AppError::InvalidLabelSelector(format!(
+                "empty value in inequality selector: '{segment}'"
+            )));
+        }
+        return Ok(LabelRequirement::NotEquals {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    }
+
+    // Check for equality
+    if let Some((key, value)) = segment.split_once('=') {
+        let key = key.trim();
+        let value = value.trim();
+        validate_label_key(key)?;
+        if value.is_empty() {
+            return Err(AppError::InvalidLabelSelector(format!(
+                "empty value in equality selector: '{segment}'"
+            )));
+        }
+        return Ok(LabelRequirement::Equals {
+            key: key.to_string(),
+            value: value.to_string(),
+        });
+    }
+
+    // Check for non-existence (!key)
+    if let Some(key) = segment.strip_prefix('!') {
+        let key = key.trim();
+        validate_label_key(key)?;
+        return Ok(LabelRequirement::NotExists {
+            key: key.to_string(),
+        });
+    }
+
+    // Existence (key only)
+    let key = segment.trim();
+    validate_label_key(key)?;
+    Ok(LabelRequirement::Exists {
+        key: key.to_string(),
+    })
+}
+
+/// Validates a label key format.
+/// Label keys must not contain spaces, commas, equals signs, or exclamation marks.
+fn validate_label_key(key: &str) -> Result<(), AppError> {
+    if key.is_empty() {
+        return Err(AppError::InvalidLabelSelector(
+            "empty label key".to_string(),
+        ));
+    }
+    if key.contains(|c: char| c.is_whitespace()) {
+        return Err(AppError::InvalidLabelSelector(format!(
+            "label key contains whitespace: '{key}'"
+        )));
+    }
+    Ok(())
 }
 
 /// Watch logic — subscribes to event bus and returns SSE stream.
@@ -357,5 +475,164 @@ mod tests {
             filter,
             WatchFilter::FieldSelector(FieldSelector::NameEquals(name)) if name.is_empty()
         ));
+    }
+
+    // parse_label_selector tests
+
+    #[test]
+    fn parse_label_selector_equality() {
+        let result = parse_label_selector("app=nginx");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        if let WatchFilter::LabelSelector(selector) = filter {
+            assert_eq!(selector.requirements.len(), 1);
+            if let LabelRequirement::Equals { key, value } = &selector.requirements[0] {
+                assert_eq!(key, "app");
+                assert_eq!(value, "nginx");
+            } else {
+                panic!("expected Equals requirement");
+            }
+        } else {
+            panic!("expected LabelSelector filter");
+        }
+    }
+
+    #[test]
+    fn parse_label_selector_inequality() {
+        let result = parse_label_selector("env!=prod");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        if let WatchFilter::LabelSelector(selector) = filter {
+            assert_eq!(selector.requirements.len(), 1);
+            if let LabelRequirement::NotEquals { key, value } = &selector.requirements[0] {
+                assert_eq!(key, "env");
+                assert_eq!(value, "prod");
+            } else {
+                panic!("expected NotEquals requirement");
+            }
+        } else {
+            panic!("expected LabelSelector filter");
+        }
+    }
+
+    #[test]
+    fn parse_label_selector_existence() {
+        let result = parse_label_selector("gpu");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        if let WatchFilter::LabelSelector(selector) = filter {
+            assert_eq!(selector.requirements.len(), 1);
+            if let LabelRequirement::Exists { key } = &selector.requirements[0] {
+                assert_eq!(key, "gpu");
+            } else {
+                panic!("expected Exists requirement");
+            }
+        } else {
+            panic!("expected LabelSelector filter");
+        }
+    }
+
+    #[test]
+    fn parse_label_selector_non_existence() {
+        let result = parse_label_selector("!experimental");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        if let WatchFilter::LabelSelector(selector) = filter {
+            assert_eq!(selector.requirements.len(), 1);
+            if let LabelRequirement::NotExists { key } = &selector.requirements[0] {
+                assert_eq!(key, "experimental");
+            } else {
+                panic!("expected NotExists requirement");
+            }
+        } else {
+            panic!("expected LabelSelector filter");
+        }
+    }
+
+    #[test]
+    fn parse_label_selector_and_combinator() {
+        let result = parse_label_selector("app=nginx,env=prod");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        if let WatchFilter::LabelSelector(selector) = filter {
+            assert_eq!(selector.requirements.len(), 2);
+        } else {
+            panic!("expected LabelSelector filter");
+        }
+    }
+
+    #[test]
+    fn parse_label_selector_mixed_operators() {
+        let result = parse_label_selector("app=nginx,!experimental,gpu");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        if let WatchFilter::LabelSelector(selector) = filter {
+            assert_eq!(selector.requirements.len(), 3);
+            assert!(matches!(
+                &selector.requirements[0],
+                LabelRequirement::Equals { .. }
+            ));
+            assert!(matches!(
+                &selector.requirements[1],
+                LabelRequirement::NotExists { .. }
+            ));
+            assert!(matches!(
+                &selector.requirements[2],
+                LabelRequirement::Exists { .. }
+            ));
+        } else {
+            panic!("expected LabelSelector filter");
+        }
+    }
+
+    #[test]
+    fn parse_label_selector_empty_string() {
+        let result = parse_label_selector("");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        if let WatchFilter::LabelSelector(selector) = filter {
+            assert!(selector.requirements.is_empty());
+        } else {
+            panic!("expected LabelSelector filter");
+        }
+    }
+
+    #[test]
+    fn parse_label_selector_with_whitespace() {
+        let result = parse_label_selector("app=nginx, env=prod");
+        assert!(result.is_ok());
+        let filter = result.unwrap();
+        if let WatchFilter::LabelSelector(selector) = filter {
+            assert_eq!(selector.requirements.len(), 2);
+        } else {
+            panic!("expected LabelSelector filter");
+        }
+    }
+
+    #[test]
+    fn parse_label_selector_empty_value_error() {
+        let result = parse_label_selector("app=");
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("empty value"))
+        );
+    }
+
+    #[test]
+    fn parse_label_selector_invalid_key_with_space() {
+        let result = parse_label_selector("invalid key!=value");
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("whitespace"))
+        );
+    }
+
+    #[test]
+    fn parse_label_selector_empty_segment_error() {
+        let result = parse_label_selector("app=nginx,,env=prod");
+        assert!(result.is_err());
+        assert!(
+            matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("empty segment"))
+        );
     }
 }

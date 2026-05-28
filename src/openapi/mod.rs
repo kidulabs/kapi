@@ -271,10 +271,7 @@ mod tests {
         let metadata = &all_of[0]["properties"]["metadata"]["properties"];
         assert!(metadata.get("labels").is_some());
         // Second part: SchemaData ref
-        assert_eq!(
-            all_of[1]["$ref"],
-            "#/components/schemas/SchemaData"
-        );
+        assert_eq!(all_of[1]["$ref"], "#/components/schemas/SchemaData");
     }
 
     #[test]

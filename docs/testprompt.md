@@ -26,7 +26,7 @@ sleep 3
 curl -s http://localhost:8080/apis/kapi.io/v1/Schema
 ```
 
-> **Re-run safety**: Each test uses `$TEST_RUN` as a suffix in object names (e.g. `target-widget-$TEST_RUN`) so you can re-run the entire suite without restarting the server. Tests that share objects across runs (Test 15, persistence) use the `$TEST_RUN` from the initial run or hard-coded names with explicit cleanup.
+> **Re-run safety**: Each test uses `$TEST_RUN` as a suffix in object names (e.g. `target-widget-$TEST_RUN`) so you can re-run the entire suite without restarting the server. Tests that share objects across runs (Test 14, persistence) use the `$TEST_RUN` from the initial run or hard-coded names with explicit cleanup.
 
 ---
 
@@ -247,83 +247,7 @@ cat /tmp/watch-sim-all.log
 
 ---
 
-## Test 5: Watcher buffer full — slow consumer removed
-
-**Goal:** Verify that a watcher whose channel buffer is full is removed (does not block other watchers).
-
-> **Note**: This scenario is difficult to trigger on localhost because the TCP stack absorbs events faster than the mpsc buffer fills. On localhost the SSE stream drains the mpsc channel into the TCP send buffer before backpressure is felt. The buffer-full mechanism (`TrySendError::Full` → remove watcher) is validated by the `dead_watcher_cleanup` and `dropped_subscriber_does_not_block` unit tests in `src/event/bus.rs`.
->
-> To reproduce this in E2E:
-> 1. Reduce `DEFAULT_WATCHER_CAPACITY` in `src/event/bus.rs` from 256 to 2.
-> 2. Use a slow-consumer client that opens the SSE connection but stops reading the response (causing the server's TCP send buffer to fill and backpressure to propagate to the mpsc channel). A simple `curl > /dev/null` reads fast enough on localhost to avoid triggering this.
-> 3. Rebuild and restart the server, then run the steps below.
-
-```bash
-# Prerequisites (do once before this test):
-#   - Edit src/event/bus.rs: change DEFAULT_WATCHER_CAPACITY from 256 to 2
-#   - cargo build && restart server
-
-# Slow consumer utility (save as /tmp/slow_consumer.py):
-cat > /tmp/slow_consumer.py << 'PYEOF'
-import socket, sys, time
-HOST, PORT = "localhost", 8080
-PATH = sys.argv[1] if len(sys.argv) > 1 else "/apis/example.io/v1/Widget?watch=true"
-req = f"GET {PATH} HTTP/1.1\r\nHost: {HOST}:{PORT}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n\r\n"
-sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-sock.connect((HOST, PORT))
-sock.sendall(req.encode())
-# Read just enough to get past headers, then stop reading
-data = b""
-while b"\r\n\r\n" not in data:
-    chunk = sock.recv(4096)
-    if not chunk: break
-    data += chunk
-print("Connected, holding connection open without reading further...", flush=True)
-try:
-    while True: time.sleep(10)
-except KeyboardInterrupt:
-    pass
-sock.close()
-PYEOF
-
-# 1. Start a slow consumer (opens connection, then stops reading)
-python3 /tmp/slow_consumer.py "/apis/example.io/v1/Widget?watch=true" &
-SLOW_PID=$!
-sleep 1
-
-# 2. Start a normal watch that will read events
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
-  > /tmp/watch-normal.log 2>&1 &
-NORMAL_PID=$!
-
-sleep 1
-
-# 3. Create more objects than the buffer capacity (with capacity=2, create 5+)
-for i in $(seq 1 5); do
-  curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
-    -H "Content-Type: application/json" \
-    -d "{\"metadata\":{\"name\":\"buffer-test-$TEST_RUN-$i\"},\"color\":\"red\",\"size\":$i}"
-  sleep 0.2
-done
-
-sleep 3
-
-# 4. Kill watchers
-kill $SLOW_PID $NORMAL_PID 2>/dev/null || true
-
-# 5. Verify trace logs
-echo "=== Server trace logs ==="
-grep -E "(watcher buffer full|event delivered)" /tmp/kapi-server.log | tail -10
-```
-
-**Expected results:**
-- Server logs show `watcher buffer full, removing` for the slow consumer
-- Normal watcher still receives events (slow consumer does not block)
-- **If no buffer-full trace appears**: the TCP layer on localhost is absorbing events before backpressure reaches the mpsc channel. The mechanism itself is validated by unit tests — see `dead_watcher_cleanup` and `dropped_subscriber_does_not_block` in `src/event/bus.rs`.
-
----
-
-## Test 6: Labels — create object with labels, verify in response and GET
+## Test 5: Labels — create object with labels, verify in response and GET
 
 **Goal:** Verify that `metadata.labels` are persisted and returned on create and get.
 
@@ -370,7 +294,7 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$TEST_RU
 
 ---
 
-## Test 7: Labels — create object without labels, verify empty map
+## Test 6: Labels — create object without labels, verify empty map
 
 **Goal:** Verify that omitting `metadata.labels` results in `"labels": {}`.
 
@@ -392,7 +316,7 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget/no-labels-widget-$TEST_
 
 ---
 
-## Test 8: Labels — update with changed labels (diff-based)
+## Test 7: Labels — update with changed labels (diff-based)
 
 **Goal:** Verify that updating labels applies diff-based changes (add, modify, remove).
 
@@ -434,7 +358,7 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$TEST_RU
 
 ---
 
-## Test 9: Labels — create Schema with labels
+## Test 8: Labels — create Schema with labels
 
 **Goal:** Verify that Schema objects support labels.
 
@@ -470,7 +394,7 @@ curl -s "http://localhost:8080/apis/kapi.io/v1/Schema/Gadget.test-$TEST_RUN.io" 
 
 ---
 
-## Test 10: Labels — invalid key format returns 400
+## Test 9: Labels — invalid key format returns 400
 
 **Goal:** Verify that invalid label key characters are rejected.
 
@@ -496,7 +420,7 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
 
 ---
 
-## Test 11: Labels — invalid value format returns 400
+## Test 10: Labels — invalid value format returns 400
 
 **Goal:** Verify that invalid label value characters are rejected.
 
@@ -522,7 +446,7 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
 
 ---
 
-## Test 12: Labels — key exceeds length limit returns 400
+## Test 11: Labels — key exceeds length limit returns 400
 
 **Goal:** Verify that label keys exceeding 256 characters are rejected.
 
@@ -550,7 +474,7 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
 
 ---
 
-## Test 13: Labels — value exceeds length limit returns 400
+## Test 12: Labels — value exceeds length limit returns 400
 
 **Goal:** Verify that label values exceeding 256 characters are rejected.
 
@@ -578,7 +502,7 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
 
 ---
 
-## Test 14: Labels — list returns labels for all objects
+## Test 13: Labels — list returns labels for all objects
 
 **Goal:** Verify that list endpoint returns labels for each object.
 
@@ -595,7 +519,7 @@ curl -s http://localhost:8080/apis/example.io/v1/Widget | python3 -m json.tool
 
 ---
 
-## Test 15: SQLite persistence survives restart
+## Test 14: SQLite persistence survives restart
 
 **Goal:** Verify that labels persist across server restarts via SQLite storage.
 
@@ -691,6 +615,322 @@ print(f\"Labels: {obj['metadata']['labels']}\")
 
 ---
 
+## Test 15: Watch with labelSelector equality — matching event delivered
+
+**Goal:** Verify that `?labelSelector=app=nginx` only delivers events for objects with matching labels.
+
+```bash
+# 1. Register the Widget schema (no-op if already registered)
+curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targetGroup": "example.io",
+    "targetVersion": "v1",
+    "targetKind": "Widget",
+    "jsonSchema": {
+      "type": "object",
+      "properties": {
+        "color": { "type": "string" },
+        "size": { "type": "integer" }
+      },
+      "required": ["color", "size"]
+    }
+  }' > /dev/null
+
+# 2. Start a watch filtered by label selector
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx" \
+  > /tmp/watch-labelselector.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# Verify the watch is still alive
+if ! kill -0 $WATCH_PID 2>/dev/null; then echo "ERROR: watch died before events"; fi
+
+# 3. Create a widget with NON-matching labels (should NOT be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"other-labels-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"color\":\"blue\",\"size\":1}"
+
+sleep 1
+
+# 4. Create a widget with MATCHING labels (should be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"matching-labels-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"red\",\"size\":2}"
+
+sleep 2
+
+# 5. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 6. Verify client received only the matching event
+echo "=== Client received ==="
+cat /tmp/watch-labelselector.log
+
+# 7. Verify only matching event arrived
+echo "=== Event names ==="
+grep -o '"name":"[^"]*"' /tmp/watch-labelselector.log
+```
+
+**Expected results:**
+- Client output contains only `matching-labels-$TEST_RUN` Added event (no `other-labels-$TEST_RUN`)
+- Server logs show `event delivered to watcher name=matching-labels-$TEST_RUN`
+
+---
+
+## Test 16: Watch with labelSelector AND combinator — multiple requirements
+
+**Goal:** Verify that comma-separated label selectors require ALL labels to match.
+
+```bash
+# 1. Start a watch with AND combinator: app=nginx AND env=prod
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,env=prod" \
+  > /tmp/watch-label-and.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# 2. Create widget with only app=nginx (should NOT be delivered — missing env)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"partial-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":1}"
+
+sleep 1
+
+# 3. Create widget with only env=prod (should NOT be delivered — missing app)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"partial-match2-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},\"color\":\"green\",\"size\":2}"
+
+sleep 1
+
+# 4. Create widget with BOTH labels (should be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"full-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"env\":\"prod\"}},\"color\":\"red\",\"size\":3}"
+
+sleep 2
+
+# 5. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 6. Verify only the full-match event arrived
+echo "=== Client received ==="
+cat /tmp/watch-label-and.log
+echo "=== Event names ==="
+grep -o '"name":"[^"]*"' /tmp/watch-label-and.log
+```
+
+**Expected results:**
+- Client output contains only `full-match-$TEST_RUN` event
+- `partial-match-$TEST_RUN` and `partial-match2-$TEST_RUN` are filtered out
+
+---
+
+## Test 17: Watch with labelSelector non-existence (!key)
+
+**Goal:** Verify that `?labelSelector=!experimental` delivers events for objects WITHOUT the specified label.
+
+```bash
+# 1. Start a watch for objects without the "experimental" label
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=!experimental" \
+  > /tmp/watch-label-notexists.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# 2. Create widget WITH experimental label (should NOT be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"has-experimental-$TEST_RUN\",\"labels\":{\"experimental\":\"true\"}},\"color\":\"blue\",\"size\":1}"
+
+sleep 1
+
+# 3. Create widget WITHOUT experimental label (should be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"no-experimental-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"red\",\"size\":2}"
+
+sleep 2
+
+# 4. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 5. Verify only the no-experimental event arrived
+echo "=== Client received ==="
+cat /tmp/watch-label-notexists.log
+echo "=== Event names ==="
+grep -o '"name":"[^"]*"' /tmp/watch-label-notexists.log
+```
+
+**Expected results:**
+- Client output contains only `no-experimental-$TEST_RUN` event
+- `has-experimental-$TEST_RUN` is filtered out
+
+---
+
+## Test 18: Watch with labelSelector inequality (key!=value)
+
+**Goal:** Verify that `?labelSelector=env!=prod` delivers events for objects where the label has a different value OR is absent.
+
+```bash
+# 1. Start a watch for objects where env is NOT prod
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=env!=prod" \
+  > /tmp/watch-label-notequals.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# 2. Create widget with env=prod (should NOT be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"is-prod-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},\"color\":\"blue\",\"size\":1}"
+
+sleep 1
+
+# 3. Create widget with env=staging (should be delivered — different value)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"is-staging-$TEST_RUN\",\"labels\":{\"env\":\"staging\"}},\"color\":\"green\",\"size\":2}"
+
+sleep 1
+
+# 4. Create widget without env label (should be delivered — absence satisfies inequality)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"no-env-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"red\",\"size\":3}"
+
+sleep 2
+
+# 5. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 6. Verify events
+echo "=== Client received ==="
+cat /tmp/watch-label-notequals.log
+echo "=== Event names ==="
+grep -o '"name":"[^"]*"' /tmp/watch-label-notequals.log
+```
+
+**Expected results:**
+- Client output contains `is-staging-$TEST_RUN` and `no-env-$TEST_RUN` events
+- `is-prod-$TEST_RUN` is filtered out
+
+---
+
+## Test 19: Invalid labelSelector returns 400
+
+**Goal:** Verify that malformed label selectors are rejected with HTTP 400.
+
+```bash
+# 1. Empty value in equality selector
+echo "=== Empty value ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
+  "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app="
+
+# 2. Empty segment (double comma)
+echo "=== Empty segment ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
+  "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,,env=prod"
+
+# 3. labelSelector on non-watch list request
+echo "=== labelSelector on non-watch ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
+  "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app=nginx"
+```
+
+**Expected results:**
+- All three requests return HTTP 400
+- Response body contains `"code": "InvalidLabelSelector"`
+- Error messages describe the specific issue
+
+---
+
+## Test 20: Empty labelSelector matches all events
+
+**Goal:** Verify that `?labelSelector=` (empty string) matches all objects.
+
+```bash
+# 1. Start a watch with empty labelSelector
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=" \
+  > /tmp/watch-label-empty.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# 2. Create widgets with various labels — all should be delivered
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"empty-sel-1-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":1}"
+
+sleep 0.5
+
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"empty-sel-2-$TEST_RUN\",\"labels\":{}},\"color\":\"red\",\"size\":2}"
+
+sleep 2
+
+# 3. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 4. Verify both events arrived
+echo "=== Client received ==="
+cat /tmp/watch-label-empty.log
+echo "=== Event count ==="
+grep -c '"event_type":"Added"' /tmp/watch-label-empty.log
+```
+
+**Expected results:**
+- Both `empty-sel-1-$TEST_RUN` and `empty-sel-2-$TEST_RUN` events are delivered
+- Event count is 2
+
+---
+
+## Test 21: Mixed label selector operators
+
+**Goal:** Verify that a single labelSelector can combine different operator types.
+
+```bash
+# 1. Start a watch with mixed operators: app=nginx AND !experimental AND gpu (existence)
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,!experimental,gpu" \
+  > /tmp/watch-label-mixed.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# 2. Create widget that matches all three requirements
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"mixed-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"gpu\":\"true\"}},\"color\":\"blue\",\"size\":1}"
+
+sleep 1
+
+# 3. Create widget that fails !experimental (has experimental=true)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"mixed-fail-exp-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"gpu\":\"true\",\"experimental\":\"true\"}},\"color\":\"red\",\"size\":2}"
+
+sleep 1
+
+# 4. Create widget that fails gpu existence (no gpu label)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"mixed-fail-gpu-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"green\",\"size\":3}"
+
+sleep 2
+
+# 5. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 6. Verify only mixed-match arrived
+echo "=== Client received ==="
+cat /tmp/watch-label-mixed.log
+echo "=== Event names ==="
+grep -o '"name":"[^"]*"' /tmp/watch-label-mixed.log
+```
+
+**Expected results:**
+- Only `mixed-match-$TEST_RUN` event is delivered
+- `mixed-fail-exp-$TEST_RUN` and `mixed-fail-gpu-$TEST_RUN` are filtered out
+
+---
+
 ## Cleanup
 
 ```bash
@@ -712,7 +952,7 @@ rm -f /tmp/kapi-persist-test.db /tmp/kapi-test.db
 | `sse watch stream ended` | `src/object/handler.rs` | SSE stream wrapper initialized (logged by `stream::once` before events flow; does **not** mean the connection closed) |
 | `watcher subscribed` | `src/event/bus.rs` | Watcher registered in EventBus |
 | `event delivered to watcher` | `src/event/bus.rs` | Event matched filter and sent successfully |
-| `event filtered out by watcher filter` | `src/event/bus.rs` | Event did not match watcher's fieldSelector |
+| `event filtered out by watcher filter` | `src/event/bus.rs` | Event did not match watcher's fieldSelector or labelSelector |
 | `watcher buffer full, removing` | `src/event/bus.rs` | Slow consumer removed (channel full) |
 | `watcher channel closed, removing` | `src/event/bus.rs` | Dead watcher removed (client disconnected) |
 
@@ -727,8 +967,9 @@ For convenience, you can use the test runner script at `/tmp/kapi_test_v2.sh` (g
 export KAPI_BASE="http://localhost:8080"
 export TEST_RUN=$(date +%s)
 
-# Run each test block in order (Tests 1–14 on the same server)
-# Test 15 requires a server restart with KAPI_DB_PATH, so run it separately.
+# Run each test block in order (Tests 1–13 on the same server)
+# Tests 15–21 (label selector watch) can be run after Test 13 on the same server
+# Test 14 requires a server restart with KAPI_DB_PATH, so run it separately.
 ```
 
 ---

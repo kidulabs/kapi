@@ -150,9 +150,11 @@ PUT /apis/example.io/v1/Widget/my-widget
 
 ```
 GET /apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=my-widget
+GET /apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,env=prod
   │
-  ▼ Handler: detect ?watch=true, parse fieldSelector into WatchFilter
-  │   (400 if fieldSelector on non-watch request or unsupported field)
+  ▼ Handler: detect ?watch=true, parse fieldSelector and/or labelSelector into WatchFilter
+  │   (400 if selector on non-watch request, unsupported field, or malformed syntax)
+  │   (When both fieldSelector and labelSelector are present, labelSelector takes precedence)
   │
   ▼ ObjectService::subscribe(key, filter) → WatchStream
   │   (delegates to EventBus::subscribe with WatchFilter)
@@ -206,7 +208,7 @@ DELETE /apis/kapi.io/v1/Schema/{name}
 | v1 storage | In-memory (DashMap) + SQLite (rusqlite) | Zero ops for dev, persistent option for production; trait makes swapping trivial |
 | API paths | Kube-style `/apis/{group}/{version}/{kind}` | Familiar to kube users, supports multiple API groups |
 | Watch semantics | `?watch=true` on list endpoint | Kube-native pattern, handler branches on query param |
-| Event bus | Predicate routing — `Vec<Watcher>` with `WatchFilter` + `mpsc::Sender` per watcher | Eliminates unnecessary work — filtered watchers only receive matching events; swappable for testing |
+| Event bus | Predicate routing — `Vec<Watcher>` with `WatchFilter` + `mpsc::Sender` per watcher | Eliminates unnecessary work — filtered watchers only receive matching events; swappable for testing; `WatchFilter` supports `All`, `FieldSelector`, and `LabelSelector` variants |
 | Concurrency | Global monotonic `AtomicU64` | Enables "give me events since version N" for watch resume |
 | Schema validation | `Arc<dyn SchemaValidator>` | Isolates jsonschema crate behind trait; swappable |
 | Schema deletion | Block if objects exist (409) | Prevent accidental data loss |
