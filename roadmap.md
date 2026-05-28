@@ -26,6 +26,7 @@
 
 - [ ] **Webhook-based schema validation** — Explore admission webhooks for custom validation beyond meta-schema
 - [ ] **PATCH endpoint support** — Evaluate adding strategic merge patch support
+- [ ] **Publish Framework** Should publish framework to be moved the storage layer?
 
 ## Out of Scope
 
