@@ -76,6 +76,22 @@ The list handler SHALL check for `?watch=true` query parameter. If present, it S
 - **WHEN** GET `/apis/example.io/v1/Widget?fieldSelector=metadata.name=my-widget` (without `?watch=true`)
 - **THEN** the response is 400 Bad Request with `InvalidFieldSelector` error
 
+#### Scenario: Watch with labelSelector filters by label
+- **WHEN** GET `/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx`
+- **THEN** the SSE stream only delivers events for objects with label `app=nginx`
+
+#### Scenario: Watch with both fieldSelector and labelSelector
+- **WHEN** GET `/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=foo&labelSelector=app=nginx`
+- **THEN** the handler SHALL parse both and create separate filters (combination is Phase 3)
+
+#### Scenario: labelSelector on non-watch request returns 400
+- **WHEN** GET `/apis/example.io/v1/Widget?labelSelector=app=nginx` (without `?watch=true`)
+- **THEN** the response is 400 Bad Request with `InvalidLabelSelector` error
+
+#### Scenario: Invalid labelSelector returns 400
+- **WHEN** GET `/apis/example.io/v1/Widget?watch=true&labelSelector=invalid selector`
+- **THEN** the response is 400 Bad Request with `InvalidLabelSelector` error indicating the format is invalid
+
 #### Scenario: Invalid fieldSelector returns 400
 - **WHEN** GET `/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.namespace=default`
 - **THEN** the response is 400 Bad Request with `InvalidFieldSelector` error indicating the field is not supported

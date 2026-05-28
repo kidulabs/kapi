@@ -5,7 +5,7 @@ Define the `WatchFilter` and `FieldSelector` types for server-side watch event f
 ## Requirements
 
 ### Requirement: WatchFilter enum defines watch event filtering
-The system SHALL define a `WatchFilter` enum in `src/object/types.rs` with variants `All` and `FieldSelector(FieldSelector)`. `WatchFilter` SHALL derive `Debug` and `Clone`.
+The system SHALL define a `WatchFilter` enum in `src/object/types.rs` with variants `All`, `FieldSelector(FieldSelector)`, and `LabelSelector(LabelSelector)`. `WatchFilter` SHALL derive `Debug` and `Clone`.
 
 #### Scenario: WatchFilter::All matches all events
 - **WHEN** `WatchFilter::All.matches(&event)` is called for any `WatchEvent`
@@ -20,6 +20,18 @@ The system SHALL define a `WatchFilter` enum in `src/object/types.rs` with varia
 - **WHEN** `WatchFilter::FieldSelector(FieldSelector::NameEquals("my-widget".into())).matches(&event)` is called
 - **AND** `event.object.metadata.name != "my-widget"`
 - **THEN** the result SHALL be `false`
+
+#### Scenario: WatchFilter::LabelSelector delegates to label matching
+- **WHEN** `WatchFilter::LabelSelector(ls)` is evaluated against an event
+- **THEN** it SHALL delegate to `ls.matches(&event.object.metadata.labels)`
+
+#### Scenario: LabelSelector matches event labels
+- **WHEN** `WatchFilter::LabelSelector` with `Equals{key:"app", value:"nginx"}` is evaluated against an event with object labels `{"app": "nginx"}`
+- **THEN** it SHALL return true
+
+#### Scenario: LabelSelector does not match event labels
+- **WHEN** `WatchFilter::LabelSelector` with `Equals{key:"app", value:"nginx"}` is evaluated against an event with object labels `{"app": "apache"}`
+- **THEN** it SHALL return false
 
 ### Requirement: FieldSelector enum defines field-based filtering
 The system SHALL define a `FieldSelector` enum in `src/object/types.rs` with variant `NameEquals(String)`. `FieldSelector` SHALL derive `Debug` and `Clone`.

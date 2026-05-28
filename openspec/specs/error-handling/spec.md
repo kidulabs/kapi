@@ -17,6 +17,17 @@ The system SHALL define an `AppError` enum that is the sole error type used acro
 - **WHEN** an `InvalidLabel` error is formatted
 - **THEN** the error message SHALL be prefixed with `"invalid label: "` for consistency with `InvalidFieldSelector`
 
+### Requirement: InvalidLabelSelector error variant
+`AppError` SHALL include an `InvalidLabelSelector(String)` variant for label selector parse failures. This variant SHALL map to HTTP 400 Bad Request with reason `"InvalidLabelSelector"` and a descriptive error message.
+
+#### Scenario: InvalidLabelSelector error response
+- **WHEN** an `AppError::InvalidLabelSelector("malformed selector: 'invalid selector'")` is returned
+- **THEN** the HTTP response SHALL have status 400, reason `"InvalidLabelSelector"`, and a JSON body with the error message
+
+#### Scenario: InvalidLabelSelector error display
+- **WHEN** an `InvalidLabelSelector` error is formatted
+- **THEN** the error message SHALL be prefixed with `"invalid label selector: "` for consistency
+
 ### Requirement: NotFound errors carry structured context
 The system SHALL produce `NotFound` errors with `what` and `identifier` fields so that error messages are unambiguous.
 
