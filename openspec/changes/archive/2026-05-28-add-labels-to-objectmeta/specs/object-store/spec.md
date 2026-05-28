@@ -1,7 +1,5 @@
-## Purpose
+## MODIFIED Requirements
 
-Define the `ObjectStore` trait and its `InMemoryStore` implementation for persisting, retrieving, listing, updating, and deleting `StoredObject` instances identified by `ResourceKey` and name.
-## Requirements
 ### Requirement: ObjectStore trait defines the storage contract
 The system SHALL define an `ObjectStore` async trait with methods `create`, `get`, `list`, `update`, and `delete` that operate on `StoredObject` instances. The trait SHALL require `Send + Sync`. The `create` method SHALL accept `ObjectMeta` for the metadata parameter (which includes `name` and `labels`) and `serde_json::Value` for the data parameter. The `update` method SHALL accept a full `StoredObject` and perform optimistic concurrency control by comparing the embedded `object.system.resource_version` against the stored version. The `delete` method SHALL accept only `key` and `name` parameters and perform unconditional removal.
 
@@ -171,4 +169,3 @@ All existing tests that construct `InMemoryStore` directly SHALL continue to com
 #### Scenario: OpenAPI tests construct InMemoryStore
 - **WHEN** `make_test_service()` in `src/openapi.rs` tests creates `std::sync::Arc::new(crate::store::memory::InMemoryStore::new())`
 - **THEN** compilation succeeds and tests pass
-

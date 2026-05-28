@@ -1,9 +1,7 @@
 ## Purpose
 
 Define the core domain types that represent resources, objects, schemas, pagination, and watch events. These types serve as the foundation for all storage, service, and handler layers.
-
 ## Requirements
-
 ### Requirement: ResourceKey uniquely identifies a resource kind
 The system SHALL define a `ResourceKey` struct with `group`, `version`, and `kind` fields that implements `Hash`, `Eq`, `Clone`, `Serialize`, and `Deserialize`.
 
@@ -35,15 +33,23 @@ The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `
 - **THEN** the resulting `StoredObject` has `metadata.name`, `system.resource_version`, `system.created_at`, and `system.updated_at` populated
 
 ### Requirement: ObjectMeta groups user-controlled metadata fields
-The system SHALL define an `ObjectMeta` struct containing `name: String`. This struct SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")`. `ObjectMeta` represents the portion of object metadata that the client controls.
+`ObjectMeta` SHALL contain a `name` field of type `String` and a `labels` field of type `HashMap<String, String>`. Both fields SHALL use `camelCase` serialization via `#[serde(rename_all = "camelCase")]`.
 
-#### Scenario: ObjectMeta is part of StoredObject
-- **WHEN** a `StoredObject` is constructed
-- **THEN** it contains an `ObjectMeta` with `name`
+#### Scenario: ObjectMeta serialization with labels
+- **WHEN** an `ObjectMeta` with `name: "my-widget"` and `labels: {"app": "nginx"}` is serialized
+- **THEN** the JSON output SHALL be `{"name": "my-widget", "labels": {"app": "nginx"}}`
 
-#### Scenario: ObjectMeta serializes correctly
-- **WHEN** an `ObjectMeta` is serialized
-- **THEN** the JSON output is `{ "name": "..." }`
+#### Scenario: ObjectMeta serialization without labels
+- **WHEN** an `ObjectMeta` with `name: "my-widget"` and empty labels is serialized
+- **THEN** the JSON output SHALL be `{"name": "my-widget", "labels": {}}`
+
+#### Scenario: ObjectMeta deserialization with labels
+- **WHEN** JSON `{"name": "my-widget", "labels": {"env": "prod"}}` is deserialized into `ObjectMeta`
+- **THEN** the resulting struct SHALL have `name = "my-widget"` and `labels = {"env": "prod"}`
+
+#### Scenario: ObjectMeta deserialization without labels field
+- **WHEN** JSON `{"name": "my-widget"}` is deserialized into `ObjectMeta`
+- **THEN** the resulting struct SHALL have `name = "my-widget"` and `labels` as an empty `HashMap`
 
 ### Requirement: SystemMetadata groups server-managed lifecycle fields
 The system SHALL define a `SystemMetadata` struct containing `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>`. This struct SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `SystemMetadata` represents the portion of object metadata that the server controls; clients read these values but do not set them on create (they may echo `resourceVersion` on update for optimistic concurrency).
@@ -149,3 +155,4 @@ All public types defined for core types SHALL derive `Debug` and `Clone`. Types 
 #### Scenario: Serialization roundtrip
 - **WHEN** a `StoredObject` is serialized to JSON and back
 - **THEN** the resulting value SHALL equal the original
+

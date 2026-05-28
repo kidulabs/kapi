@@ -3,7 +3,7 @@
 Define the Axum HTTP handlers and route wiring that expose the object CRUD API and SSE watch endpoint. Handlers are thin — they extract parameters, call the service, and return responses.
 ## Requirements
 ### Requirement: Create handler accepts POST to /apis/{group}/{version}/{kind}
-The create handler SHALL extract `group`, `version`, and `kind` from the path and deserialize the request body as `serde_json::Value`. For Schema objects (`kind == "Schema"`), the handler SHALL extract `targetKind` and `targetGroup` from the body, generate the name as `{targetKind}.{targetGroup}`, construct an `ObjectMeta` with that name, and call `ObjectService::create(key, meta, data)`. If `targetKind` or `targetGroup` is missing or not a string, the handler SHALL return `AppError::InvalidSchema`. For non-Schema objects, the handler SHALL extract the object `name` from the body's `metadata.name` field, construct an `ObjectMeta` with that name, remove the `metadata` key from the body, and call `ObjectService::create(key, meta, data)`.
+The create handler SHALL extract `group`, `version`, and `kind` from the path and deserialize the request body as `serde_json::Value`. For Schema objects (`kind == "Schema"`), the handler SHALL extract `targetKind` and `targetGroup` from the body, generate the name as `{targetKind}.{targetGroup}`, construct an `ObjectMeta` with that name and any `labels` from `metadata.labels`, and call `ObjectService::create(key, meta, data)`. If `targetKind` or `targetGroup` is missing or not a string, the handler SHALL return `AppError::InvalidSchema`. For non-Schema objects, the handler SHALL extract the object `name` from the body's `metadata.name` field and `labels` from `metadata.labels` (defaulting to empty if absent), construct an `ObjectMeta` with those values, remove the `metadata` key from the body, and call `ObjectService::create(key, meta, data)`. If `metadata.labels` is present but not an object type, the handler SHALL return an appropriate error response.
 
 #### Scenario: Successful Schema create returns 201 with generated name
 - **WHEN** a Schema is POSTed to `/apis/kapi.io/v1/Schema` with `targetKind: "Widget"` and `targetGroup: "example.io"`
@@ -21,6 +21,18 @@ The create handler SHALL extract `group`, `version`, and `kind` from the path an
 - **WHEN** a non-Schema object is POSTed to `/apis/example.io/v1/Widget` with `metadata.name`
 - **THEN** the response is 201 Created with the `StoredObject` as JSON
 - **AND** the response contains `metadata` with `name` and `system` with `resourceVersion`, `createdAt`, `updatedAt`
+
+#### Scenario: Create object with labels
+- **WHEN** a non-Schema object is POSTed with `metadata.labels: {"app": "nginx"}`
+- **THEN** the response is 201 Created with `metadata.labels` containing the provided labels
+
+#### Scenario: Create object without labels
+- **WHEN** a non-Schema object is POSTed without `metadata.labels`
+- **THEN** the response is 201 Created with `metadata.labels` as an empty object
+
+#### Scenario: Create object with invalid labels field type
+- **WHEN** a POST request is received with `metadata.labels` as a non-object type (e.g., string or array)
+- **THEN** the handler SHALL return an appropriate error response
 
 #### Scenario: Create with invalid data returns 422
 - **WHEN** an object is POSTed that fails schema validation
@@ -77,7 +89,7 @@ The list handler SHALL check for `?watch=true` query parameter. If present, it S
 - **THEN** the SSE stream receives an event with `event: message` and the `WatchEvent` JSON as data
 
 ### Requirement: Update handler accepts PUT to /apis/{group}/{version}/{kind}/{name}
-The update handler SHALL extract path parameters, deserialize the body as `StoredObject`, validate that the URL `key` and `name` match the object's `key` and `metadata.name`, and call `ObjectService::update(object)`. The handler SHALL NOT modify `system` fields; the `resourceVersion` in `system` is used by the store for optimistic concurrency control.
+The update handler SHALL extract path parameters, deserialize the body as `StoredObject`, validate that the URL `key` and `name` match the object's `key` and `metadata.name`, and call `ObjectService::update(object)`. Labels SHALL be passed through as part of the `StoredObject` body's `metadata` field. The handler SHALL NOT modify `system` fields; the `resourceVersion` in `system` is used by the store for optimistic concurrency control.
 
 #### Scenario: Successful update returns 200
 - **WHEN** an object is PUT with a matching `system.resourceVersion`
@@ -90,6 +102,14 @@ The update handler SHALL extract path parameters, deserialize the body as `Store
 #### Scenario: Update with mismatched name returns 400
 - **WHEN** the URL name does not match the object's `metadata.name`
 - **THEN** the response is 400 Bad Request
+
+#### Scenario: Update object with changed labels
+- **WHEN** a PUT request is received with a `StoredObject` body containing updated `metadata.labels`
+- **THEN** the handler SHALL pass the full `StoredObject` (including new labels) to the service
+
+#### Scenario: Update object removing all labels
+- **WHEN** a PUT request is received with `metadata.labels: {}`
+- **THEN** the handler SHALL pass the empty labels map to the service, which SHALL remove all existing labels
 
 ### Requirement: Delete handler accepts DELETE to /apis/{group}/{version}/{kind}/{name}
 The delete handler SHALL extract path parameters and call `ObjectService::delete(key, name)`.
