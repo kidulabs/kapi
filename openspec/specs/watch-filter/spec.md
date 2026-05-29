@@ -5,7 +5,7 @@ Define the `WatchFilter` and `FieldSelector` types for server-side watch event f
 ## Requirements
 
 ### Requirement: WatchFilter enum defines watch event filtering
-The system SHALL define a `WatchFilter` enum in `src/object/types.rs` with variants `All`, `FieldSelector(FieldSelector)`, and `LabelSelector(LabelSelector)`. `WatchFilter` SHALL derive `Debug` and `Clone`.
+The system SHALL define a `WatchFilter` enum in `src/object/types.rs` with variants `All`, `FieldSelector(FieldSelector)`, `LabelSelector(LabelSelector)`, and `And(Box<WatchFilter>, Box<WatchFilter>)`. `WatchFilter` SHALL derive `Debug` and `Clone`.
 
 #### Scenario: WatchFilter::All matches all events
 - **WHEN** `WatchFilter::All.matches(&event)` is called for any `WatchEvent`
@@ -43,6 +43,25 @@ The system SHALL define a `FieldSelector` enum in `src/object/types.rs` with var
 #### Scenario: FieldSelector::NameEquals rejects different name
 - **WHEN** `FieldSelector::NameEquals("test".into())` is used to match a `WatchEvent` with `object.metadata.name == "other"`
 - **THEN** the match SHALL return `false`
+
+### Requirement: WatchFilter And combinator
+`WatchFilter` SHALL include an `And(Box<WatchFilter>, Box<WatchFilter>)` variant for composing two filters with AND semantics. `WatchFilter::matches()` SHALL evaluate `And(a, b)` as `a.matches(event) && b.matches(event)` with short-circuit evaluation.
+
+#### Scenario: And combinator matches when both filters match
+- **WHEN** `WatchFilter::And(FieldSelector(NameEquals("foo")), LabelSelector(Equals{key:"app", value:"nginx"}))` is evaluated against an event with `name="foo"` and labels `{"app": "nginx"}`
+- **THEN** it SHALL return true
+
+#### Scenario: And combinator fails when first filter fails
+- **WHEN** `WatchFilter::And(FieldSelector(NameEquals("foo")), LabelSelector(...))` is evaluated against an event with `name="bar"`
+- **THEN** it SHALL return false (short-circuit on first filter)
+
+#### Scenario: And combinator fails when second filter fails
+- **WHEN** `WatchFilter::And(FieldSelector(NameEquals("foo")), LabelSelector(Equals{key:"app", value:"nginx"}))` is evaluated against an event with `name="foo"` and labels `{"app": "apache"}`
+- **THEN** it SHALL return false
+
+#### Scenario: Nested And combinators
+- **WHEN** `WatchFilter::And(And(a, b), c)` is evaluated
+- **THEN** it SHALL match only when all three filters (a, b, c) match
 
 ### Requirement: parse_field_selector converts query string to WatchFilter
 The system SHALL provide a `parse_field_selector(raw: &str) -> Result<WatchFilter, AppError>` function in `src/object/handler.rs` that parses the `fieldSelector` query parameter value.

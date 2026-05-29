@@ -130,22 +130,34 @@ The `GET` list endpoint for each kind SHALL document the `?watch=true` query par
 - **WHEN** the spec is generated for a dynamic kind
 - **THEN** the GET list path has a query parameter `watch` of type `boolean`, not required
 
-### Requirement: labelSelector query parameter documented on list/watch endpoint
-The generated OpenAPI 3.0.3 spec SHALL include the `labelSelector` query parameter on the list/watch endpoint. The parameter SHALL be typed as `string` and marked as optional.
+### Requirement: fieldSelector and labelSelector query parameters documented on list endpoint
+The generated OpenAPI 3.0.3 spec SHALL include the `fieldSelector` and `labelSelector` query parameters on the list endpoint (not just on watch). Both parameters SHALL be typed as `string` and marked as optional.
+
+#### Scenario: fieldSelector parameter in OpenAPI spec
+- **WHEN** the OpenAPI spec is generated
+- **THEN** the list endpoint SHALL include a `fieldSelector` query parameter of type `string`
 
 #### Scenario: labelSelector parameter in OpenAPI spec
 - **WHEN** the OpenAPI spec is generated
-- **THEN** the list/watch endpoint SHALL include a `labelSelector` query parameter of type `string`
+- **THEN** the list endpoint SHALL include a `labelSelector` query parameter of type `string`
+
+#### Scenario: fieldSelector parameter description
+- **WHEN** the OpenAPI spec is generated
+- **THEN** the `fieldSelector` parameter description SHALL indicate it is valid on both list and watch requests
 
 #### Scenario: labelSelector parameter description
 - **WHEN** the OpenAPI spec is generated
 - **THEN** the `labelSelector` parameter SHALL have a description explaining the supported syntax (equality, inequality, existence, non-existence, AND)
 
-### Requirement: Swagger UI reflects labelSelector parameter
-The Swagger UI SHALL display the `labelSelector` query parameter on the list/watch endpoint.
+### Requirement: Swagger UI reflects selectors on list
+The Swagger UI SHALL display both `fieldSelector` and `labelSelector` query parameters on the list endpoint.
+
+#### Scenario: Swagger UI shows fieldSelector input
+- **WHEN** a user views the list endpoint in Swagger UI
+- **THEN** the parameter list SHALL include `fieldSelector` as an optional string input
 
 #### Scenario: Swagger UI shows labelSelector input
-- **WHEN** a user views the list/watch endpoint in Swagger UI
+- **WHEN** a user views the list endpoint in Swagger UI
 - **THEN** the parameter list SHALL include `labelSelector` as an optional string input
 
 ### Requirement: Response codes documented for all operations

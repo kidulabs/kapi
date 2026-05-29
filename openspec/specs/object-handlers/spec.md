@@ -54,7 +54,7 @@ The get handler SHALL extract path parameters and call `ObjectService::get(key, 
 - **THEN** the response is 404 with `NotFound` error
 
 ### Requirement: List handler supports both list and watch modes
-The list handler SHALL check for `?watch=true` query parameter. If present, it SHALL parse the `fieldSelector` query parameter into a `WatchFilter`, subscribe to the event bus with the filter, and return an SSE stream. If `fieldSelector` is not present, `WatchFilter::All` SHALL be used. If `fieldSelector` is present on a non-watch request, the handler SHALL return 400 Bad Request with `InvalidFieldSelector` error.
+The list handler SHALL check for `?watch=true` query parameter. If present, it SHALL parse the `fieldSelector` and `labelSelector` query parameters into a `WatchFilter`, subscribe to the event bus with the filter, and return an SSE stream. When both `fieldSelector` and `labelSelector` are present on a watch request, the handler SHALL combine them with `WatchFilter::And`. If a `fieldSelector` or `labelSelector` is present on a non-watch (list) request, the handler SHALL parse the selectors and pass them to `ListOptions` for store-level filtering. Invalid selectors on either list or watch SHALL return 400 Bad Request.
 
 #### Scenario: List returns JSON
 - **WHEN** GET `/apis/example.io/v1/Widget` without `?watch=true`
@@ -72,8 +72,12 @@ The list handler SHALL check for `?watch=true` query parameter. If present, it S
 - **WHEN** GET `/apis/example.io/v1/Widget?watch=true`
 - **THEN** the SSE stream delivers all events for the Widget kind
 
-#### Scenario: fieldSelector on non-watch request returns 400
+#### Scenario: List with fieldSelector returns filtered results
 - **WHEN** GET `/apis/example.io/v1/Widget?fieldSelector=metadata.name=my-widget` (without `?watch=true`)
+- **THEN** the response is 200 OK with `ListResponse` containing only objects with `metadata.name == "my-widget"`
+
+#### Scenario: List with invalid fieldSelector returns 400
+- **WHEN** GET `/apis/example.io/v1/Widget?fieldSelector=metadata.namespace=default` (without `?watch=true`)
 - **THEN** the response is 400 Bad Request with `InvalidFieldSelector` error
 
 #### Scenario: Watch with labelSelector filters by label
@@ -82,17 +86,25 @@ The list handler SHALL check for `?watch=true` query parameter. If present, it S
 
 #### Scenario: Watch with both fieldSelector and labelSelector
 - **WHEN** GET `/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=foo&labelSelector=app=nginx`
-- **THEN** the handler SHALL parse both and create separate filters (combination is Phase 3)
+- **THEN** the handler SHALL combine them with `WatchFilter::And(FieldSelector(...), LabelSelector(...))` (both must match)
 
-#### Scenario: labelSelector on non-watch request returns 400
+#### Scenario: List with labelSelector returns filtered results
 - **WHEN** GET `/apis/example.io/v1/Widget?labelSelector=app=nginx` (without `?watch=true`)
-- **THEN** the response is 400 Bad Request with `InvalidLabelSelector` error
+- **THEN** the response is 200 OK with `ListResponse` containing only objects with label `app=nginx`
 
-#### Scenario: Invalid labelSelector returns 400
+#### Scenario: List with both selectors
+- **WHEN** GET `/apis/example.io/v1/Widget?fieldSelector=metadata.name=foo&labelSelector=app=nginx` (without `?watch=true`)
+- **THEN** the handler SHALL parse both selectors and pass them to `ListOptions` for store-level filtering
+
+#### Scenario: List with invalid labelSelector returns 400
+- **WHEN** GET `/apis/example.io/v1/Widget?labelSelector=app=nginx` without `?watch=true` is valid; this covers the case of an invalid selector on list
+- **THEN** if the `labelSelector` value is malformed, the handler SHALL return 400 Bad Request with `InvalidLabelSelector` error
+
+#### Scenario: Invalid labelSelector on watch returns 400
 - **WHEN** GET `/apis/example.io/v1/Widget?watch=true&labelSelector=invalid selector`
 - **THEN** the response is 400 Bad Request with `InvalidLabelSelector` error indicating the format is invalid
 
-#### Scenario: Invalid fieldSelector returns 400
+#### Scenario: Invalid fieldSelector on watch returns 400
 - **WHEN** GET `/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.namespace=default`
 - **THEN** the response is 400 Bad Request with `InvalidFieldSelector` error indicating the field is not supported
 

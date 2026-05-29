@@ -62,7 +62,7 @@ The `get` method SHALL return the `StoredObject` for the given `ResourceKey` and
 - **THEN** the returned `StoredObject` SHALL have an empty `HashMap` in `metadata.labels`
 
 ### Requirement: list returns paginated objects for a resource kind
-The `list` method SHALL return all `StoredObject` instances matching the given `ResourceKey`, sorted by name in ascending order. Each returned object SHALL include its labels in `metadata.labels`. When `ListOptions.limit` is `Some(n)`, it SHALL return at most `n` items. When `ListOptions.continue_token` is `Some(token)`, it SHALL skip entries up to and including the name encoded in the token. The returned `ListResponse` SHALL include a `continue_token` if more items remain beyond the returned batch.
+The `list` method SHALL return all `StoredObject` instances matching the given `ResourceKey`, sorted by name in ascending order. Each returned object SHALL include its labels in `metadata.labels`. When `ListOptions.limit` is `Some(n)`, it SHALL return at most `n` items. When `ListOptions.continue_token` is `Some(token)`, it SHALL skip entries up to and including the name encoded in the token. The returned `ListResponse` SHALL include a `continue_token` if more items remain beyond the returned batch. When `ListOptions.field_selector` and/or `ListOptions.label_selector` are set, the store SHALL apply those filters before pagination.
 
 #### Scenario: List returns all objects sorted by name
 - **WHEN** `list` is called with no limit or continue token
@@ -83,6 +83,14 @@ The `list` method SHALL return all `StoredObject` instances matching the given `
 #### Scenario: List objects with mixed labels
 - **WHEN** `list()` is called and some objects have labels while others do not
 - **THEN** each returned `StoredObject` SHALL have its correct labels (or empty map)
+
+#### Scenario: Filter applied before pagination
+- **WHEN** `list()` is called with a filter and `limit=10`
+- **THEN** the filter SHALL be applied first, then the result truncated to 10 items
+
+#### Scenario: Filter with continue token
+- **WHEN** `list()` is called with a filter and a continue token
+- **THEN** the filter SHALL be applied, then the cursor skip, then truncation
 
 ### Requirement: update modifies an existing object with optimistic concurrency
 The `update` method SHALL accept a `StoredObject` and replace the data and `metadata` (including `labels`) of the existing object identified by `object.metadata.name` and the object's key. It SHALL compare the stored object's `system.resource_version` against `object.system.resource_version` and return `AppError::Conflict` if they do not match. On a successful update, it SHALL increment `resource_version` via the global counter, set `updated_at` to the current UTC time, and return the updated `StoredObject`. If the object does not exist, it SHALL return `AppError::NotFound`.
@@ -129,6 +137,10 @@ The `delete` method SHALL remove the object for the given `ResourceKey` and name
 
 ### Requirement: InMemoryStore uses DashMap for concurrent access
 The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore` using `DashMap<(ResourceKey, String), StoredObject>` as its backing store with `std::sync::atomic::AtomicU64` as its version counter, and `SQLiteStore` using a SQLite database file with `rusqlite` as its backing store. Both SHALL implement the `ObjectStore` trait and produce identical behavior for all trait methods. `InMemoryStore::create()` SHALL store labels as part of `ObjectMeta` within the `StoredObject`. `InMemoryStore::update()` SHALL replace the entire `ObjectMeta` (including labels) with the updated version.
+
+`InMemoryStore::list()` SHALL apply field and label filters in Rust after collecting objects but before sorting and pagination (order: collect → filter → sort → skip → truncate).
+
+`SQLiteStore::list()` SHALL apply field and label filters as SQL WHERE clauses before pagination. Field filters SHALL use `AND name = ?` bindings. Label filters SHALL use `EXISTS`/`NOT EXISTS` subqueries on the `labels` table for each label requirement. Multiple label requirements SHALL be combined with AND semantics (multiple subqueries). All filtering SHALL happen before ORDER BY and LIMIT in the SQL query.
 
 #### Scenario: Concurrent creates from multiple threads succeed
 - **WHEN** multiple threads call `create` with different names simultaneously
