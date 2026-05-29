@@ -195,28 +195,28 @@ pub async fn list(
 
     // Branch on watch parameter
     if query.watch == Some(true) {
-        // Determine the filter for watch: prefer labelSelector, fall back to fieldSelector
-        // (combining both with And is Phase 3)
-        let filter = label_filter.or(field_filter).unwrap_or(WatchFilter::All);
+        // Combine field and label selectors with WatchFilter::And when both present
+        let filter = match (field_filter, label_filter) {
+            (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
+            (Some(f), None) => f,
+            (None, Some(l)) => l,
+            (None, None) => WatchFilter::All,
+        };
         return Ok(watch(state, key, filter).into_response());
     }
 
-    // fieldSelector or labelSelector on non-watch request returns 400 (Phase 3 will enable list filtering)
-    if field_filter.is_some() {
-        return Err(AppError::InvalidFieldSelector(
-            "fieldSelector is only valid with watch=true".to_string(),
-        ));
-    }
-    if label_filter.is_some() {
-        return Err(AppError::InvalidLabelSelector(
-            "labelSelector is only valid with watch=true".to_string(),
-        ));
-    }
-
-    // Regular list
+    // Regular list with optional selectors
     let opts = ListOptions {
         limit: query.limit,
         continue_token: query.continue_token.map(ContinueToken),
+        field_selector: field_filter.map(|f| match f {
+            WatchFilter::FieldSelector(fs) => fs,
+            _ => unreachable!("field_filter is always FieldSelector"),
+        }),
+        label_selector: label_filter.map(|l| match l {
+            WatchFilter::LabelSelector(ls) => ls,
+            _ => unreachable!("label_filter is always LabelSelector"),
+        }),
     };
     let response = state.object_service().list(key, opts).await?;
     Ok(Json(response).into_response())
@@ -634,5 +634,55 @@ mod tests {
         assert!(
             matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("empty segment"))
         );
+    }
+
+    // Watch filter combination tests
+
+    #[test]
+    fn watch_filter_combination_both_present_creates_and() {
+        let field = parse_field_selector("metadata.name=foo").unwrap();
+        let label = parse_label_selector("app=nginx").unwrap();
+        let combined = match (Some(field), Some(label)) {
+            (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
+            (Some(f), None) => f,
+            (None, Some(l)) => l,
+            (None, None) => WatchFilter::All,
+        };
+        assert!(matches!(combined, WatchFilter::And(_, _)));
+    }
+
+    #[test]
+    fn watch_filter_combination_field_only() {
+        let field = parse_field_selector("metadata.name=foo").unwrap();
+        let combined = match (Some(field), None::<WatchFilter>) {
+            (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
+            (Some(f), None) => f,
+            (None, Some(l)) => l,
+            (None, None) => WatchFilter::All,
+        };
+        assert!(matches!(combined, WatchFilter::FieldSelector(_)));
+    }
+
+    #[test]
+    fn watch_filter_combination_label_only() {
+        let label = parse_label_selector("app=nginx").unwrap();
+        let combined = match (None::<WatchFilter>, Some(label)) {
+            (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
+            (Some(f), None) => f,
+            (None, Some(l)) => l,
+            (None, None) => WatchFilter::All,
+        };
+        assert!(matches!(combined, WatchFilter::LabelSelector(_)));
+    }
+
+    #[test]
+    fn watch_filter_combination_neither() {
+        let combined = match (None::<WatchFilter>, None::<WatchFilter>) {
+            (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
+            (Some(f), None) => f,
+            (None, Some(l)) => l,
+            (None, None) => WatchFilter::All,
+        };
+        assert!(matches!(combined, WatchFilter::All));
     }
 }

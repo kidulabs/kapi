@@ -454,6 +454,7 @@ impl ObjectService {
                 ListOptions {
                     limit: Some(1),
                     continue_token: None,
+                    ..Default::default()
                 },
             )
             .await?;
@@ -467,6 +468,7 @@ impl ObjectService {
                     ListOptions {
                         limit: None,
                         continue_token: None,
+                        ..Default::default()
                     },
                 )
                 .await?;

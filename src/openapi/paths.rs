@@ -51,6 +51,7 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
             ListOptions {
                 limit: None,
                 continue_token: None,
+                ..Default::default()
             },
         )
         .await?;
@@ -124,14 +125,14 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "in": "query",
                             "required": false,
                             "schema": { "type": "string" },
-                            "description": "Filter watch events by field selector (e.g., metadata.name=my-obj). Only valid with watch=true."
+                            "description": "Filter results by field selector (e.g., metadata.name=my-obj). On list requests, filters the returned objects. On watch requests, filters the event stream."
                         },
                         {
                             "name": "labelSelector",
                             "in": "query",
                             "required": false,
                             "schema": { "type": "string" },
-                            "description": "Filter watch events by label selector. Supports: key=value (equality), key!=value (inequality), key (existence), !key (non-existence), comma-separated (AND). Only valid with watch=true."
+                            "description": "Filter results by label selector. Supports: key=value (equality), key!=value (inequality), key (existence), !key (non-existence), comma-separated (AND). On list requests, filters the returned objects. On watch requests, filters the event stream. When both fieldSelector and labelSelector are present on watch, they are combined with AND semantics."
                         }
                     ],
                     "responses": {
@@ -323,14 +324,14 @@ pub(crate) fn build_kind_paths(
                             "in": "query",
                             "required": false,
                             "schema": { "type": "string" },
-                            "description": "Filter watch events by field selector (e.g., metadata.name=my-obj). Only valid with watch=true."
+                            "description": "Filter results by field selector (e.g., metadata.name=my-obj). On list requests, filters the returned objects. On watch requests, filters the event stream."
                         },
                         {
                             "name": "labelSelector",
                             "in": "query",
                             "required": false,
                             "schema": { "type": "string" },
-                            "description": "Filter watch events by label selector. Supports: key=value (equality), key!=value (inequality), key (existence), !key (non-existence), comma-separated (AND). Only valid with watch=true."
+                            "description": "Filter results by label selector. Supports: key=value (equality), key!=value (inequality), key (existence), !key (non-existence), comma-separated (AND). On list requests, filters the returned objects. On watch requests, filters the event stream. When both fieldSelector and labelSelector are present on watch, they are combined with AND semantics."
                         }
                     ],
                     "responses": {
@@ -343,7 +344,7 @@ pub(crate) fn build_kind_paths(
                             }
                         },
                         "400": {
-                            "description": "Invalid field selector — unsupported field or malformed syntax, or fieldSelector on non-watch request. Invalid label selector — malformed syntax or labelSelector on non-watch request.",
+                            "description": "Invalid field selector — unsupported field or malformed syntax. Invalid label selector — malformed syntax.",
                             "content": { "application/json": { "schema": error_ref } }
                         }
                     }

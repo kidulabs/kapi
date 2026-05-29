@@ -829,17 +829,14 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
 echo "=== Empty segment ==="
 curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
   "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,,env=prod"
-
-# 3. labelSelector on non-watch list request
-echo "=== labelSelector on non-watch ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
-  "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app=nginx"
 ```
 
 **Expected results:**
-- All three requests return HTTP 400
+- Both requests return HTTP 400
 - Response body contains `"code": "InvalidLabelSelector"`
 - Error messages describe the specific issue
+
+> **Note:** `labelSelector` on non-watch list requests is now valid and returns filtered results (not 400). See Test 23.
 
 ---
 
@@ -931,6 +928,253 @@ grep -o '"name":"[^"]*"' /tmp/watch-label-mixed.log
 
 ---
 
+## Test 22: List with fieldSelector — filtered results
+
+**Goal:** Verify that `?fieldSelector=metadata.name=<value>` on a non-watch list request returns only matching objects.
+
+```bash
+# 1. Register the Widget schema (no-op if already registered)
+curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targetGroup": "example.io",
+    "targetVersion": "v1",
+    "targetKind": "Widget",
+    "jsonSchema": {
+      "type": "object",
+      "properties": {
+        "color": { "type": "string" },
+        "size": { "type": "integer" }
+      },
+      "required": ["color", "size"]
+    }
+  }' > /dev/null
+
+# 2. Create multiple widgets
+for name in "list-field-foo" "list-field-bar" "list-field-baz"; do
+  curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+    -H "Content-Type: application/json" \
+    -d "{\"metadata\":{\"name\":\"$name-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}" > /dev/null
+done
+
+# 3. List with fieldSelector=metadata.name=list-field-foo
+echo "=== List with fieldSelector ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?fieldSelector=metadata.name=list-field-foo-$TEST_RUN" | python3 -m json.tool
+
+# 4. Verify only one item returned
+echo "=== Item count ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?fieldSelector=metadata.name=list-field-foo-$TEST_RUN" | python3 -c "import sys,json; print(f\"Items: {len(json.load(sys.stdin)['items'])}\")"
+```
+
+**Expected results:**
+- List returns exactly 1 item with name `list-field-foo-$TEST_RUN`
+- `list-field-bar-$TEST_RUN` and `list-field-baz-$TEST_RUN` are not in results
+
+---
+
+## Test 23: List with labelSelector — filtered results
+
+**Goal:** Verify that `?labelSelector=app=nginx` on a non-watch list request returns only matching objects.
+
+```bash
+# 1. Create widgets with different labels
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"list-label-nginx-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":10}" > /dev/null
+
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"list-label-apache-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"color\":\"red\",\"size\":20}" > /dev/null
+
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"list-label-none-$TEST_RUN\"},\"color\":\"green\",\"size\":30}" > /dev/null
+
+# 2. List with labelSelector=app=nginx
+echo "=== List with labelSelector ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app=nginx" | python3 -m json.tool
+
+# 3. Verify only nginx widget returned
+echo "=== Item count ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app=nginx" | python3 -c "import sys,json; items=json.load(sys.stdin)['items']; print(f\"Items: {len(items)}\"); [print(f\"  - {i['metadata']['name']}\") for i in items]"
+```
+
+**Expected results:**
+- List returns exactly 1 item: `list-label-nginx-$TEST_RUN`
+- Other widgets are not in results
+
+---
+
+## Test 24: List with both fieldSelector and labelSelector
+
+**Goal:** Verify that both selectors are applied together on list requests.
+
+```bash
+# 1. Create widgets
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"list-both-target-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":10}" > /dev/null
+
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"list-both-other-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"red\",\"size\":20}" > /dev/null
+
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"list-both-target-$TEST_RUN-nolabel\"},\"color\":\"green\",\"size\":30}" > /dev/null
+
+# 2. List with both selectors
+echo "=== List with both selectors ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?fieldSelector=metadata.name=list-both-target-$TEST_RUN&labelSelector=app=nginx" | python3 -m json.tool
+
+# 3. Verify only one item returned (matches both name AND label)
+echo "=== Item count ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?fieldSelector=metadata.name=list-both-target-$TEST_RUN&labelSelector=app=nginx" | python3 -c "import sys,json; print(f\"Items: {len(json.load(sys.stdin)['items'])}\")"
+```
+
+**Expected results:**
+- List returns exactly 1 item: `list-both-target-$TEST_RUN`
+- `list-both-other-$TEST_RUN` (wrong name) and `list-both-target-$TEST_RUN-nolabel` (no label) are excluded
+
+---
+
+## Test 25: List with filter and pagination
+
+**Goal:** Verify that filtering happens before pagination (correct page sizes).
+
+```bash
+# 1. Create 10 widgets, only 3 have the target label
+for i in $(seq 1 10); do
+  if [ $i -le 3 ]; then
+    labels='{"app":"nginx"}'
+  else
+    labels='{}'
+  fi
+  curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+    -H "Content-Type: application/json" \
+    -d "{\"metadata\":{\"name\":\"list-pag-$(printf '%02d' $i)-$TEST_RUN\",\"labels\":$labels},\"color\":\"blue\",\"size\":10}" > /dev/null
+done
+
+# 2. Filter to 3, limit 10 → should return 3 (not 10)
+echo "=== Filter + pagination ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app=nginx&limit=10" | python3 -c "
+import sys, json
+body = json.load(sys.stdin)
+items = body['items']
+print(f\"Items returned: {len(items)}\")
+print(f\"Continue token: {body.get('continueToken', 'null')}\")
+for i in items:
+    print(f\"  - {i['metadata']['name']}\")
+"
+```
+
+**Expected results:**
+- Exactly 3 items returned (not 10)
+- No continue token (all matching items fit in the page)
+
+---
+
+## Test 26: List with filter that matches no objects
+
+**Goal:** Verify that a filter matching no objects returns an empty list.
+
+```bash
+echo "=== Filter with no matches ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?fieldSelector=metadata.name=nonexistent-$TEST_RUN" | python3 -c "
+import sys, json
+body = json.load(sys.stdin)
+print(f\"Items: {len(body['items'])}\")
+print(f\"Continue token: {body.get('continueToken', 'null')}\")
+"
+```
+
+**Expected results:**
+- Empty items array
+- No continue token
+
+---
+
+## Test 27: Watch with combined fieldSelector + labelSelector (AND semantics)
+
+**Goal:** Verify that when both selectors are present on a watch request, they are combined with AND semantics.
+
+```bash
+# 1. Start a watch with both selectors
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=watch-combo-target-$TEST_RUN&labelSelector=app=nginx" \
+  > /tmp/watch-combo.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# 2. Create widget matching BOTH selectors (should be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"watch-combo-target-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":10}"
+
+sleep 1
+
+# 3. Create widget matching only field selector (should NOT be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"watch-combo-target-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"color\":\"red\",\"size\":20}" > /dev/null
+
+sleep 1
+
+# 4. Create widget matching only label selector (should NOT be delivered)
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"watch-combo-other-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"green\",\"size\":30}" > /dev/null
+
+sleep 2
+
+# 5. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 6. Verify only the matching event arrived
+echo "=== Client received ==="
+cat /tmp/watch-combo.log
+echo "=== Event names ==="
+grep -o '"name":"[^"]*"' /tmp/watch-combo.log
+```
+
+**Expected results:**
+- Only `watch-combo-target-$TEST_RUN` with `app=nginx` label is delivered
+- The duplicate name with wrong label is filtered out (AND requires both to match)
+- The wrong name with correct label is filtered out
+
+---
+
+## Test 28: Invalid fieldSelector on list returns 400
+
+**Goal:** Verify that invalid field selectors on list requests return HTTP 400.
+
+```bash
+echo "=== Invalid fieldSelector on list ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
+  "http://localhost:8080/apis/example.io/v1/Widget?fieldSelector=metadata.namespace=default"
+```
+
+**Expected results:**
+- HTTP 400 status
+- Response body contains `"code": "InvalidFieldSelector"`
+
+---
+
+## Test 29: Invalid labelSelector on list returns 400
+
+**Goal:** Verify that invalid label selectors on list requests return HTTP 400.
+
+```bash
+echo "=== Invalid labelSelector on list ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
+  "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app="
+```
+
+**Expected results:**
+- HTTP 400 status
+- Response body contains `"code": "InvalidLabelSelector"`
+
+---
+
 ## Cleanup
 
 ```bash
@@ -969,6 +1213,7 @@ export TEST_RUN=$(date +%s)
 
 # Run each test block in order (Tests 1–13 on the same server)
 # Tests 15–21 (label selector watch) can be run after Test 13 on the same server
+# Tests 22–29 (list filtering + combined watch selectors) can be run after Test 21 on the same server
 # Test 14 requires a server restart with KAPI_DB_PATH, so run it separately.
 ```
 

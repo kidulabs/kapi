@@ -12,7 +12,8 @@ use std::collections::HashMap;
 
 use crate::error::AppError;
 use crate::object::types::{
-    ContinueToken, ListOptions, ListResponse, ObjectMeta, StoredObject, SystemMetadata, UserData,
+    ContinueToken, FieldSelector, LabelRequirement, ListOptions, ListResponse, ObjectMeta,
+    StoredObject, SystemMetadata, UserData,
 };
 use crate::store::{ObjectStore, ResourceKey};
 
@@ -381,6 +382,7 @@ impl ObjectStore for SQLiteStore {
     }
 
     /// Lists objects for a key, sorted by name. Supports limit and cursor-based pagination.
+    /// Applies field_selector and label_selector filters before pagination.
     async fn list(&self, key: &ResourceKey, opts: ListOptions) -> Result<ListResponse, AppError> {
         let key = key.clone();
         let conn = Arc::clone(&self.conn);
@@ -398,40 +400,119 @@ impl ObjectStore for SQLiteStore {
 
             let c = conn.lock().unwrap();
 
-            // Build query: use `name > ?` skip condition when a continue token is present
-            let (sql, has_skip) = if skip_past.is_some() {
-                (
-                    "SELECT resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at
-                     FROM objects
-                     WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name > ?4
-                     ORDER BY name ASC
-                     LIMIT ?5",
-                    true,
-                )
-            } else {
-                (
-                    "SELECT resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at
-                     FROM objects
-                     WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3
-                     ORDER BY name ASC
-                     LIMIT ?4",
-                    false,
-                )
-            };
+            // Build dynamic SQL with filter WHERE clauses
+            let base_where =
+                "resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3".to_string();
 
-            let mut stmt = c.prepare(sql).map_err(|e| AppError::Internal(e.into()))?;
+            let mut where_clauses = vec![base_where];
+            let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+                Box::new(key.group.clone()),
+                Box::new(key.version.clone()),
+                Box::new(key.kind.clone()),
+            ];
+            let mut param_idx: usize = 4; // next parameter index
 
-            let rows = if has_skip {
-                stmt.query_map(
-                    params![key.group, key.version, key.kind, skip_past.unwrap(), query_limit as i64],
-                    row_to_object,
-                ).map_err(|e| AppError::Internal(e.into()))?
-            } else {
-                stmt.query_map(
-                    params![key.group, key.version, key.kind, query_limit as i64],
-                    row_to_object,
-                ).map_err(|e| AppError::Internal(e.into()))?
-            };
+            // Add continue_token skip condition
+            if let Some(ref skip) = skip_past {
+                where_clauses.push(format!("name > ?{}", param_idx));
+                params_vec.push(Box::new(skip.clone()));
+                param_idx += 1;
+            }
+
+            // Add field_selector filter
+            if let Some(ref selector) = opts.field_selector {
+                match selector {
+                    FieldSelector::NameEquals(name) => {
+                        where_clauses.push(format!("name = ?{}", param_idx));
+                        params_vec.push(Box::new(name.clone()));
+                        param_idx += 1;
+                    }
+                }
+            }
+
+            // Add label_selector filters using EXISTS subqueries
+            if let Some(ref selector) = opts.label_selector {
+                for req in &selector.requirements {
+                    match req {
+                        LabelRequirement::Equals { key: k, value: v } => {
+                            let clause = format!(
+                                "EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                                 AND l.name = o.name AND l.label_key = ?{} AND l.label_value = ?{})",
+                                param_idx,
+                                param_idx + 1
+                            );
+                            where_clauses.push(clause);
+                            params_vec.push(Box::new(k.clone()));
+                            params_vec.push(Box::new(v.clone()));
+                            param_idx += 2;
+                        }
+                        LabelRequirement::NotEquals { key: k, value: v } => {
+                            // NOT EXISTS (label key) OR EXISTS (label key with different value)
+                            let clause = format!(
+                                "(NOT EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                                 AND l.name = o.name AND l.label_key = ?{}) \
+                                 OR EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                                 AND l.name = o.name AND l.label_key = ?{} AND l.label_value != ?{}))",
+                                param_idx, param_idx + 1, param_idx + 2
+                            );
+                            where_clauses.push(clause);
+                            params_vec.push(Box::new(k.clone()));
+                            params_vec.push(Box::new(k.clone()));
+                            params_vec.push(Box::new(v.clone()));
+                            param_idx += 3;
+                        }
+                        LabelRequirement::Exists { key: k } => {
+                            let clause = format!(
+                                "EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                                 AND l.name = o.name AND l.label_key = ?{})",
+                                param_idx
+                            );
+                            where_clauses.push(clause);
+                            params_vec.push(Box::new(k.clone()));
+                            param_idx += 1;
+                        }
+                        LabelRequirement::NotExists { key: k } => {
+                            let clause = format!(
+                                "NOT EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                                 AND l.name = o.name AND l.label_key = ?{})",
+                                param_idx
+                            );
+                            where_clauses.push(clause);
+                            params_vec.push(Box::new(k.clone()));
+                            param_idx += 1;
+                        }
+                    }
+                }
+            }
+
+            let where_sql = where_clauses.join(" AND ");
+            let limit_param_idx = param_idx;
+
+            // Add limit parameter
+            params_vec.push(Box::new(query_limit as i64));
+
+            let sql = format!(
+                "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.data, \
+                 o.resource_version, o.created_at, o.updated_at \
+                 FROM objects o \
+                 WHERE {where_sql} \
+                 ORDER BY o.name ASC \
+                 LIMIT ?{limit_param_idx}"
+            );
+
+            let mut stmt = c.prepare(&sql).map_err(|e| AppError::Internal(e.into()))?;
+
+            let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+                params_vec.iter().map(|b| b.as_ref()).collect();
+
+            let rows = stmt
+                .query_map(params_refs.as_slice(), row_to_object)
+                .map_err(|e| AppError::Internal(e.into()))?;
 
             let items: Vec<StoredObject> = rows
                 .collect::<Result<Vec<_>, _>>()
@@ -676,6 +757,7 @@ fn encode_continue_token(name: &str) -> ContinueToken {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object::types::LabelSelector;
     use serde_json::json;
 
     fn test_key() -> ResourceKey {
@@ -811,6 +893,7 @@ mod tests {
                 ListOptions {
                     limit: None,
                     continue_token: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -845,6 +928,7 @@ mod tests {
                 ListOptions {
                     limit: Some(2),
                     continue_token: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -880,6 +964,7 @@ mod tests {
                 ListOptions {
                     limit: Some(2),
                     continue_token: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -892,6 +977,7 @@ mod tests {
                 ListOptions {
                     limit: Some(2),
                     continue_token: Some(token),
+                    ..Default::default()
                 },
             )
             .await
@@ -1048,6 +1134,7 @@ mod tests {
                 ListOptions {
                     limit: None,
                     continue_token: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -1084,5 +1171,487 @@ mod tests {
             let retrieved = store.get(&key, "persistent").await.unwrap();
             assert_eq!(retrieved.data.value, json!({"data": "hello"}));
         }
+    }
+
+    // --- Filtering tests ---
+
+    #[tokio::test]
+    async fn list_with_field_selector() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "foo".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "bar".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "baz".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    field_selector: Some(FieldSelector::NameEquals("foo".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "foo");
+    }
+
+    #[tokio::test]
+    async fn list_with_label_selector_equals() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let mut labels_nginx = HashMap::new();
+        labels_nginx.insert("app".to_string(), "nginx".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "web-1".to_string(),
+                    labels: labels_nginx,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let mut labels_apache = HashMap::new();
+        labels_apache.insert("app".to_string(), "apache".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "web-2".to_string(),
+                    labels: labels_apache,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "web-3".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![LabelRequirement::Equals {
+                            key: "app".to_string(),
+                            value: "nginx".to_string(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "web-1");
+    }
+
+    #[tokio::test]
+    async fn list_with_label_selector_not_equals() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let mut labels = HashMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "prod-app".to_string(),
+                    labels,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let mut labels2 = HashMap::new();
+        labels2.insert("env".to_string(), "staging".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "staging-app".to_string(),
+                    labels: labels2,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "no-env-app".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![LabelRequirement::NotEquals {
+                            key: "env".to_string(),
+                            value: "prod".to_string(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        // Should match: staging-app (env!=prod) and no-env-app (no env label)
+        assert_eq!(res.items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_with_label_selector_exists() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let mut labels = HashMap::new();
+        labels.insert("gpu".to_string(), "true".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "gpu-node".to_string(),
+                    labels,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "cpu-node".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![LabelRequirement::Exists {
+                            key: "gpu".to_string(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "gpu-node");
+    }
+
+    #[tokio::test]
+    async fn list_with_label_selector_not_exists() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let mut labels = HashMap::new();
+        labels.insert("experimental".to_string(), "true".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "exp-app".to_string(),
+                    labels,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "stable-app".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![LabelRequirement::NotExists {
+                            key: "experimental".to_string(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "stable-app");
+    }
+
+    #[tokio::test]
+    async fn list_with_both_selectors() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let mut labels = HashMap::new();
+        labels.insert("app".to_string(), "nginx".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "target".to_string(),
+                    labels,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let mut labels2 = HashMap::new();
+        labels2.insert("app".to_string(), "nginx".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "other".to_string(),
+                    labels: labels2,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "target-nolabel".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    field_selector: Some(FieldSelector::NameEquals("target".to_string())),
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![LabelRequirement::Equals {
+                            key: "app".to_string(),
+                            value: "nginx".to_string(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "target");
+    }
+
+    #[tokio::test]
+    async fn list_filter_before_pagination() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        // Create 50 objects, only 3 match the filter
+        for i in 0..50 {
+            let mut labels = HashMap::new();
+            if i < 3 {
+                labels.insert("app".to_string(), "nginx".to_string());
+            }
+            store
+                .create(
+                    &key,
+                    ObjectMeta {
+                        name: format!("obj-{i:02}"),
+                        labels,
+                    },
+                    json!({}),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Filter to 3, limit 10 → should return 3
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![LabelRequirement::Equals {
+                            key: "app".to_string(),
+                            value: "nginx".to_string(),
+                        }],
+                    }),
+                    limit: Some(10),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 3);
+        assert!(res.continue_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_filter_no_matches() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "foo".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    field_selector: Some(FieldSelector::NameEquals("nonexistent".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(res.items.is_empty());
+        assert!(res.continue_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_with_multiple_label_requirements() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let mut labels = HashMap::new();
+        labels.insert("app".to_string(), "nginx".to_string());
+        labels.insert("env".to_string(), "prod".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "matching".to_string(),
+                    labels,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let mut labels2 = HashMap::new();
+        labels2.insert("app".to_string(), "nginx".to_string());
+        labels2.insert("env".to_string(), "staging".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "wrong-env".to_string(),
+                    labels: labels2,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![
+                            LabelRequirement::Equals {
+                                key: "app".to_string(),
+                                value: "nginx".to_string(),
+                            },
+                            LabelRequirement::Equals {
+                                key: "env".to_string(),
+                                value: "prod".to_string(),
+                            },
+                        ],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "matching");
     }
 }

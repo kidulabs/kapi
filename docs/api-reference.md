@@ -169,8 +169,8 @@ GET /apis/{group}/{version}/{kind}
 | `watch` | boolean | Enable SSE watch stream |
 | `limit` | integer | Page size for paginated listing |
 | `continue` | string | Cursor from previous page (base64-encoded) |
-| `fieldSelector` | string | Filter watch events by field selector (only valid with `watch=true`) |
-| `labelSelector` | string | Filter watch events by label selector (only valid with `watch=true`) |
+| `fieldSelector` | string | Filter results by field selector. On list requests, filters returned objects. On watch requests, filters the event stream. |
+| `labelSelector` | string | Filter results by label selector. On list requests, filters returned objects. On watch requests, filters the event stream. When both are present on watch, they are combined with AND semantics. |
 
 **Response:** `200 OK`
 
@@ -271,7 +271,7 @@ Only events where `object.metadata.name == "my-widget"` will be delivered. The s
 |-------|-------------|
 | `metadata.name` | Filter by exact object name |
 
-**Errors:** `400` for unsupported fields, malformed syntax (missing `=` sign), or `fieldSelector` on a non-watch request.
+**Errors:** `400` for unsupported fields or malformed syntax (missing `=` sign).
 
 ### Filtering by label selector
 
@@ -318,9 +318,9 @@ Label selectors are evaluated against `object.metadata.labels`. An empty selecto
 
 **Combining with fieldSelector:**
 
-When both `fieldSelector` and `labelSelector` are present on a watch request, `labelSelector` takes precedence and `fieldSelector` is ignored. Combining both selectors with AND semantics is planned for Phase 3.
+When both `fieldSelector` and `labelSelector` are present on a watch request, they are combined with AND semantics — both must match for an event to be delivered. On list requests, both selectors are applied as filters to the returned objects.
 
-**Errors:** `400` for malformed selectors (empty value, whitespace in key, empty segments), or `labelSelector` on a non-watch request.
+**Errors:** `400` for malformed selectors (empty value, whitespace in key, empty segments).
 
 Watch streams terminate when the client disconnects or the watcher's buffer is full. The client must re-list and re-subscribe.
 
@@ -418,8 +418,8 @@ All errors follow this format:
 | 404 | `NotFound` | Resource not found |
 | 409 | `Conflict` | OCC version mismatch or duplicate |
 | 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
-| 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field, malformed syntax, or fieldSelector on non-watch request) |
-| 400 | `InvalidLabelSelector` | Invalid labelSelector query parameter (malformed syntax, empty value, or labelSelector on non-watch request) |
+| 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field or malformed syntax) |
+| 400 | `InvalidLabelSelector` | Invalid labelSelector query parameter (malformed syntax, empty value) |
 | 400 | `InvalidLabel` | Label key or value violates format or length rules |
 | 422 | `SchemaValidation` | Object data doesn't match schema |
 | 422 | `InvalidSchema` | Schema registration failed validation |

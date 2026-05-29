@@ -4,21 +4,21 @@
 
 - [x] **Persistent storage** — SQLite-backed `ObjectStore` implementation via `rusqlite` with `spawn_blocking`
 - [x] **Predicate routing event bus** — Replaced `tokio::broadcast` with per-watcher `mpsc` channels + `WatchFilter` for filtered event delivery
-- [x] **Field selector watch filtering** — `?fieldSelector=metadata.name=<name>` query parameter on watch requests with strict validation (400 for unsupported fields, malformed syntax, or fieldSelector on non-watch requests)
+- [x] **Field selector watch filtering** — `?fieldSelector=metadata.name=<name>` query parameter on watch requests with strict validation (400 for unsupported fields, malformed syntax)
 - [x] **OpenAPI spec for field selectors** — `fieldSelector` parameter and `400` response documented in generated OpenAPI 3.0.3 spec
 - [x] **Label selector watch filtering** — `?labelSelector=<selector>` query parameter on watch requests with moderate K8s syntax (equality, inequality, existence, non-existence, AND combinator)
 - [x] **OpenAPI spec for label selectors** — `labelSelector` parameter and `400` response documented in generated OpenAPI 3.0.3 spec
+- [x] **Label filtering (watch)** — `labels` field on `ObjectMeta` with validation; `labelSelector` query param for watch with moderate K8s syntax (equality, inequality, existence, non-existence, AND)
+- [x] **Label filtering (list)** — `labelSelector` on non-watch list requests with store-level filtering in both InMemoryStore and SQLiteStore
+- [x] **Watch filtering on list requests** — `fieldSelector`/`labelSelector` on non-watch list requests with store-level filtering before pagination
+- [x] **Watch filter combinators** — `WatchFilter::And(Box<WatchFilter>, Box<WatchFilter>)` for composing field and label selectors on watch
 
 ## Pending
 
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
-- [x] **Label filtering (watch)** — `labels` field on `ObjectMeta` with validation; `labelSelector` query param for watch with moderate K8s syntax (equality, inequality, existence, non-existence, AND)
-- [ ] **Label filtering (list)** — `labelSelector` on non-watch list requests (requires store-level filtering — Phase 3)
-- [ ] **Watch filtering on list requests** — `fieldSelector`/`labelSelector` on non-watch list requests (requires store-level filtering)
 - [ ] **Watch resume** — `resourceVersion` param for watch resume with ring buffer replay
 - [ ] **Watch bookmarks** — Periodic bookmark events with current resourceVersion
 - [ ] **Field selector variants** — `FieldSelector::NameNotEquals`, `FieldSelector::NameIn` for more expressive field-based filtering
-- [ ] **Watch filter combinators** — `WatchFilter::And(Box<WatchFilter>, Box<WatchFilter>)` for composing field and label selectors
 - [ ] **Zombie watcher cleanup** — Dead watchers (client disconnected) are only cleaned up lazily on next `publish()` for that `ResourceKey`. If no objects of a kind ever exist, watchers accumulate unbounded. Preferred: periodic background cleanup task. Secondary: `Drop` impl on `EventBus` entries.
 
 ## Deferred Improvements
@@ -27,6 +27,8 @@
 
 ## Future Work
 
+- [ ] **OR combinators for label selectors** — Support OR logic between label requirements (Kubernetes doesn't support this natively, but may be useful)
+- [ ] **Query optimization for high-cardinality labels** — Improve SQLite EXISTS subquery performance for large label sets
 - [ ] **Full label selector syntax parity** — Add set-based operators (`in`, `notin`) to `labelSelector` query parameter for full Kubernetes label selector support
 - [ ] **Label indexing** — Index label key-value pairs for efficient high-cardinality label queries at scale
 - [ ] **Annotations** — Free-form key-value metadata on `ObjectMeta` without selection semantics (no validation beyond key-value structure)

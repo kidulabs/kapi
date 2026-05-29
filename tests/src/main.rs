@@ -1,6 +1,6 @@
 use kapi_tests::{
-    TestApp, all_test_stores, object_crud, object_labels, optimistic_concurrency, schema_deletion,
-    schema_validation, watch_events,
+    TestApp, all_test_stores, list_filtering, object_crud, object_labels, optimistic_concurrency,
+    schema_deletion, schema_validation, watch_events,
 };
 
 #[tokio::main]
@@ -97,16 +97,50 @@ async fn main() {
             watch_events::test_watch_invalid_field_selector
         );
         run_test!(
-            "field_selector_non_watch_400",
-            watch_events::test_field_selector_on_non_watch_returns_400
-        );
-        run_test!(
             "watch_by_name_and_all_simultaneous",
             watch_events::test_watch_by_name_and_watch_all_simultaneously
         );
         run_test!(
             "watcher_cleanup_on_disconnect",
             watch_events::test_watcher_cleanup_on_client_disconnect
+        );
+
+        println!();
+        run_test!(
+            "list_with_field_selector",
+            list_filtering::test_list_with_field_selector
+        );
+        run_test!(
+            "list_with_label_selector",
+            list_filtering::test_list_with_label_selector
+        );
+        run_test!(
+            "list_with_both_selectors",
+            list_filtering::test_list_with_both_selectors
+        );
+        run_test!(
+            "list_filter_with_pagination",
+            list_filtering::test_list_filter_with_pagination
+        );
+        run_test!(
+            "list_filter_no_matches",
+            list_filtering::test_list_filter_no_matches
+        );
+        run_test!(
+            "watch_with_both_selectors_matching",
+            list_filtering::test_watch_with_both_selectors_matching
+        );
+        run_test!(
+            "watch_with_both_selectors_not_matching",
+            list_filtering::test_watch_with_both_selectors_not_matching
+        );
+        run_test!(
+            "list_invalid_field_selector",
+            list_filtering::test_list_invalid_field_selector
+        );
+        run_test!(
+            "list_invalid_label_selector",
+            list_filtering::test_list_invalid_label_selector
         );
 
         println!();
@@ -133,10 +167,6 @@ async fn main() {
         run_test!(
             "watch_empty_label_selector",
             watch_events::test_watch_empty_label_selector
-        );
-        run_test!(
-            "label_selector_non_watch_400",
-            watch_events::test_label_selector_on_non_watch_returns_400
         );
 
         println!();

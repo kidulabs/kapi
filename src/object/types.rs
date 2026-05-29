@@ -7,10 +7,12 @@ use chrono::{DateTime, Utc};
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContinueToken(pub String);
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct ListOptions {
     pub limit: Option<usize>,
     pub continue_token: Option<ContinueToken>,
+    pub field_selector: Option<FieldSelector>,
+    pub label_selector: Option<LabelSelector>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -28,13 +30,13 @@ pub struct ValidationError {
 // FieldSelector implements field-based filtering
 // Currently supports only metadata.name (fieldSelector=metadata.name=<value>)
 // Extensible: NameNotEquals, NameIn variants can be added later
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FieldSelector {
     NameEquals(String),
 }
 
 // LabelRequirement represents a single label matching condition
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum LabelRequirement {
     Equals { key: String, value: String },
     NotEquals { key: String, value: String },
@@ -55,7 +57,7 @@ impl LabelRequirement {
 }
 
 // LabelSelector contains a set of label requirements that must all match (AND semantics)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LabelSelector {
     pub requirements: Vec<LabelRequirement>,
 }
@@ -75,12 +77,14 @@ pub enum WatchFilter {
     All,
     FieldSelector(FieldSelector),
     LabelSelector(LabelSelector),
+    And(Box<WatchFilter>, Box<WatchFilter>),
 }
 
 impl WatchFilter {
     // Returns true if the event should be delivered to a watcher with this filter
     // All matches everything; FieldSelector delegates to field-level comparison;
-    // LabelSelector delegates to label-level comparison
+    // LabelSelector delegates to label-level comparison;
+    // And requires both sub-filters to match (short-circuit)
     pub fn matches(&self, event: &WatchEvent) -> bool {
         match self {
             WatchFilter::All => true,
@@ -88,6 +92,7 @@ impl WatchFilter {
                 FieldSelector::NameEquals(name) => event.object.metadata.name == *name,
             },
             WatchFilter::LabelSelector(ls) => ls.matches(&event.object.metadata.labels),
+            WatchFilter::And(a, b) => a.matches(event) && b.matches(event),
         }
     }
 }
@@ -437,5 +442,141 @@ mod tests {
             },
         };
         assert!(!filter.matches(&event));
+    }
+
+    // WatchFilter::And combinator tests
+
+    #[test]
+    fn watch_filter_and_both_match() {
+        let field = WatchFilter::FieldSelector(FieldSelector::NameEquals("target".into()));
+        let mut labels = HashMap::new();
+        labels.insert("app".into(), "nginx".into());
+        let label = WatchFilter::LabelSelector(LabelSelector {
+            requirements: vec![LabelRequirement::Equals {
+                key: "app".into(),
+                value: "nginx".into(),
+            }],
+        });
+        let combined = WatchFilter::And(Box::new(field), Box::new(label));
+        let event = WatchEvent {
+            event_type: WatchEventType::Added,
+            object: StoredObject {
+                key: ResourceKey {
+                    group: "test.io".into(),
+                    version: "v1".into(),
+                    kind: "Test".into(),
+                },
+                metadata: ObjectMeta {
+                    name: "target".into(),
+                    labels,
+                },
+                system: SystemMetadata {
+                    resource_version: 1,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                },
+                data: UserData {
+                    value: serde_json::json!({}),
+                },
+            },
+        };
+        assert!(combined.matches(&event));
+    }
+
+    #[test]
+    fn watch_filter_and_first_fails() {
+        let field = WatchFilter::FieldSelector(FieldSelector::NameEquals("target".into()));
+        let label = WatchFilter::LabelSelector(LabelSelector {
+            requirements: vec![LabelRequirement::Equals {
+                key: "app".into(),
+                value: "nginx".into(),
+            }],
+        });
+        let combined = WatchFilter::And(Box::new(field), Box::new(label));
+        let event = make_event("other"); // name doesn't match field selector
+        assert!(!combined.matches(&event));
+    }
+
+    #[test]
+    fn watch_filter_and_second_fails() {
+        let field = WatchFilter::FieldSelector(FieldSelector::NameEquals("target".into()));
+        let mut labels = HashMap::new();
+        labels.insert("app".into(), "apache".into()); // doesn't match label selector
+        let label = WatchFilter::LabelSelector(LabelSelector {
+            requirements: vec![LabelRequirement::Equals {
+                key: "app".into(),
+                value: "nginx".into(),
+            }],
+        });
+        let combined = WatchFilter::And(Box::new(field), Box::new(label));
+        let event = WatchEvent {
+            event_type: WatchEventType::Added,
+            object: StoredObject {
+                key: ResourceKey {
+                    group: "test.io".into(),
+                    version: "v1".into(),
+                    kind: "Test".into(),
+                },
+                metadata: ObjectMeta {
+                    name: "target".into(),
+                    labels,
+                },
+                system: SystemMetadata {
+                    resource_version: 1,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                },
+                data: UserData {
+                    value: serde_json::json!({}),
+                },
+            },
+        };
+        assert!(!combined.matches(&event));
+    }
+
+    #[test]
+    fn watch_filter_and_nested() {
+        // And(And(a, b), c) should work
+        let a = WatchFilter::FieldSelector(FieldSelector::NameEquals("target".into()));
+        let mut labels = HashMap::new();
+        labels.insert("app".into(), "nginx".into());
+        labels.insert("env".into(), "prod".into());
+        let b = WatchFilter::LabelSelector(LabelSelector {
+            requirements: vec![LabelRequirement::Equals {
+                key: "app".into(),
+                value: "nginx".into(),
+            }],
+        });
+        let c = WatchFilter::LabelSelector(LabelSelector {
+            requirements: vec![LabelRequirement::Equals {
+                key: "env".into(),
+                value: "prod".into(),
+            }],
+        });
+        let inner = WatchFilter::And(Box::new(a), Box::new(b));
+        let combined = WatchFilter::And(Box::new(inner), Box::new(c));
+        let event = WatchEvent {
+            event_type: WatchEventType::Added,
+            object: StoredObject {
+                key: ResourceKey {
+                    group: "test.io".into(),
+                    version: "v1".into(),
+                    kind: "Test".into(),
+                },
+                metadata: ObjectMeta {
+                    name: "target".into(),
+                    labels,
+                },
+                system: SystemMetadata {
+                    resource_version: 1,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                },
+                data: UserData {
+                    value: serde_json::json!({}),
+                },
+            },
+        };
+        assert!(combined.matches(&event));
     }
 }

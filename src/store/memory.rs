@@ -8,7 +8,8 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::object::types::{
-    ContinueToken, ListOptions, ListResponse, ObjectMeta, StoredObject, SystemMetadata, UserData,
+    ContinueToken, FieldSelector, ListOptions, ListResponse, ObjectMeta, StoredObject,
+    SystemMetadata, UserData,
 };
 use crate::store::{ObjectStore, ResourceKey};
 
@@ -91,6 +92,19 @@ impl ObjectStore for InMemoryStore {
             .map(|r| r.clone())
             .collect();
 
+        // Apply field_selector filter
+        if let Some(ref selector) = opts.field_selector {
+            items.retain(|obj| match selector {
+                FieldSelector::NameEquals(name) => obj.metadata.name == *name,
+            });
+        }
+
+        // Apply label_selector filter
+        if let Some(ref selector) = opts.label_selector {
+            items.retain(|obj| selector.matches(&obj.metadata.labels));
+        }
+
+        // Sort by name (after filtering, before pagination)
         items.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
 
         let skip_past = opts
@@ -177,6 +191,7 @@ fn encode_continue_token(name: &str) -> ContinueToken {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::object::types::LabelSelector;
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -304,6 +319,7 @@ mod tests {
                 ListOptions {
                     limit: None,
                     continue_token: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -338,6 +354,7 @@ mod tests {
                 ListOptions {
                     limit: Some(2),
                     continue_token: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -373,6 +390,7 @@ mod tests {
                 ListOptions {
                     limit: Some(2),
                     continue_token: None,
+                    ..Default::default()
                 },
             )
             .await
@@ -385,6 +403,7 @@ mod tests {
                 ListOptions {
                     limit: Some(2),
                     continue_token: Some(token),
+                    ..Default::default()
                 },
             )
             .await
@@ -584,6 +603,267 @@ mod tests {
                 ListOptions {
                     limit: None,
                     continue_token: None,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(res.items.is_empty());
+        assert!(res.continue_token.is_none());
+    }
+
+    // --- Filtering tests ---
+
+    #[tokio::test]
+    async fn list_with_field_selector() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "foo".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "bar".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "baz".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    field_selector: Some(FieldSelector::NameEquals("foo".to_string())),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "foo");
+    }
+
+    #[tokio::test]
+    async fn list_with_label_selector() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        let mut labels_nginx = HashMap::new();
+        labels_nginx.insert("app".to_string(), "nginx".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "web-1".to_string(),
+                    labels: labels_nginx,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let mut labels_apache = HashMap::new();
+        labels_apache.insert("app".to_string(), "apache".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "web-2".to_string(),
+                    labels: labels_apache,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "web-3".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![crate::object::types::LabelRequirement::Equals {
+                            key: "app".to_string(),
+                            value: "nginx".to_string(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "web-1");
+    }
+
+    #[tokio::test]
+    async fn list_with_both_selectors() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        let mut labels = HashMap::new();
+        labels.insert("app".to_string(), "nginx".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "target".to_string(),
+                    labels,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let mut labels2 = HashMap::new();
+        labels2.insert("app".to_string(), "nginx".to_string());
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "other".to_string(),
+                    labels: labels2,
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "target".to_string() + "-nolabel",
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    field_selector: Some(FieldSelector::NameEquals("target".to_string())),
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![crate::object::types::LabelRequirement::Equals {
+                            key: "app".to_string(),
+                            value: "nginx".to_string(),
+                        }],
+                    }),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 1);
+        assert_eq!(res.items[0].metadata.name, "target");
+    }
+
+    #[tokio::test]
+    async fn list_filter_before_pagination() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        // Create 50 objects, only 3 match the filter
+        for i in 0..50 {
+            let mut labels = HashMap::new();
+            if i < 3 {
+                labels.insert("app".to_string(), "nginx".to_string());
+            }
+            store
+                .create(
+                    &key,
+                    ObjectMeta {
+                        name: format!("obj-{i:02}"),
+                        labels,
+                    },
+                    json!({}),
+                )
+                .await
+                .unwrap();
+        }
+
+        // Filter to 3, limit 10 → should return 3 (not 10)
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    label_selector: Some(LabelSelector {
+                        requirements: vec![crate::object::types::LabelRequirement::Equals {
+                            key: "app".to_string(),
+                            value: "nginx".to_string(),
+                        }],
+                    }),
+                    limit: Some(10),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 3);
+        assert!(res.continue_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_filter_no_matches() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "foo".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let res = store
+            .list(
+                &key,
+                ListOptions {
+                    field_selector: Some(FieldSelector::NameEquals("nonexistent".to_string())),
+                    ..Default::default()
                 },
             )
             .await
