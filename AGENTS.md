@@ -15,7 +15,7 @@ Request → TraceLayer → CorsLayer → Handler → ObjectService → Store
 - **ObjectService** (`object/service.rs`): single orchestrator — validation, storage, event publishing
 - **Store** (`store/`): pluggable `ObjectStore` trait — `InMemoryStore` (DashMap) and `SQLiteStore` (rusqlite + spawn_blocking)
 - **EventBus** (`event/bus.rs`): per-kind `Vec<Watcher>` with `WatchFilter` + `mpsc::Sender` per watcher (predicate routing), `EventPublisher` trait
-- **Schema** (`schema/`): `SchemaValidator` trait wrapping `jsonschema` crate, compiled validators cached in `DashMap`
+- **Schema** (`schema/`): `SchemaValidator` trait + `SchemaRegistry` — manages validation, compilation, and caching of JSON schemas
 
 ## Workspace structure
 

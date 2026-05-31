@@ -6,7 +6,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use dashmap::DashMap;
 use regex::Regex;
 use serde_json::Value;
 
@@ -16,7 +15,7 @@ use crate::object::types::{
     ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, WatchEvent, WatchEventType,
     WatchFilter,
 };
-use crate::schema::{JsonSchemaValidator, SchemaValidator};
+use crate::schema::{SchemaRegistry, SchemaValidator};
 use crate::store::{ObjectStore, ResourceKey};
 
 /// Validates a label key according to label validation rules.
@@ -118,39 +117,35 @@ fn validate_labels(labels: &HashMap<String, String>) -> Result<(), AppError> {
     Ok(())
 }
 
-/// ObjectService wraps store, event bus, and validators.
+/// ObjectService wraps store, event bus, and schema registry.
 ///
 /// - `store`: The storage backend for persisting objects
 /// - `event_bus`: Per-kind event bus for watch notifications
-/// - `meta_validator`: Compiled meta-schema for validating Schema registrations
-/// - `schema_cache`: Compiled user schemas keyed by schema name (e.g., "Widget.example.io")
+/// - `schema_registry`: Manages schema validation, compilation, and caching
 pub struct ObjectService {
     /// The storage backend
     store: Arc<dyn ObjectStore>,
     /// Per-kind event bus for SSE watch notifications (via trait object)
     event_bus: Arc<dyn EventPublisher>,
-    /// Compiled meta-schema validator for Schema registration payloads (via trait object)
-    meta_validator: Arc<dyn SchemaValidator>,
-    /// Compiled user schemas keyed by schema name (cached as trait objects).
-    /// Starts empty at startup; populated lazily via `lookup_object_validator()`
-    /// on cache miss and during Schema registration.
-    schema_cache: DashMap<String, Arc<dyn SchemaValidator>>,
+    /// Schema registry for validation, compilation, and caching
+    schema_registry: SchemaRegistry,
 }
 
 impl ObjectService {
     /// Creates a new ObjectService with the given store, event bus, and meta-validator.
     ///
-    /// The schema cache starts empty and is populated as Schema objects are created.
+    /// The SchemaRegistry is constructed internally from `store` and `meta_validator`,
+    /// with an empty cache that is populated lazily as schemas are created or looked up.
     pub fn new(
         store: Arc<dyn ObjectStore>,
         event_bus: Arc<dyn EventPublisher>,
         meta_validator: Arc<dyn SchemaValidator>,
     ) -> Self {
+        let schema_registry = SchemaRegistry::new(store.clone(), meta_validator);
         Self {
             store,
             event_bus,
-            meta_validator,
-            schema_cache: DashMap::new(),
+            schema_registry,
         }
     }
 
@@ -250,76 +245,7 @@ impl ObjectService {
 
     // --- Private helper methods ---
 
-    fn validate_meta_schema(&self, data: &Value) -> Result<SchemaData, AppError> {
-        if !self.meta_validator.is_valid(data) {
-            let errors: Vec<String> = self
-                .meta_validator
-                .validate(data)
-                .into_iter()
-                .map(|e| e.message)
-                .collect();
-            return Err(AppError::InvalidSchema(errors.join("; ")));
-        }
-        let schema_data: SchemaData = serde_json::from_value(data.clone())
-            .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
-        Ok(schema_data)
-    }
-
-    fn compile_jsonschema(
-        &self,
-        schema_data: &SchemaData,
-    ) -> Result<Arc<dyn SchemaValidator>, AppError> {
-        JsonSchemaValidator::compile(&schema_data.json_schema)
-            .map_err(|e| AppError::InvalidSchema(format!("failed to compile jsonSchema: {}", e)))
-            .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)
-    }
-
-    /// Looks up the compiled schema validator for the given object key.
-    ///
-    /// First checks the in-memory `schema_cache`. On cache miss, fetches the
-    /// Schema from the store, compiles it on-demand, caches the result, and
-    /// returns it. On compilation failure, returns
-    /// `AppError::StoredSchemaCompilationFailed`.
-    async fn lookup_object_validator(
-        &self,
-        key: &ResourceKey,
-    ) -> Result<Arc<dyn SchemaValidator>, AppError> {
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
-        let schema_name = format!("{}.{}", key.kind, key.group);
-        let schema_obj = self
-            .store
-            .get(&schema_key, &schema_name)
-            .await
-            .map_err(|_| AppError::NotFound {
-                what: "schema".to_string(),
-                identifier: schema_name.clone(),
-            })?;
-
-        let schema_data: SchemaData = serde_json::from_value(schema_obj.data.value)
-            .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
-
-        let cache_key = format!("{}.{}", schema_data.target_kind, schema_data.target_group);
-
-        if let Some(validator) = self.schema_cache.get(&cache_key) {
-            return Ok(validator.clone());
-        }
-
-        let compiled = JsonSchemaValidator::compile(&schema_data.json_schema)
-            .map_err(|e| AppError::StoredSchemaCompilationFailed {
-                schema_name: cache_key.clone(),
-                reason: e.to_string(),
-            })
-            .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
-
-        self.schema_cache
-            .insert(cache_key.clone(), compiled.clone());
-        Ok(compiled)
-    }
-
+    /// Maps schema validation errors to domain validation errors.
     fn map_validation_errors(
         errors: Vec<crate::schema::SchemaValidationError>,
     ) -> Vec<crate::object::types::ValidationError> {
@@ -339,10 +265,9 @@ impl ObjectService {
         data: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
-        let schema_data = self.validate_meta_schema(&data)?;
-        let compiled = self.compile_jsonschema(&schema_data)?;
+        let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&data)?;
         let stored = self.store.create(&key, meta.clone(), data).await?;
-        self.schema_cache.insert(meta.name.clone(), compiled);
+        self.schema_registry.insert(&meta.name, compiled);
         self.event_bus.publish(
             &key,
             WatchEvent {
@@ -361,7 +286,7 @@ impl ObjectService {
         data: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
-        let validator = self.lookup_object_validator(&key).await?;
+        let validator = self.schema_registry.get_validator(&key).await?;
 
         if !validator.is_valid(&data) {
             let errors = Self::map_validation_errors(validator.validate(&data));
@@ -386,11 +311,10 @@ impl ObjectService {
         data: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
-        let schema_data = self.validate_meta_schema(&data)?;
-        let compiled = self.compile_jsonschema(&schema_data)?;
+        let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&data)?;
         let updated = self.store.update(object).await?;
-        self.schema_cache
-            .insert(updated.metadata.name.clone(), compiled);
+        self.schema_registry
+            .insert(&updated.metadata.name, compiled);
         self.event_bus.publish(
             &updated.key,
             WatchEvent {
@@ -408,7 +332,7 @@ impl ObjectService {
         data: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
-        let validator = self.lookup_object_validator(&object.key).await?;
+        let validator = self.schema_registry.get_validator(&object.key).await?;
 
         if !validator.is_valid(&data) {
             let errors = Self::map_validation_errors(validator.validate(&data));
@@ -482,7 +406,7 @@ impl ObjectService {
         let deleted = self.store.delete(&key, &name).await?;
 
         // Step 5: Evict from cache
-        self.schema_cache.remove(&name);
+        self.schema_registry.evict(&name);
 
         // Step 6: Publish Deleted event
         self.event_bus.publish(
@@ -581,7 +505,7 @@ mod tests {
         assert_eq!(stored.metadata.name, "Widget.example.io");
 
         // Verify cached
-        assert!(service.schema_cache.contains_key("Widget.example.io"));
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
 
         // Verify stored in store
         let retrieved = service
@@ -792,7 +716,7 @@ mod tests {
             .unwrap();
 
         // Verify cached
-        assert!(service.schema_cache.contains_key("Widget.example.io"));
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
 
         // Delete the schema
         let result = service
@@ -801,7 +725,7 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify cache evicted
-        assert!(!service.schema_cache.contains_key("Widget.example.io"));
+        assert!(!service.schema_registry.cache.contains_key("Widget.example.io"));
     }
 
     // T27: Delete Schema with existing objects → SchemaHasObjects, nothing deleted
@@ -937,13 +861,13 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(service.schema_cache.contains_key("Widget.example.io"));
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
 
         service
             .delete(schema_key, "Widget.example.io".to_string())
             .await
             .unwrap();
-        assert!(!service.schema_cache.contains_key("Widget.example.io"));
+        assert!(!service.schema_registry.cache.contains_key("Widget.example.io"));
     }
 
     // Schema create with missing targetKind returns InvalidSchema error
@@ -1063,7 +987,7 @@ mod tests {
 
         // Service B: same store, fresh cache (simulating restart)
         let service_b = ObjectService::new(store, event_bus, meta_validator);
-        assert!(!service_b.schema_cache.contains_key("Widget.example.io"));
+        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io"));
 
         let result = service_b
             .create(
@@ -1076,7 +1000,7 @@ mod tests {
             )
             .await;
         assert!(result.is_ok());
-        assert!(service_b.schema_cache.contains_key("Widget.example.io"));
+        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io"));
     }
 
     // T32: Cache miss triggers compilation, subsequent requests use cached validator
@@ -1128,7 +1052,7 @@ mod tests {
 
         // Service B starts with empty cache
         let service_b = ObjectService::new(store, event_bus, meta_validator);
-        assert!(!service_b.schema_cache.contains_key("Widget.example.io"));
+        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io"));
 
         // First creation triggers lazy compilation
         let first = service_b
@@ -1142,7 +1066,7 @@ mod tests {
             )
             .await;
         assert!(first.is_ok());
-        assert!(service_b.schema_cache.contains_key("Widget.example.io"));
+        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io"));
 
         // Second creation uses cached validator
         let second = service_b

@@ -212,14 +212,15 @@ A hardcoded JSON Schema (Draft 2020-12, `unevaluatedProperties: false`) that def
 }
 ```
 
-Compiled once at server startup via `compile_meta_schema()` and injected into `ObjectService`.
+Compiled once at server startup via `compile_meta_schema()` and injected into `SchemaRegistry`.
 
 ## Schema Cache
 
-`ObjectService` caches compiled user schemas in a `DashMap<String, Arc<dyn SchemaValidator>>` keyed by schema name (`{targetKind}.{targetGroup}`). The cache is:
+`SchemaRegistry` manages compiled user schemas in a `DashMap<String, Arc<dyn SchemaValidator>>` keyed by schema name (`{targetKind}.{targetGroup}`). The cache is:
 
-- **Populated** on Schema creation and update (the jsonSchema is compiled and stored)
-- **Invalidated** on Schema deletion (the entry is removed)
+- **Populated** on Schema creation and update (the jsonSchema is compiled and stored via `insert()`)
+- **Invalidated** on Schema deletion (the entry is removed via `evict()`)
+- **Lazily populated** on cache miss via `get_validator()` for objects created after a restart
 
 This avoids re-compiling the JSON Schema on every object write.
 
