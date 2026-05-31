@@ -11,21 +11,24 @@ This is **not** a Kubernetes compatibility layer — it borrows the API model (g
 ```
 Request → TraceLayer → CorsLayer → Handler → ObjectService → Store
                                                        │
-                                           ┌───────────┴──────────────────────┐
-                                           │  publish/subscribe via traits    │
-                                           ▼                                  ▼
-                                    EventPublisher               SchemaValidator
-                                    (trait — Arc<dyn>)           (trait — Arc<dyn>)
-                                           │                                  │
-                                           ▼                                  ▼
-                                      EventBus                      JsonSchemaValidator
-                            (predicate routing — Vec<Watcher>       (wraps jsonschema crate)
-                             with WatchFilter + mpsc::Sender)
+                                            ┌───────────┴──────────────────────┐
+                                            │  publish/subscribe via traits    │
+                                            ▼                                  ▼
+                                     EventPublisher               SchemaRegistry
+                                     (trait — Arc<dyn>)           (validation + caching)
+                                            │                                  │
+                                            ▼                                  ▼
+                                       EventBus                      SchemaValidator
+                             (predicate routing — Vec<Watcher>       (trait — Arc<dyn>)
+                              with WatchFilter + mpsc::Sender)        │
+                                                                      ▼
+                                                              JsonSchemaValidator
+                                                            (wraps jsonschema crate)
 
                        ┌──────────────────┐
                        │    AppState      │
                        │                  │
-                       │  ObjectService   │  (wraps store + event publisher + validators)
+                       │  ObjectService   │  (wraps store + event publisher + schema_registry)
                        │  (Arc<>)         │
                        └──────────────────┘
 ```
@@ -66,8 +69,7 @@ The central orchestrator that coordinates validation, storage, and event publish
 `ObjectService` holds:
 - `store: Arc<dyn ObjectStore>` — pluggable storage
 - `event_bus: Arc<dyn EventPublisher>` — pluggable event distribution
-- `meta_validator: Arc<dyn SchemaValidator>` — compiled meta-schema
-- `schema_cache: DashMap<String, Arc<dyn SchemaValidator>>` — compiled user schemas
+- `schema_registry: SchemaRegistry` — manages schema validation, compilation, and caching
 
 ### 4. Store (store/mod.rs)
 
@@ -91,8 +93,9 @@ src/
 │   ├── memory.rs           # InMemoryStore (DashMap, AtomicU64) + tests
 │   └── sqlite.rs           # SQLiteStore (rusqlite, spawn_blocking) + tests
 ├── schema/
-│   └── meta_schema.rs      # Meta-schema constant + SchemaValidator trait
-│                           # + JsonSchemaValidator wrapper + tests
+│   ├── meta_schema.rs      # Meta-schema constant + SchemaValidator trait
+│   │                       # + JsonSchemaValidator wrapper + tests
+│   └── registry.rs         # SchemaRegistry — validation, compilation, caching
 ├── object/
 │   ├── types.rs            # Core types (StoredObject, ObjectMeta, SystemMetadata, etc.)
 │   ├── service.rs          # ObjectService orchestrator + tests
@@ -120,8 +123,8 @@ POST /apis/example.io/v1/Widget
   │
   ▼ ObjectService::create(key, meta, data)
   │   ├── validate_labels(meta.labels) → 400 if invalid
-  │   ├── Schema path: validate meta-schema → compile jsonSchema → cache
-  │   ├── Object path:  look up Schema → validate against compiled schema
+  │   ├── Schema path: SchemaRegistry.validate_and_compile() → cache insert
+  │   ├── Object path:  SchemaRegistry.get_validator() → validate against compiled schema
   │   ├── store.create(key, meta, data) → StoredObject
   │   └── event_bus.publish(key, WatchEvent::Added(obj))
   │
@@ -173,9 +176,8 @@ POST /apis/kapi.io/v1/Schema
   ▼ Handler: generate name as "{targetKind}.{targetGroup}"
   │
   ▼ ObjectService::create (Schema path)
-  │   ├── Validate against meta-schema
-  │   ├── Compile jsonSchema via jsonschema crate
-  │   ├── Cache compiled validator
+  │   ├── SchemaRegistry.validate_and_compile() — meta-schema validate + compile
+  │   ├── SchemaRegistry.insert() — cache compiled validator
   │   ├── store.create() → StoredObject
   │   └── publish WatchEvent::Added
   │
@@ -192,7 +194,7 @@ DELETE /apis/kapi.io/v1/Schema/{name}
   │   ├── List target kind objects (limit=1)
   │   ├── If objects exist → 409 SchemaHasObjects
   │   ├── Delete schema
-  │   ├── Evict compiled validator from cache
+  │   ├── SchemaRegistry.evict() — remove from cache
   │   └── publish WatchEvent::Deleted
   │
   ▼ Response: 200 OK or 409 Conflict
@@ -210,7 +212,7 @@ DELETE /apis/kapi.io/v1/Schema/{name}
 | Watch semantics | `?watch=true` on list endpoint | Kube-native pattern, handler branches on query param |
 | Event bus | Predicate routing — `Vec<Watcher>` with `WatchFilter` + `mpsc::Sender` per watcher | Eliminates unnecessary work — filtered watchers only receive matching events; swappable for testing; `WatchFilter` supports `All`, `FieldSelector`, and `LabelSelector` variants |
 | Concurrency | Global monotonic `AtomicU64` | Enables "give me events since version N" for watch resume |
-| Schema validation | `Arc<dyn SchemaValidator>` | Isolates jsonschema crate behind trait; swappable |
+| Schema validation | `SchemaRegistry` with `Arc<dyn SchemaValidator>` | Isolates jsonschema crate behind trait; manages compilation+ caching; swappable |
 | Schema deletion | Block if objects exist (409) | Prevent accidental data loss |
 | Schema compilation | At registration time | Reject invalid schemas at registration with 422 |
 | Optimistic concurrency | Embedded system.resourceVersion on StoredObject | Version travels with the object; cleaner trait signature |

@@ -15,6 +15,7 @@
 
 ## Pending
 
+- [x] **Extract SchemaRegistry** — Extract schema compilation, caching, and lookup from `ObjectService` into a `SchemaRegistry` collaborator (`openspec/changes/extract-schema-registry`)
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
 - [ ] **Watch resume** — `resourceVersion` param for watch resume with ring buffer replay
 - [ ] **Watch bookmarks** — Periodic bookmark events with current resourceVersion
