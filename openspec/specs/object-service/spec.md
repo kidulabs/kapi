@@ -119,7 +119,7 @@ Label validation SHALL occur after schema validation but before store persistenc
 
 ### Requirement: delete delegates cache eviction to SchemaRegistry
 The `delete(key, name)` method SHALL:
-1. If `key.kind == "Schema"`: fetch the Schema, extract target kind, check if objects of that kind exist; if so, return `SchemaHasObjects`. Then `store.delete()`, then `schema_registry.evict()`, then `event_bus.publish()`
+1. If `key.kind == "Schema"`: fetch the Schema, extract target kind, check if objects of that kind exist using `store.exists()`; if so, return `SchemaHasObjects`. Then `store.delete()`, then `schema_registry.evict()`, then `event_bus.publish()`
 2. If `key.kind != "Schema"`: `store.delete()`, then `event_bus.publish()`
 
 #### Scenario: Delete Schema with no objects

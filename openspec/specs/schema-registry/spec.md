@@ -1,9 +1,7 @@
 ## Purpose
 
 Define the `SchemaRegistry` collaborator that manages JSON Schema compilation, caching, and lookup. The registry isolates the schema concern from `ObjectService`, which delegates schema work to it while retaining control of the atomic operation sequence.
-
 ## Requirements
-
 ### Requirement: SchemaRegistry wraps store, meta-validator, and cache
 The system SHALL define a `SchemaRegistry` struct containing:
 - `store: Arc<dyn ObjectStore>` — the storage backend for cache-miss lookups
@@ -46,7 +44,7 @@ The `get_validator(key: &ResourceKey)` method SHALL:
 1. Compute the cache key as `"{kind}.{group}"` from the provided `ResourceKey`
 2. Check the cache for an existing validator
 3. On cache hit, return the cached validator
-4. On cache miss, fetch the Schema from the store using `ResourceKey { group: "kapi.io", version: "v1", kind: "Schema" }` and name `"{kind}.{group}"`
+4. On cache miss, fetch the Schema from the store using `schema_key()` and name `"{kind}.{group}"`
 5. Parse the fetched Schema's data into `SchemaData`
 6. Compile `schema_data.json_schema`
 7. Insert the compiled validator into the cache
@@ -97,3 +95,4 @@ The `evict(name: &str)` method SHALL remove the validator entry for the given na
 - **WHEN** `ObjectService` is constructed with a `SchemaRegistry`
 - **THEN** the registry is held as a direct field
 - **AND** no trait dispatch overhead is incurred for registry method calls
+

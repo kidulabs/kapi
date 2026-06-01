@@ -3,7 +3,7 @@
 Define the `ObjectStore` trait and its `InMemoryStore` implementation for persisting, retrieving, listing, updating, and deleting `StoredObject` instances identified by `ResourceKey` and name.
 ## Requirements
 ### Requirement: ObjectStore trait defines the storage contract
-The system SHALL define an `ObjectStore` async trait with methods `create`, `get`, `list`, `update`, and `delete` that operate on `StoredObject` instances. The trait SHALL require `Send + Sync`. The `create` method SHALL accept `ObjectMeta` for the metadata parameter (which includes `name` and `labels`) and `serde_json::Value` for the data parameter. The `update` method SHALL accept a full `StoredObject` and perform optimistic concurrency control by comparing the embedded `object.system.resource_version` against the stored version. The `delete` method SHALL accept only `key` and `name` parameters and perform unconditional removal.
+The system SHALL define an `ObjectStore` async trait with methods `create`, `get`, `list`, `update`, `delete`, and `exists` that operate on `StoredObject` instances. The trait SHALL require `Send + Sync`. The `create` method SHALL accept `ObjectMeta` for the metadata parameter (which includes `name` and `labels`) and `serde_json::Value` for the data parameter. The `update` method SHALL accept a full `StoredObject` and perform optimistic concurrency control by comparing the embedded `object.system.resource_version` against the stored version. The `delete` method SHALL accept only `key` and `name` parameters and perform unconditional removal. The `exists` method SHALL accept a `ResourceKey` and return `Result<bool, AppError>` indicating whether any objects exist for that key.
 
 #### Scenario: Trait is object-safe and thread-safe
 - **WHEN** a type implements `ObjectStore`
@@ -20,6 +20,10 @@ The system SHALL define an `ObjectStore` async trait with methods `create`, `get
 #### Scenario: delete takes only key and name
 - **WHEN** a caller invokes `delete(key, name)`
 - **THEN** the implementation removes the object unconditionally without any version check
+
+#### Scenario: exists checks for object presence
+- **WHEN** a caller invokes `exists(key)` with a `ResourceKey`
+- **THEN** the implementation returns `Ok(true)` if any objects exist for that key, `Ok(false)` otherwise
 
 ### Requirement: create stores a new object and assigns a version
 The `create` method SHALL store a new object with the given `ResourceKey`, `ObjectMeta.name`, `ObjectMeta.labels`, and data. It SHALL assign a globally monotonic `resource_version` starting from 1, set `created_at` and `updated_at` to the current UTC time, and return the resulting `StoredObject` with `metadata` populated from the `ObjectMeta` argument and `system` populated with the server-generated fields. If an object with the same key and name already exists, it SHALL return `AppError::AlreadyExists`.
