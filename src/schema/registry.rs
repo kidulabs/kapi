@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::object::types::SchemaData;
-use crate::schema::{JsonSchemaValidator, SchemaValidator};
+use crate::schema::{JsonSchemaValidator, SchemaValidator, schema_key};
 use crate::store::{ObjectStore, ResourceKey};
 
 /// Manages schema validation, compilation, and caching.
@@ -104,11 +104,7 @@ impl SchemaRegistry {
         }
 
         // Cache miss: fetch from store
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_name = cache_key.clone();
 
         let schema_obj = self
@@ -166,11 +162,7 @@ mod tests {
     }
 
     async fn store_test_schema(registry: &SchemaRegistry, name: &str) {
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -303,11 +295,7 @@ mod tests {
     #[tokio::test]
     async fn get_validator_cache_miss_uncompilable_schema_returns_compilation_failed() {
         let registry = make_registry();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let invalid_schema = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",

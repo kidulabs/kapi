@@ -42,12 +42,7 @@ pub async fn test_delete_schema_with_objects(app: &TestApp) -> Result<(), String
     );
     if let Some(d) = details {
         let kind = d.get("kind").and_then(|v| v.as_str()).unwrap_or("");
-        let count = d.get("count").and_then(|v| v.as_u64()).unwrap_or(0);
         assert_eq!(kind, "Widget", "expected kind 'Widget' in error details");
-        assert!(
-            count >= 2,
-            "expected count >= 2 in error details, got {count}"
-        );
     }
 
     Ok(())

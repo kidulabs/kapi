@@ -196,6 +196,7 @@ mod tests {
     use crate::object::types::{
         FieldSelector, ObjectMeta, StoredObject, SystemMetadata, UserData, WatchEventType,
     };
+    use crate::schema::SCHEMA_KIND;
     use chrono::Utc;
     use std::collections::HashMap;
     use tokio_stream::StreamExt;
@@ -204,7 +205,7 @@ mod tests {
         ResourceKey {
             group: "kapi.io".into(),
             version: "v1".into(),
-            kind: "Schema".into(),
+            kind: SCHEMA_KIND.into(),
         }
     }
 

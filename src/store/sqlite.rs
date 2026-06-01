@@ -688,6 +688,23 @@ impl ObjectStore for SQLiteStore {
         .map_err(|e| AppError::Internal(e.into()))?
     }
 
+    /// Checks whether any objects exist for the given resource key.
+    async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError> {
+        let key = key.clone();
+        let conn = Arc::clone(&self.conn);
+        tokio::task::spawn_blocking(move || {
+            let c = conn.lock().unwrap();
+            let count: i64 = c.query_row(
+                "SELECT EXISTS(SELECT 1 FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3)",
+                params![key.group, key.version, key.kind],
+                |row| row.get(0),
+            ).map_err(|e| AppError::Internal(e.into()))?;
+            Ok(count == 1)
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    }
+
     /// Deletes an object unconditionally (no version check). Returns the deleted object.
     /// Labels are automatically removed via ON DELETE CASCADE.
     async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
@@ -1653,5 +1670,60 @@ mod tests {
             .unwrap();
         assert_eq!(res.items.len(), 1);
         assert_eq!(res.items[0].metadata.name, "matching");
+    }
+
+    // --- exists tests ---
+
+    #[tokio::test]
+    async fn exists_returns_true_when_objects_present() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "exists-test".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
+            .await
+            .unwrap();
+
+        assert!(store.exists(&key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn exists_returns_false_when_no_objects() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        assert!(!store.exists(&key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn exists_returns_false_for_different_key() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "test".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let other_key = ResourceKey {
+            group: "other.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Other".to_string(),
+        };
+        assert!(!store.exists(&other_key).await.unwrap());
     }
 }

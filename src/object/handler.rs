@@ -22,6 +22,7 @@ use crate::object::types::{
     StoredObject, WatchFilter,
 };
 use crate::routes::AppState;
+use crate::schema::SCHEMA_KIND;
 use crate::store::ResourceKey;
 
 /// Path parameters for /apis/{group}/{version}/{kind}
@@ -98,7 +99,7 @@ fn extract_labels(body: &Value) -> Result<HashMap<String, String>, AppError> {
 /// Extracts group, version, kind from path, deserializes body as JSON,
 /// and calls ObjectService::create. Returns 201 Created with the StoredObject.
 ///
-/// For Schema objects (`kind == "Schema"`), the name is generated from
+/// For Schema objects (`kind == SCHEMA_KIND`), the name is generated from
 /// `targetKind` and `targetGroup` in the body as `{targetKind}.{targetGroup}`.
 /// For non-Schema objects, the name is extracted from `metadata.name`.
 pub async fn create(
@@ -111,7 +112,7 @@ pub async fn create(
 
     // Branch on kind: Schema objects generate their name from payload fields,
     // while regular objects require a client-supplied metadata.name
-    let meta = if path.kind == "Schema" {
+    let meta = if path.kind == SCHEMA_KIND {
         // Schema registration: generate name from targetKind.targetGroup
         let name = extract_schema_name(&body).ok_or_else(|| {
             AppError::InvalidSchema(

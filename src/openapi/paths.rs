@@ -14,15 +14,12 @@ use crate::openapi::components::{
     build_kind_data_component, build_kind_list_response_component,
     build_kind_stored_object_component, build_static_components, component_name,
 };
+use crate::schema::schema_key;
 use crate::store::ResourceKey;
 
 /// Returns the ResourceKey for Schema objects stored under the kapi.io group.
 fn schema_resource_key() -> ResourceKey {
-    ResourceKey {
-        group: "kapi.io".to_string(),
-        version: "v1".to_string(),
-        kind: "Schema".to_string(),
-    }
+    schema_key()
 }
 
 /// Builds a complete OpenAPI 3.0.3 document.

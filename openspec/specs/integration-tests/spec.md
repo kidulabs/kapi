@@ -70,7 +70,7 @@ The system SHALL prevent deletion of a Schema when objects of the target kind ex
 #### Scenario: Delete schema with existing objects
 - **WHEN** a Schema exists for kind K and N>0 objects of kind K exist
 - **AND** client DELETEs `/apis/kapi.io/v1/Schema/{schemaName}`
-- **THEN** response is 409 Conflict with details { kind: K, count: N }
+- **THEN** response is 409 Conflict with details { kind: K }
 
 ### Requirement: Schema registration validation
 

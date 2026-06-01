@@ -148,7 +148,7 @@ The delete handler SHALL extract path parameters and call `ObjectService::delete
 
 #### Scenario: Delete Schema with objects returns 409
 - **WHEN** a Schema is DELETEd and objects of the target kind exist
-- **THEN** the response is 409 with `SchemaHasObjects` error including the kind and count
+- **THEN** the response is 409 with `SchemaHasObjects` error including the kind
 
 ### Requirement: Routes are composed under /apis/{group}/{version}
 The router SHALL define:

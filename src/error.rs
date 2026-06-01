@@ -39,8 +39,8 @@ pub enum AppError {
     InvalidSchema(String),
 
     // Attempting to delete a Schema that has existing objects of the target kind
-    #[error("schema has objects: kind={kind}, count={count}")]
-    SchemaHasObjects { kind: String, count: usize },
+    #[error("schema has objects: kind={kind}")]
+    SchemaHasObjects { kind: String },
 
     #[error("stored schema '{schema_name}' compilation failed: {reason}")]
     StoredSchemaCompilationFailed { schema_name: String, reason: String },
@@ -115,11 +115,11 @@ impl IntoResponse for AppError {
                 json!({ "schemaName": schema_name, "reason": reason }),
             ),
             // SchemaHasObjects maps to HTTP 409 Conflict
-            AppError::SchemaHasObjects { kind, count } => (
+            AppError::SchemaHasObjects { kind } => (
                 StatusCode::CONFLICT,
                 "SchemaHasObjects",
-                format!("schema has objects: kind={kind}, count={count}"),
-                json!({ "kind": kind, "count": count }),
+                format!("schema has objects: kind={kind}"),
+                json!({ "kind": kind }),
             ),
             AppError::Internal(_err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

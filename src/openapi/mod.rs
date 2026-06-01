@@ -45,7 +45,6 @@ mod tests {
         build_kind_stored_object_component, build_static_components, component_name,
     };
     use super::paths::{build_kind_paths, build_openapi_spec, build_static_paths};
-    use crate::store::ResourceKey;
     use serde_json::Value;
     use std::collections::HashMap;
 
@@ -420,11 +419,7 @@ mod tests {
     #[tokio::test]
     async fn build_openapi_spec_includes_dynamic_paths_and_components() {
         let service = make_test_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = crate::schema::schema_key();
         let schema_data = serde_json::json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -476,11 +471,7 @@ mod tests {
     #[tokio::test]
     async fn build_openapi_spec_reflects_mutations() {
         let service = make_test_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = crate::schema::schema_key();
         let schema_data = serde_json::json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",

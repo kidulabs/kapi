@@ -128,7 +128,7 @@ The `delete(key, name)` method SHALL:
 
 #### Scenario: Delete Schema with existing objects
 - **WHEN** deleting a Schema and objects of the target kind exist
-- **THEN** the error is `SchemaHasObjects { kind, count }` and nothing is deleted, evicted, or published
+- **THEN** the error is `SchemaHasObjects { kind }` and nothing is deleted, evicted, or published
 
 #### Scenario: Delete regular object
 - **WHEN** deleting a non-Schema object

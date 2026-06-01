@@ -173,6 +173,10 @@ impl ObjectStore for InMemoryStore {
 
         Ok(object)
     }
+
+    async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError> {
+        Ok(self.objects.iter().any(|r| r.key().0 == *key))
+    }
 }
 
 fn decode_continue_token(token: &ContinueToken) -> Result<String, AppError> {
@@ -870,5 +874,60 @@ mod tests {
             .unwrap();
         assert!(res.items.is_empty());
         assert!(res.continue_token.is_none());
+    }
+
+    // --- exists tests ---
+
+    #[tokio::test]
+    async fn exists_returns_true_when_objects_present() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "exists-test".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
+            .await
+            .unwrap();
+
+        assert!(store.exists(&key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn exists_returns_false_when_no_objects() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        assert!(!store.exists(&key).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn exists_returns_false_for_different_key() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "test".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+
+        let other_key = ResourceKey {
+            group: "other.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Other".to_string(),
+        };
+        assert!(!store.exists(&other_key).await.unwrap());
     }
 }

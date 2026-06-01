@@ -31,4 +31,5 @@ pub trait ObjectStore: Send + Sync {
     async fn list(&self, key: &ResourceKey, opts: ListOptions) -> Result<ListResponse, AppError>;
     async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError>;
     async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
+    async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError>;
 }

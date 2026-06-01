@@ -120,12 +120,15 @@ The system SHALL produce `SchemaHasObjects` errors when attempting to delete a S
 
 #### Scenario: Delete schema with existing objects
 - **WHEN** a DELETE request targets a Schema and objects of the target kind exist
-- **THEN** the error SHALL be `SchemaHasObjects { kind: "...", count: N }`
+  - **THEN** the error SHALL be `SchemaHasObjects { kind: "..." }`
 
-### Requirement: SchemaHasObjects maps to HTTP 409
-The system SHALL map `SchemaHasObjects` to HTTP 409 Conflict with JSON body `{ "error": "...", "code": "SchemaHasObjects", "details": { "kind": "...", "count": N } }`.
+  ### Requirement: SchemaHasObjects maps to HTTP 409
 
-#### Scenario: SchemaHasObjects response body
-- **WHEN** a handler returns `SchemaHasObjects { kind: "Widget".into(), count: 5 }`
-- **THEN** the response is HTTP 409 with JSON body containing `"code": "SchemaHasObjects"` and `"details": { "kind": "Widget", "count": 5 }`
+  The system SHALL map `SchemaHasObjects` to HTTP 409 Conflict with JSON body `{ "error": "...", "code": "SchemaHasObjects", "details": { "kind": "..." } }`.
+
+  #### Scenario: SchemaHasObjects response body
+
+  - **WHEN** a handler returns `SchemaHasObjects { kind: "Widget".into() }`
+
+  - **THEN** the response is HTTP 409 with JSON body containing `"code": "SchemaHasObjects"` and `"details": { "kind": "Widget" }`
 

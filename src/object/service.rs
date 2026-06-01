@@ -15,7 +15,9 @@ use crate::object::types::{
     ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, WatchEvent, WatchEventType,
     WatchFilter,
 };
-use crate::schema::{SchemaRegistry, SchemaValidator};
+use crate::schema::{SchemaRegistry, SchemaValidator, SCHEMA_KIND};
+#[cfg(test)]
+use crate::schema::schema_key;
 use crate::store::{ObjectStore, ResourceKey};
 
 /// Validates a label key according to label validation rules.
@@ -167,7 +169,7 @@ impl ObjectService {
         meta: ObjectMeta,
         data: Value,
     ) -> Result<StoredObject, AppError> {
-        if key.kind == "Schema" {
+        if key.kind == SCHEMA_KIND {
             // Schema path: meta-schema validate → compile → cache → store → publish
             self.validate_and_create_schema(key, meta, data).await
         } else {
@@ -198,7 +200,7 @@ impl ObjectService {
         let key = object.key.clone();
         let data = object.data.value.clone();
 
-        if key.kind == "Schema" {
+        if key.kind == SCHEMA_KIND {
             // Schema path: meta-schema validate → compile → cache → store → publish
             self.validate_and_update_schema(object, data).await
         } else {
@@ -218,7 +220,7 @@ impl ObjectService {
     /// For regular objects:
     /// 1. Delete and publish Deleted
     pub async fn delete(&self, key: ResourceKey, name: String) -> Result<StoredObject, AppError> {
-        if key.kind == "Schema" {
+        if key.kind == SCHEMA_KIND {
             // Schema path: check for existing objects before deletion
             self.delete_schema(key, name).await
         } else {
@@ -370,35 +372,10 @@ impl ObjectService {
             kind: schema_data.target_kind,
         };
 
-        // List with limit 1 to check if any objects exist
-        let list_result = self
-            .store
-            .list(
-                &target_key,
-                ListOptions {
-                    limit: Some(1),
-                    continue_token: None,
-                    ..Default::default()
-                },
-            )
-            .await?;
-
-        if !list_result.items.is_empty() {
-            // Count total objects for the error message
-            let full_list = self
-                .store
-                .list(
-                    &target_key,
-                    ListOptions {
-                        limit: None,
-                        continue_token: None,
-                        ..Default::default()
-                    },
-                )
-                .await?;
+        // Check if any objects of the target kind exist
+        if self.store.exists(&target_key).await? {
             return Err(AppError::SchemaHasObjects {
                 kind: target_key.kind,
-                count: full_list.items.len(),
             });
         }
 
@@ -443,11 +420,7 @@ mod tests {
     // (see handler::extract_schema_name), but tests call service.create()
     // directly and must supply the name.
     async fn register_test_schema(service: &ObjectService) {
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -478,11 +451,7 @@ mod tests {
     #[tokio::test]
     async fn create_valid_schema_stored_cached_event_published() {
         let service = make_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -519,11 +488,7 @@ mod tests {
     #[tokio::test]
     async fn create_schema_invalid_meta_schema_returns_error() {
         let service = make_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         // Missing required fields
         let invalid_data = json!({ "targetGroup": "example.io" });
 
@@ -546,11 +511,7 @@ mod tests {
     #[tokio::test]
     async fn create_schema_uncompileable_json_schema_returns_error() {
         let service = make_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         // jsonSchema with invalid content (not a valid JSON Schema)
         let invalid_schema = json!({
             "targetGroup": "example.io",
@@ -692,11 +653,7 @@ mod tests {
     #[tokio::test]
     async fn delete_schema_no_objects_succeeds() {
         let service = make_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -753,16 +710,12 @@ mod tests {
             .unwrap();
 
         // Try to delete the schema
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let result = service
             .delete(schema_key, "Widget.example.io".to_string())
             .await;
         assert!(
-            matches!(result, Err(AppError::SchemaHasObjects { kind, count }) if kind == "Widget" && count >= 1)
+            matches!(result, Err(AppError::SchemaHasObjects { kind }) if kind == "Widget")
         );
     }
 
@@ -798,11 +751,7 @@ mod tests {
     #[tokio::test]
     async fn create_duplicate_no_event_published() {
         let service = make_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -839,11 +788,7 @@ mod tests {
     #[tokio::test]
     async fn schema_cache_eviction_on_delete() {
         let service = make_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -875,11 +820,7 @@ mod tests {
     #[tokio::test]
     async fn create_schema_missing_target_kind_returns_error() {
         let service = make_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         // Missing targetKind
         let schema_data = json!({
             "targetGroup": "example.io",
@@ -905,11 +846,7 @@ mod tests {
     #[tokio::test]
     async fn create_schema_missing_target_group_returns_error() {
         let service = make_service();
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         // Missing targetGroup
         let schema_data = json!({
             "targetVersion": "v1",
@@ -938,11 +875,7 @@ mod tests {
         let meta_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -1011,11 +944,7 @@ mod tests {
         let meta_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
@@ -1091,11 +1020,7 @@ mod tests {
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
         // Bypass service to store a schema with invalid jsonSchema directly
-        let schema_key = ResourceKey {
-            group: "kapi.io".to_string(),
-            version: "v1".to_string(),
-            kind: "Schema".to_string(),
-        };
+        let schema_key = schema_key();
         let invalid_schema = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
