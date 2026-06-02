@@ -21,6 +21,8 @@
 - [ ] **Watch bookmarks** — Periodic bookmark events with current resourceVersion
 - [ ] **Field selector variants** — `FieldSelector::NameNotEquals`, `FieldSelector::NameIn` for more expressive field-based filtering
 - [ ] **Zombie watcher cleanup** — Dead watchers (client disconnected) are only cleaned up lazily on next `publish()` for that `ResourceKey`. If no objects of a kind ever exist, watchers accumulate unbounded. Preferred: periodic background cleanup task. Secondary: `Drop` impl on `EventBus` entries.
+- [ ] **Add Spec and Status** - add spec and status to the top level schema requirement
+- [ ] **Add Finalizer Support** - add finalizer support
 
 ## Deferred Improvements
 
