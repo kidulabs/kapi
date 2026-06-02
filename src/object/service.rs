@@ -226,13 +226,7 @@ impl ObjectService {
         } else {
             // Regular object path: delete and publish
             let deleted = self.store.delete(&key, &name).await?;
-            self.event_bus.publish(
-                &key,
-                WatchEvent {
-                    event_type: WatchEventType::Deleted,
-                    object: deleted.clone(),
-                },
-            );
+            self.publish_event(&key, WatchEventType::Deleted, &deleted);
             Ok(deleted)
         }
     }
@@ -260,6 +254,17 @@ impl ObjectService {
             .collect()
     }
 
+    /// Publishes a watch event via the event bus.
+    fn publish_event(&self, key: &ResourceKey, event_type: WatchEventType, object: &StoredObject) {
+        self.event_bus.publish(
+            key,
+            WatchEvent {
+                event_type,
+                object: object.clone(),
+            },
+        );
+    }
+
     async fn validate_and_create_schema(
         &self,
         key: ResourceKey,
@@ -270,13 +275,7 @@ impl ObjectService {
         let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&data)?;
         let stored = self.store.create(&key, meta.clone(), data).await?;
         self.schema_registry.insert(&meta.name, compiled);
-        self.event_bus.publish(
-            &key,
-            WatchEvent {
-                event_type: WatchEventType::Added,
-                object: stored.clone(),
-            },
-        );
+        self.publish_event(&key, WatchEventType::Added, &stored);
         Ok(stored)
     }
 
@@ -296,13 +295,7 @@ impl ObjectService {
         }
 
         let stored = self.store.create(&key, meta, data).await?;
-        self.event_bus.publish(
-            &key,
-            WatchEvent {
-                event_type: WatchEventType::Added,
-                object: stored.clone(),
-            },
-        );
+        self.publish_event(&key, WatchEventType::Added, &stored);
         Ok(stored)
     }
 
@@ -317,13 +310,7 @@ impl ObjectService {
         let updated = self.store.update(object).await?;
         self.schema_registry
             .insert(&updated.metadata.name, compiled);
-        self.event_bus.publish(
-            &updated.key,
-            WatchEvent {
-                event_type: WatchEventType::Modified,
-                object: updated.clone(),
-            },
-        );
+        self.publish_event(&updated.key, WatchEventType::Modified, &updated);
         Ok(updated)
     }
 
@@ -342,13 +329,7 @@ impl ObjectService {
         }
 
         let updated = self.store.update(object).await?;
-        self.event_bus.publish(
-            &updated.key,
-            WatchEvent {
-                event_type: WatchEventType::Modified,
-                object: updated.clone(),
-            },
-        );
+        self.publish_event(&updated.key, WatchEventType::Modified, &updated);
         Ok(updated)
     }
 
@@ -386,13 +367,7 @@ impl ObjectService {
         self.schema_registry.evict(&name);
 
         // Step 6: Publish Deleted event
-        self.event_bus.publish(
-            &key,
-            WatchEvent {
-                event_type: WatchEventType::Deleted,
-                object: deleted.clone(),
-            },
-        );
+        self.publish_event(&key, WatchEventType::Deleted, &deleted);
 
         Ok(deleted)
     }
