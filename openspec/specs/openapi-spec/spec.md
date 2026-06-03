@@ -24,11 +24,11 @@ The system SHALL provide a `GET /openapi` endpoint that returns an OpenAPI 3.0.3
 - **THEN** the new response includes the newly registered kind's paths and components
 
 ### Requirement: Static component schemas cover kapi built-in types
-The generated OpenAPI spec SHALL include component schemas for: `ResourceKey`, `ObjectMeta`, `SystemMetadata`, `UserData`, `StoredObject`, `ListResponse`, `WatchEvent`, `WatchEventType`, `ValidationError`, `AppError`, and `SchemaData`. The `ObjectMeta` component SHALL include a `labels` property of type `object` with `additionalProperties: { type: string }`.
+The generated OpenAPI spec SHALL include component schemas for: `ResourceKey`, `ObjectMeta`, `SystemMetadata`, `SpecData`, `StoredObject`, `ListResponse`, `WatchEvent`, `WatchEventType`, `ValidationError`, `AppError`, and `SchemaData`. The `ObjectMeta` component SHALL include a `labels` property of type `object` with `additionalProperties: { type: string }`.
 
 #### Scenario: StoredObject component matches wire format
 - **WHEN** the spec is generated
-- **THEN** the `StoredObject` component has properties `key` (ref ResourceKey), `metadata` (ref ObjectMeta), `system` (ref SystemMetadata), and `data` (ref UserData)
+- **THEN** the `StoredObject` component has properties `key` (ref ResourceKey), `metadata` (ref ObjectMeta), `system` (ref SystemMetadata), and `spec` (ref SpecData)
 - **AND** the `ObjectMeta` component has properties `name` (type string, required) and `labels` (type object, additionalProperties: string)
 - **AND** the `SystemMetadata` component has properties `resourceVersion` (type integer, format int64, required), `createdAt` (type string, format date-time, required), and `updatedAt` (type string, format date-time, required)
 
@@ -75,24 +75,24 @@ For each registered Schema object, the system SHALL generate paths under `/apis/
   - `PUT /apis/example.io/v1/Widget/{name}` (update)
   - `DELETE /apis/example.io/v1/Widget/{name}` (delete)
 
-#### Scenario: POST path uses kind-specific data schema
+#### Scenario: POST path uses kind-specific spec schema
 - **WHEN** the spec is generated for a registered kind
-- **THEN** the POST request body references the kind's data component (e.g., `WidgetExampleIo`) via `allOf` with `metadata.name`
+- **THEN** the POST request body references the kind's spec component (e.g., `WidgetExampleIo`) via `allOf` with `metadata.name`
 
 #### Scenario: GET/PUT/DELETE responses use kind-specific StoredObject schema
 - **WHEN** the spec is generated for a registered kind
 - **THEN** the 200 responses reference the kind's StoredObject component (e.g., `WidgetExampleIoStoredObject`)
 
 ### Requirement: Dynamic component schemas embed user's jsonSchema
-For each registered Schema, the system SHALL generate a component schema from the Schema's `jsonSchema` field. This component represents the user's data shape and is referenced by the kind's `StoredObject` component's `data` property.
+For each registered Schema, the system SHALL generate a component schema from the Schema's `jsonSchema` field. This component represents the user's data shape and is referenced by the kind's `StoredObject` component's `spec` property.
 
 #### Scenario: User schema properties appear in component
 - **WHEN** a Schema is registered with `jsonSchema: { "type": "object", "properties": { "color": { "type": "string" }, "size": { "type": "integer" } } }`
 - **THEN** the generated component (e.g., `WidgetExampleIo`) has `type: "object"` with `properties` containing `color` and `size`
 
-#### Scenario: Kind-specific StoredObject references kind-specific data
+#### Scenario: Kind-specific StoredObject references kind-specific spec
 - **WHEN** the spec is generated for a registered kind
-- **THEN** `{Kind}{Group}StoredObject` has a `data` property with `$ref` pointing to `#/components/schemas/{Kind}{Group}`
+- **THEN** `{Kind}{Group}StoredObject` has a `spec` property with `$ref` pointing to `#/components/schemas/{Kind}{Group}`
 
 ### Requirement: Component names follow PascalCase dot-split convention
 Component names SHALL be derived from the schema name (format: `{Kind}.{group}`) by splitting on dots, PascalCasing each segment, and concatenating. Example: `"Widget.other.io"` → `"WidgetOtherIo"`.

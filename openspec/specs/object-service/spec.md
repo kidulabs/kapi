@@ -15,12 +15,12 @@ The system SHALL define an `ObjectService` struct containing:
 - **AND** no store query is performed during construction
 
 ### Requirement: create delegates schema work to SchemaRegistry
-The `create(key, meta, data)` method SHALL:
+The `create(key, meta, spec)` method SHALL:
 1. Validate `meta.labels` using label validation rules (key format, value format, length limits)
-2. If `key.kind == "Schema"`: call `schema_registry.validate_and_compile(&data)` to validate and compile, then `store.create()`, then `schema_registry.insert()` to cache, then `event_bus.publish()`
-3. If `key.kind != "Schema"`: call `schema_registry.get_validator(&key)` to obtain the validator, validate `data` against it, then `store.create()`, then `event_bus.publish()`
+2. If `key.kind == "Schema"`: call `schema_registry.validate_and_compile(&spec)` to validate and compile, then `store.create()`, then `schema_registry.insert()` to cache, then `event_bus.publish()`
+3. If `key.kind != "Schema"`: call `schema_registry.get_validator(&key)` to obtain the validator, validate `spec` against it, then `store.create()`, then `event_bus.publish()`
 
-Label validation SHALL occur after schema validation of the data payload but before store persistence. If label validation fails, an `AppError::InvalidLabel` error SHALL be returned with a descriptive message.
+Label validation SHALL occur after schema validation of the spec payload but before store persistence. If label validation fails, an `AppError::InvalidLabel` error SHALL be returned with a descriptive message.
 
 #### Scenario: Create valid Schema
 - **WHEN** a Schema registration passed meta-schema validation and its jsonSchema compiles
@@ -38,8 +38,8 @@ Label validation SHALL occur after schema validation of the data payload but bef
 - **WHEN** creating an object for a kind with no registered Schema
 - **THEN** the error is `NotFound` (no schema found for this kind)
 
-#### Scenario: Create object with invalid data
-- **WHEN** creating an object whose data fails schema validation
+#### Scenario: Create object with invalid spec
+- **WHEN** creating an object whose spec fails schema validation
 - **THEN** the error is `SchemaValidation` with the list of validation errors
 
 #### Scenario: Create duplicate object
@@ -92,8 +92,8 @@ The `list(key, opts)` method SHALL delegate to `store.list(key, opts)` without a
 ### Requirement: update delegates schema work to SchemaRegistry
 The `update(object)` method SHALL:
 1. Validate `object.metadata.labels` using label validation rules
-2. If `object.key.kind == "Schema"`: call `schema_registry.validate_and_compile(&data)`, then `store.update()`, then `schema_registry.insert()`, then `event_bus.publish()`
-3. If `object.key.kind != "Schema"`: call `schema_registry.get_validator(&key)`, validate data, then `store.update()`, then `event_bus.publish()`
+2. If `object.key.kind == "Schema"`: call `schema_registry.validate_and_compile(&spec)`, then `store.update()`, then `schema_registry.insert()`, then `event_bus.publish()`
+3. If `object.key.kind != "Schema"`: call `schema_registry.get_validator(&key)`, validate spec, then `store.update()`, then `event_bus.publish()`
 
 Label validation SHALL occur after schema validation but before store persistence. If label validation fails, an `AppError::InvalidLabel` error SHALL be returned and no persistence SHALL occur.
 

@@ -10,7 +10,7 @@ The system SHALL define a `ResourceKey` struct with `group`, `version`, and `kin
 - **THEN** they SHALL be equal and produce the same hash
 
 ### Requirement: StoredObject represents a persisted custom object
-The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `metadata: ObjectMeta`, `system: SystemMetadata`, and `data: UserData`. The `ObjectMeta` struct SHALL contain `name: String` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. The `SystemMetadata` struct SHALL contain `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `StoredObject` SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize`.
+The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `metadata: ObjectMeta`, `system: SystemMetadata`, and `spec: SpecData`. The `ObjectMeta` struct SHALL contain `name: String` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. The `SystemMetadata` struct SHALL contain `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `StoredObject` SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize`.
 
 #### Scenario: Object carries versioning timestamps
 - **WHEN** an object is created or updated
@@ -24,12 +24,12 @@ The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `
 
 #### Scenario: StoredObject serializes with correct field grouping
 - **WHEN** a `StoredObject` is serialized to JSON
-- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, and `data`
+- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, and `spec`
 - **AND** `metadata` contains `name`
 - **AND** `system` contains `resourceVersion`, `createdAt`, `updatedAt`
 
 #### Scenario: StoredObject deserializes from JSON
-- **WHEN** JSON with keys `key`, `metadata`, `system`, and `data` is deserialized
+- **WHEN** JSON with keys `key`, `metadata`, `system`, and `spec` is deserialized
 - **THEN** the resulting `StoredObject` has `metadata.name`, `system.resource_version`, `system.created_at`, and `system.updated_at` populated
 
 ### Requirement: ObjectMeta groups user-controlled metadata fields
@@ -62,15 +62,15 @@ The system SHALL define a `SystemMetadata` struct containing `resource_version: 
 - **WHEN** a `SystemMetadata` is serialized
 - **THEN** the JSON field names are `resourceVersion`, `createdAt`, `updatedAt`
 
-### Requirement: UserData wraps raw JSON for extensibility
-The system SHALL define a `UserData` named struct containing a single `value: serde_json::Value` field.
+### Requirement: SpecData wraps raw JSON for extensibility
+The system SHALL define a `SpecData` named struct containing a single `value: serde_json::Value` field. This replaces the previous `UserData` type.
 
 #### Scenario: Handler receives user JSON
 - **WHEN** a handler deserializes a request body
-- **THEN** the payload SHALL be wrapped in `UserData { value: ... }` before passing to the service layer
+- **THEN** the payload SHALL be wrapped in `SpecData { value: ... }` before passing to the service layer
 
 ### Requirement: Schema represented as StoredObject convention
-Schemas SHALL be represented as `StoredObject` with `kind="Schema"` in group `"kapi.io"`, not as a separate `Schema` struct. The `StoredObject.data` field SHALL hold a JSON Schema value for validation.
+Schemas SHALL be represented as `StoredObject` with `kind="Schema"` in group `"kapi.io"`, not as a separate `Schema` struct. The `StoredObject.spec` field SHALL hold a JSON Schema value for validation.
 
 #### Scenario: Schema struct removed
 - **WHEN** the codebase is compiled
@@ -79,7 +79,7 @@ Schemas SHALL be represented as `StoredObject` with `kind="Schema"` in group `"k
 
 #### Scenario: Schema registration stores the raw JSON Schema
 - **WHEN** a schema is registered
-- **THEN** a `StoredObject` with `kind="Schema"` stores the raw JSON Schema value in its `data` field for later validation
+- **THEN** a `StoredObject` with `kind="Schema"` stores the raw JSON Schema value in its `spec` field for later validation
 
 ### Requirement: Schema module scope
 `src/schema/mod.rs` SHALL only declare `pub mod meta_schema`.
