@@ -149,7 +149,7 @@ pub fn widget_schema() -> Value {
         "targetGroup": "example.io",
         "targetVersion": "v1",
         "targetKind": "Widget",
-        "jsonSchema": {
+        "specSchema": {
             "type": "object",
             "properties": {
                 "color": { "type": "string" },

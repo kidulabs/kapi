@@ -49,7 +49,7 @@ impl SchemaRegistry {
     }
 
     /// Validates `spec` against the meta-schema, parses it into `SchemaData`,
-    /// and compiles the json_schema into a validator.
+    /// and compiles the spec_schema into a validator.
     ///
     /// Returns the parsed [`SchemaData`], the compiled spec validator, and optionally
     /// a compiled status validator (if `statusSchema` is present in the spec).
@@ -61,7 +61,7 @@ impl SchemaRegistry {
     /// Returns `AppError::InvalidSchema` if:
     /// - The spec fails meta-schema validation
     /// - The spec cannot be parsed into `SchemaData`
-    /// - The json_schema cannot be compiled
+    /// - The spec_schema cannot be compiled
     /// - The status_schema cannot be compiled (when present)
     pub fn validate_and_compile(
         &self,
@@ -83,9 +83,9 @@ impl SchemaRegistry {
         let schema_data: SchemaData = serde_json::from_value(spec.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
-        // Compile json_schema
-        let validator = JsonSchemaValidator::compile(&schema_data.json_schema)
-            .map_err(|e| AppError::InvalidSchema(format!("failed to compile jsonSchema: {}", e)))
+        // Compile spec_schema
+        let validator = JsonSchemaValidator::compile(&schema_data.spec_schema)
+            .map_err(|e| AppError::InvalidSchema(format!("failed to compile specSchema: {}", e)))
             .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
 
         // Optionally compile status_schema
@@ -143,7 +143,7 @@ impl SchemaRegistry {
         let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.value)
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
-        let compiled = JsonSchemaValidator::compile(&schema_data.json_schema)
+        let compiled = JsonSchemaValidator::compile(&schema_data.spec_schema)
             .map_err(|e| AppError::StoredSchemaCompilationFailed {
                 schema_name: cache_key.clone(),
                 reason: e.to_string(),
@@ -260,7 +260,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": {
                     "color": { "type": "string" },
@@ -291,7 +291,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": { "color": { "type": "string" } }
             }
@@ -310,7 +310,7 @@ mod tests {
     #[tokio::test]
     async fn validate_and_compile_invalid_meta_schema_returns_invalid_schema() {
         let registry = make_registry();
-        // Missing required fields targetVersion, targetKind, jsonSchema
+        // Missing required fields targetVersion, targetKind, specSchema
         let spec = json!({ "targetGroup": "example.io" });
 
         let result = registry.validate_and_compile(&spec);
@@ -324,7 +324,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "not-a-real-type" }
+            "specSchema": { "type": "not-a-real-type" }
         });
 
         let result = registry.validate_and_compile(&spec);
@@ -393,7 +393,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "not-a-real-type" }
+            "specSchema": { "type": "not-a-real-type" }
         });
         registry
             .store
@@ -508,7 +508,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" },
+            "specSchema": { "type": "object" },
             "statusSchema": { "type": "object" }
         });
         registry
@@ -544,7 +544,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
         registry
             .store

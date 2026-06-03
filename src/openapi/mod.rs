@@ -173,7 +173,7 @@ mod tests {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
-            json_schema: serde_json::json!({
+            spec_schema: serde_json::json!({
                 "type": "object",
                 "properties": {
                     "color": { "type": "string" },
@@ -294,7 +294,7 @@ mod tests {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
-            json_schema: serde_json::json!({ "type": "object" }),
+            spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
@@ -317,7 +317,7 @@ mod tests {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
-            json_schema: serde_json::json!({ "type": "object" }),
+            spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
@@ -338,7 +338,7 @@ mod tests {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
-            json_schema: serde_json::json!({ "type": "object" }),
+            spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
@@ -362,7 +362,7 @@ mod tests {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
-            json_schema: serde_json::json!({ "type": "object" }),
+            spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
@@ -385,7 +385,7 @@ mod tests {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
-            json_schema: serde_json::json!({ "type": "object" }),
+            spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
@@ -406,7 +406,7 @@ mod tests {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
-            json_schema: serde_json::json!({ "type": "object" }),
+            spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
@@ -431,7 +431,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": {
                     "color": { "type": "string" }
@@ -483,7 +483,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
 
         // Register schema → build spec → verify paths exist

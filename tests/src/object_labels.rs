@@ -143,7 +143,7 @@ pub async fn test_create_schema_with_labels(app: &TestApp) -> Result<(), String>
         "targetGroup": "labels-test.io",
         "targetVersion": "v1",
         "targetKind": "Gadget",
-        "jsonSchema": {
+        "specSchema": {
             "type": "object",
             "properties": {
                 "color": { "type": "string" }

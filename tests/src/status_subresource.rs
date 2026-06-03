@@ -10,7 +10,7 @@ fn widget_schema_with_status() -> Value {
         "targetGroup": "example.io",
         "targetVersion": "v1",
         "targetKind": "Widget",
-        "jsonSchema": {
+        "specSchema": {
             "type": "object",
             "properties": {
                 "color": { "type": "string" },
@@ -457,7 +457,7 @@ pub async fn test_invalid_status_schema_rejected(app: &TestApp) -> Result<(), St
                 "targetGroup": "example.io",
                 "targetVersion": "v1",
                 "targetKind": "Widget",
-                "jsonSchema": {
+                "specSchema": {
                     "type": "object",
                     "properties": {
                         "color": { "type": "string" }
@@ -524,7 +524,7 @@ pub async fn test_meta_schema_rejects_invalid_status_schema_type(app: &TestApp) 
                 "targetGroup": "example.io",
                 "targetVersion": "v1",
                 "targetKind": "Widget",
-                "jsonSchema": {
+                "specSchema": {
                     "type": "object",
                     "properties": {
                         "color": { "type": "string" }
@@ -544,7 +544,7 @@ pub async fn test_meta_schema_rejects_invalid_status_schema_type(app: &TestApp) 
                 "targetGroup": "example.io",
                 "targetVersion": "v1",
                 "targetKind": "Widget",
-                "jsonSchema": {
+                "specSchema": {
                     "type": "object",
                     "properties": {
                         "color": { "type": "string" }

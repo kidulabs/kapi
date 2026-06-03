@@ -42,7 +42,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
     "targetGroup": "example.io",
     "targetVersion": "v1",
     "targetKind": "Widget",
-    "jsonSchema": {
+    "specSchema": {
       "type": "object",
       "properties": {
         "color": { "type": "string" },
@@ -266,7 +266,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
     "targetGroup": "example.io",
     "targetVersion": "v1",
     "targetKind": "Widget",
-    "jsonSchema": {
+    "specSchema": {
       "type": "object",
       "properties": {
         "color": { "type": "string" },
@@ -381,7 +381,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
     \"targetGroup\": \"test-$TEST_RUN.io\",
     \"targetVersion\": \"v1\",
     \"targetKind\": \"Gadget\",
-    \"jsonSchema\": {
+    \"specSchema\": {
       \"type\": \"object\",
       \"properties\": {
         \"name\": { \"type\": \"string\" }
@@ -551,7 +551,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
     "targetGroup": "example.io",
     "targetVersion": "v1",
     "targetKind": "Widget",
-    "jsonSchema": {
+    "specSchema": {
       "type": "object",
       "properties": { "color": { "type": "string" }, "size": { "type": "integer" } },
       "required": ["color", "size"]
@@ -634,7 +634,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
     "targetGroup": "example.io",
     "targetVersion": "v1",
     "targetKind": "Widget",
-    "jsonSchema": {
+    "specSchema": {
       "type": "object",
       "properties": {
         "color": { "type": "string" },
@@ -947,7 +947,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
     "targetGroup": "example.io",
     "targetVersion": "v1",
     "targetKind": "Widget",
-    "jsonSchema": {
+    "specSchema": {
       "type": "object",
       "properties": {
         "color": { "type": "string" },
@@ -1241,7 +1241,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
     "targetGroup": "test.io",
     "targetVersion": "v1",
     "targetKind": "Gadget",
-    "jsonSchema": {
+    "specSchema": {
       "type": "object",
       "properties": {
         "name": { "type": "string" }

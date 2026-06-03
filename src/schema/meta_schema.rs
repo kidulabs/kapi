@@ -69,16 +69,16 @@ impl SchemaValidator for JsonSchemaValidator {
 /// Meta-schema JSON constant defining valid Schema registration shape.
 ///
 /// Uses Draft 2020-12 with `unevaluatedProperties: false` to reject unknown fields.
-/// Required fields: targetGroup, targetVersion, targetKind, jsonSchema.
+/// Required fields: targetGroup, targetVersion, targetKind, specSchema.
 pub const META_SCHEMA_JSON: &str = r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "type": "object",
-  "required": ["targetGroup", "targetVersion", "targetKind", "jsonSchema"],
+  "required": ["targetGroup", "targetVersion", "targetKind", "specSchema"],
   "properties": {
     "targetGroup": { "type": "string", "minLength": 1 },
     "targetVersion": { "type": "string", "minLength": 1 },
     "targetKind": { "type": "string", "minLength": 1 },
-    "jsonSchema": { "type": "object" },
+    "specSchema": { "type": "object" },
     "statusSchema": { "type": "object" }
   },
   "unevaluatedProperties": false
@@ -109,7 +109,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": {
                     "color": { "type": "string" }
@@ -126,7 +126,7 @@ mod tests {
         let missing_target_group = json!({
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
         assert!(!validator.is_valid(&missing_target_group));
         let errors = validator.validate(&missing_target_group);
@@ -141,23 +141,23 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" },
+            "specSchema": { "type": "object" },
             "unknownField": "should be rejected"
         });
         assert!(!validator.is_valid(&with_unknown_field));
     }
 
-    // T10: jsonSchema as non-object fails meta-schema validation
+    // T10: specSchema as non-object fails meta-schema validation
     #[test]
-    fn json_schema_as_non_object_fails_meta_schema() {
+    fn spec_schema_as_non_object_fails_meta_schema() {
         let validator = compile_meta_schema().expect("meta-schema should compile");
-        let json_schema_as_string = json!({
+        let spec_schema_as_string = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": "not an object"
+            "specSchema": "not an object"
         });
-        assert!(!validator.is_valid(&json_schema_as_string));
+        assert!(!validator.is_valid(&spec_schema_as_string));
     }
 
     // T11: statusSchema as optional property — valid with statusSchema
@@ -168,7 +168,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": {
                     "color": { "type": "string" }
@@ -192,7 +192,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" },
+            "specSchema": { "type": "object" },
             "statusSchema": "not an object"
         });
         assert!(!validator.is_valid(&invalid_payload));
@@ -209,7 +209,7 @@ mod tests {
             "targetGroup": "x",
             "targetVersion": "y",
             "targetKind": "z",
-            "jsonSchema": {}
+            "specSchema": {}
         });
         assert!(validator.is_valid(&valid));
         let invalid = json!({});

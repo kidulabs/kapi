@@ -10,7 +10,7 @@ pub async fn test_valid_schema_accepted(app: &TestApp) -> Result<(), String> {
         "targetGroup": "valid.io",
         "targetVersion": "v1",
         "targetKind": "ValidThing",
-        "jsonSchema": {
+        "specSchema": {
             "type": "object",
             "properties": {
                 "name": { "type": "string" }
@@ -24,14 +24,14 @@ pub async fn test_valid_schema_accepted(app: &TestApp) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_invalid_json_schema_rejected(app: &TestApp) -> Result<(), String> {
+pub async fn test_invalid_spec_schema_rejected(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     let invalid_schema = json!({
         "targetGroup": "bad.io",
         "targetVersion": "v1",
         "targetKind": "BadThing",
-        "jsonSchema": {
+        "specSchema": {
             "type": "not-a-real-type"
         }
     });
@@ -48,7 +48,7 @@ pub async fn test_missing_required_fields_rejected(app: &TestApp) -> Result<(), 
     let missing_target_kind = json!({
         "targetGroup": "missing.io",
         "targetVersion": "v1",
-        "jsonSchema": {
+        "specSchema": {
             "type": "object"
         }
     });

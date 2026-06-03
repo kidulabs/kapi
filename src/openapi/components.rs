@@ -205,13 +205,13 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "targetGroup": { "type": "string" },
                     "targetVersion": { "type": "string" },
                     "targetKind": { "type": "string" },
-                    "jsonSchema": {},
+                    "specSchema": {},
                     "statusSchema": {
                         "type": "object",
                         "description": "Optional JSON Schema for validating the status subresource. When present, enables GET/PUT /status endpoints for objects of this kind."
                     }
                 },
-                "required": ["targetGroup", "targetVersion", "targetKind", "jsonSchema"]
+                "required": ["targetGroup", "targetVersion", "targetKind", "specSchema"]
             }),
         ),
     ]
@@ -219,7 +219,7 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
 
 /// Builds the spec component schema for a registered kind.
 ///
-/// Wraps the user's `jsonSchema` as an OpenAPI Schema Object.
+/// Wraps the user's `specSchema` as an OpenAPI Schema Object.
 pub(crate) fn build_kind_spec_component(
     schema_data: &SchemaData,
     comp_name: &str,
@@ -227,7 +227,7 @@ pub(crate) fn build_kind_spec_component(
     let schema = json!({
         "type": "object",
         "properties": {
-            "value": schema_data.json_schema
+            "value": schema_data.spec_schema
         },
         "required": ["value"]
     });

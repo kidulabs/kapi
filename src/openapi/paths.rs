@@ -594,7 +594,7 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
     json!({
         "allOf": [
             metadata_part,
-            schema_data.json_schema
+            schema_data.spec_schema
         ]
     })
 }

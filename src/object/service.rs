@@ -155,7 +155,7 @@ impl ObjectService {
     ///
     /// For Schema objects:
     /// 1. Validate against meta-schema
-    /// 2. Compile the jsonSchema
+    /// 2. Compile the specSchema
     /// 3. Cache the compiled validator
     /// 4. Store and publish Added event
     ///
@@ -453,7 +453,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": {
                     "color": { "type": "string" },
@@ -484,7 +484,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
 
         let result = service
@@ -535,17 +535,17 @@ mod tests {
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
 
-    // T21: Create Schema with uncompileable jsonSchema → InvalidSchema, nothing stored
+    // T21: Create Schema with uncompileable specSchema → InvalidSchema, nothing stored
     #[tokio::test]
-    async fn create_schema_uncompileable_json_schema_returns_error() {
+    async fn create_schema_uncompileable_spec_schema_returns_error() {
         let service = make_service();
         let schema_key = schema_key();
-        // jsonSchema with invalid content (not a valid JSON Schema)
+        // specSchema with invalid content (not a valid JSON Schema)
         let invalid_schema = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "not-a-real-type" }
+            "specSchema": { "type": "not-a-real-type" }
         });
 
         // Name would be generated as "Widget.example.io" by the handler
@@ -559,7 +559,7 @@ mod tests {
                 invalid_schema,
             )
             .await;
-        // This should fail during compilation of jsonSchema
+        // This should fail during compilation of specSchema
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
 
@@ -686,7 +686,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
         service
             .create(
@@ -784,7 +784,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
         service
             .create(
@@ -821,7 +821,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
         service
             .create(
@@ -853,7 +853,7 @@ mod tests {
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
 
         let result = service
@@ -879,7 +879,7 @@ mod tests {
         let schema_data = json!({
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "object" }
+            "specSchema": { "type": "object" }
         });
 
         let result = service
@@ -908,7 +908,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": { "color": { "type": "string" } }
             }
@@ -977,7 +977,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": {
                     "color": { "type": "string" },
@@ -1039,7 +1039,7 @@ mod tests {
         assert!(second.is_ok());
     }
 
-    // T33: Stored schema with invalid jsonSchema returns StoredSchemaCompilationFailed
+    // T33: Stored schema with invalid specSchema returns StoredSchemaCompilationFailed
     #[tokio::test]
     async fn stored_schema_invalid_jsonschema_returns_compilation_failed() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
@@ -1047,13 +1047,13 @@ mod tests {
         let meta_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        // Bypass service to store a schema with invalid jsonSchema directly
+        // Bypass service to store a schema with invalid specSchema directly
         let schema_key = schema_key();
         let invalid_schema = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": { "type": "not-a-real-type" }
+            "specSchema": { "type": "not-a-real-type" }
         });
         store
             .create(
@@ -1177,7 +1177,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {
+            "specSchema": {
                 "type": "object",
                 "properties": {
                     "color": { "type": "string" },

@@ -123,7 +123,7 @@ pub struct SchemaData {
     pub target_group: String,
     pub target_version: String,
     pub target_kind: String,
-    pub json_schema: serde_json::Value,
+    pub spec_schema: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_schema: Option<serde_json::Value>,
 }
@@ -683,7 +683,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {"type": "object"},
+            "specSchema": {"type": "object"},
             "statusSchema": {"type": "object", "properties": {"phase": {"type": "string"}}}
         });
         let data: SchemaData = serde_json::from_value(json).unwrap();
@@ -697,7 +697,7 @@ mod tests {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
-            "jsonSchema": {"type": "object"}
+            "specSchema": {"type": "object"}
         });
         let data: SchemaData = serde_json::from_value(json).unwrap();
         assert!(data.status_schema.is_none());
@@ -709,7 +709,7 @@ mod tests {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
-            json_schema: json!({"type": "object"}),
+            spec_schema: json!({"type": "object"}),
             status_schema: Some(json!({"type": "object"})),
         };
         let serialized = serde_json::to_string(&data).unwrap();

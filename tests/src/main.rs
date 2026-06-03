@@ -185,8 +185,8 @@ async fn main() {
             schema_validation::test_valid_schema_accepted
         );
         run_test!(
-            "invalid_json_schema_rejected",
-            schema_validation::test_invalid_json_schema_rejected
+            "invalid_spec_schema_rejected",
+            schema_validation::test_invalid_spec_schema_rejected
         );
         run_test!(
             "missing_required_fields_rejected",
