@@ -10,7 +10,7 @@ The system SHALL define a `ResourceKey` struct with `group`, `version`, and `kin
 - **THEN** they SHALL be equal and produce the same hash
 
 ### Requirement: StoredObject represents a persisted custom object
-The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `metadata: ObjectMeta`, `system: SystemMetadata`, and `spec: SpecData`. The `ObjectMeta` struct SHALL contain `name: String` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. The `SystemMetadata` struct SHALL contain `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `StoredObject` SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize`.
+The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `metadata: ObjectMeta`, `system: SystemMetadata`, `spec: SpecData`, and `status: Option<SpecData>`. The `status` field SHALL be `None` for kinds without a `statusSchema` and `Some(SpecData)` for kinds with one. The `ObjectMeta` struct SHALL contain `name: String` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. The `SystemMetadata` struct SHALL contain `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `StoredObject` SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize`.
 
 #### Scenario: Object carries versioning timestamps
 - **WHEN** an object is created or updated
@@ -24,13 +24,31 @@ The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `
 
 #### Scenario: StoredObject serializes with correct field grouping
 - **WHEN** a `StoredObject` is serialized to JSON
-- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, and `spec`
+- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, `spec`, and `status`
 - **AND** `metadata` contains `name`
 - **AND** `system` contains `resourceVersion`, `createdAt`, `updatedAt`
+
+#### Scenario: StoredObject serializes with status field
+- **WHEN** a `StoredObject` with `status: Some(SpecData { value: {"phase": "Running"} })` is serialized to JSON
+- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, `spec`, and `status`
+- **AND** `status` contains `{"value": {"phase": "Running"}}`
+
+#### Scenario: StoredObject serializes with null status
+- **WHEN** a `StoredObject` with `status: None` is serialized to JSON
+- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, `spec`, and `status`
+- **AND** `status` is `null`
 
 #### Scenario: StoredObject deserializes from JSON
 - **WHEN** JSON with keys `key`, `metadata`, `system`, and `spec` is deserialized
 - **THEN** the resulting `StoredObject` has `metadata.name`, `system.resource_version`, `system.created_at`, and `system.updated_at` populated
+
+#### Scenario: StoredObject deserializes with status
+- **WHEN** JSON with keys `key`, `metadata`, `system`, `spec`, and `status` is deserialized
+- **THEN** the resulting `StoredObject` has `status` populated as `Some(SpecData)`
+
+#### Scenario: StoredObject deserializes with null status
+- **WHEN** JSON with `status: null` is deserialized
+- **THEN** the resulting `StoredObject` has `status` as `None`
 
 ### Requirement: ObjectMeta groups user-controlled metadata fields
 `ObjectMeta` SHALL contain a `name` field of type `String` and a `labels` field of type `HashMap<String, String>`. Both fields SHALL use `camelCase` serialization via `#[serde(rename_all = "camelCase")]`.
@@ -68,6 +86,17 @@ The system SHALL define a `SpecData` named struct containing a single `value: se
 #### Scenario: Handler receives user JSON
 - **WHEN** a handler deserializes a request body
 - **THEN** the payload SHALL be wrapped in `SpecData { value: ... }` before passing to the service layer
+
+### Requirement: SchemaData includes optional statusSchema
+The system SHALL define `SchemaData` with fields `target_group: String`, `target_version: String`, `target_kind: String`, `json_schema: serde_json::Value`, and `status_schema: Option<serde_json::Value>`. The `status_schema` field SHALL use `#[serde(rename_all = "camelCase")]` serialization, producing `statusSchema` in JSON.
+
+#### Scenario: SchemaData with statusSchema serializes correctly
+- **WHEN** a `SchemaData` with `status_schema: Some({...})` is serialized
+- **THEN** the JSON contains `"statusSchema": {...}` alongside `targetGroup`, `targetVersion`, `targetKind`, and `jsonSchema`
+
+#### Scenario: SchemaData without statusSchema serializes correctly
+- **WHEN** a `SchemaData` with `status_schema: None` is serialized
+- **THEN** the JSON does not contain a `statusSchema` key (or it is `null`)
 
 ### Requirement: Schema represented as StoredObject convention
 Schemas SHALL be represented as `StoredObject` with `kind="Schema"` in group `"kapi.io"`, not as a separate `Schema` struct. The `StoredObject.spec` field SHALL hold a JSON Schema value for validation.
@@ -119,11 +148,15 @@ The system SHALL define `ContinueToken(pub String)` to prevent accidental mixing
 - **THEN** it SHALL be wrapped in `ContinueToken` before returning to the client
 
 ### Requirement: WatchEvent supports real-time change notifications
-The system SHALL define `WatchEventType` as an enum with `Added`, `Modified`, and `Deleted` variants, and `WatchEvent` as a struct with `event_type: WatchEventType` and `object: StoredObject`.
+The system SHALL define `WatchEventType` as an enum with `Added`, `Modified`, `Deleted`, and `StatusModified` variants, and `WatchEvent` as a struct with `event_type: WatchEventType` and `object: StoredObject`.
 
 #### Scenario: Watch stream receives events
-- **WHEN** an object is created, updated, or deleted
+- **WHEN** an object is created, updated, deleted, or has its status updated
 - **THEN** watchers SHALL receive a `WatchEvent` with the corresponding `WatchEventType` and the affected `StoredObject`
+
+#### Scenario: StatusModified variant exists
+- **WHEN** the `WatchEventType` enum is compiled
+- **THEN** it SHALL have variants `Added`, `Modified`, `Deleted`, and `StatusModified`
 
 ### Requirement: WatchFilter and FieldSelector types for watch event filtering
 The system SHALL define `WatchFilter` and `FieldSelector` enums in `src/object/types.rs`. `WatchFilter` SHALL have variants `All` and `FieldSelector(FieldSelector)`. `FieldSelector` SHALL have variant `NameEquals(String)`. Both SHALL derive `Debug` and `Clone`. `WatchFilter` SHALL implement a `matches(&self, event: &WatchEvent) -> bool` method.

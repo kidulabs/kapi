@@ -150,10 +150,34 @@ The delete handler SHALL extract path parameters and call `ObjectService::delete
 - **WHEN** a Schema is DELETEd and objects of the target kind exist
 - **THEN** the response is 409 with `SchemaHasObjects` error including the kind
 
+### Requirement: GET /status handler
+The system SHALL provide a `get_status` handler for `GET /apis/{group}/{version}/{kind}/{name}/status` that extracts path parameters, calls `ObjectService::get_status`, and returns the status value as JSON. If the kind does not have a `statusSchema`, the handler SHALL return `404 Not Found` with `StatusSubresourceNotEnabled`.
+
+#### Scenario: Get status for kind with statusSchema
+- **WHEN** a GET request is made to `/status` for a kind with `statusSchema`
+- **THEN** the handler returns `200 OK` with the status value as JSON
+
+#### Scenario: Get status for kind without statusSchema
+- **WHEN** a GET request is made to `/status` for a kind without `statusSchema`
+- **THEN** the handler returns `404 Not Found` with `StatusSubresourceNotEnabled` error
+
+### Requirement: PUT /status handler
+The system SHALL provide an `update_status` handler for `PUT /apis/{group}/{version}/{kind}/{name}/status` that extracts path parameters, deserializes the request body as JSON, extracts the `status` field, and calls `ObjectService::update_status`. The handler SHALL return `200 OK` with the full `StoredObject` on success. If the kind does not have a `statusSchema`, the handler SHALL return `404 Not Found` with `StatusSubresourceNotEnabled`.
+
+#### Scenario: Update status for kind with statusSchema
+- **WHEN** a PUT request is made to `/status` with a valid status body for a kind with `statusSchema`
+- **THEN** the handler returns `200 OK` with the full `StoredObject`
+
+#### Scenario: Update status for kind without statusSchema
+- **WHEN** a PUT request is made to `/status` for a kind without `statusSchema`
+- **THEN** the handler returns `404 Not Found` with `StatusSubresourceNotEnabled` error
+
 ### Requirement: Routes are composed under /apis/{group}/{version}
 The router SHALL define:
 - `GET/POST /apis/{group}/{version}/{kind}` → list/create handlers
 - `GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name}` → get/update/delete handlers
+- `GET /apis/{group}/{version}/{kind}/{name}/status` → `get_status` handler
+- `PUT /apis/{group}/{version}/{kind}/{name}/status` → `update_status` handler
 
 Path parameters `group`, `version`, `kind`, and `name` SHALL be extracted using Axum's `Path` extractor.
 

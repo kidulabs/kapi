@@ -5,22 +5,34 @@ Define the meta-schema constant and compilation function that validates Schema r
 ## Requirements
 
 ### Requirement: Meta-schema JSON constant defines valid Schema registration shape
-The system SHALL define a hardcoded JSON Schema constant (`META_SCHEMA_JSON`) using Draft 2020-12 that requires four fields: `targetGroup` (string, non-empty), `targetVersion` (string, non-empty), `targetKind` (string, non-empty), and `jsonSchema` (object). The meta-schema SHALL reject unknown fields via `unevaluatedProperties: false`.
+The system SHALL define a hardcoded JSON Schema constant (`META_SCHEMA_JSON`) using Draft 2020-12 that requires four fields: `targetGroup` (string, non-empty), `targetVersion` (string, non-empty), `targetKind` (string, non-empty), and `jsonSchema` (object), plus an optional `statusSchema` property of type `"object"`. The meta-schema SHALL reject unknown fields via `unevaluatedProperties: false`, so only `targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`, and `statusSchema` are allowed.
 
 #### Scenario: Valid Schema registration passes meta-schema
-- **WHEN** a payload has all four required fields with correct types
+- **WHEN** a payload has all required fields with correct types
 - **THEN** meta-schema validation succeeds
 
 #### Scenario: Missing field fails meta-schema
 - **WHEN** a payload is missing `targetGroup`, `targetVersion`, `targetKind`, or `jsonSchema`
 - **THEN** meta-schema validation fails with a path-specific error
 
-#### Scenario: Unknown field fails meta-schema
-- **WHEN** a payload contains fields beyond the four required ones
+#### Scenario: Unknown field (other than statusSchema) fails meta-schema
+- **WHEN** a payload contains fields beyond the five allowed ones (four required + optional `statusSchema`)
 - **THEN** meta-schema validation fails due to `unevaluatedProperties: false`
 
 #### Scenario: Wrong type fails meta-schema
 - **WHEN** `jsonSchema` is not an object (e.g., a string or array)
+- **THEN** meta-schema validation fails
+
+#### Scenario: Schema registration with statusSchema passes meta-schema validation
+- **WHEN** a Schema registration payload includes `statusSchema` as a valid JSON Schema object
+- **THEN** meta-schema validation passes
+
+#### Scenario: Schema registration without statusSchema passes meta-schema validation
+- **WHEN** a Schema registration payload does not include `statusSchema`
+- **THEN** meta-schema validation passes (it is optional)
+
+#### Scenario: Schema registration with invalid statusSchema type fails
+- **WHEN** a Schema registration payload includes `statusSchema` as a non-object type (e.g., string)
 - **THEN** meta-schema validation fails
 
 ### Requirement: Meta-schema compilation returns a JsonSchemaValidator (implements SchemaValidator)
