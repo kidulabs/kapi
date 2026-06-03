@@ -78,7 +78,8 @@ pub const META_SCHEMA_JSON: &str = r#"{
     "targetGroup": { "type": "string", "minLength": 1 },
     "targetVersion": { "type": "string", "minLength": 1 },
     "targetKind": { "type": "string", "minLength": 1 },
-    "jsonSchema": { "type": "object" }
+    "jsonSchema": { "type": "object" },
+    "statusSchema": { "type": "object" }
   },
   "unevaluatedProperties": false
 }"#;
@@ -157,6 +158,44 @@ mod tests {
             "jsonSchema": "not an object"
         });
         assert!(!validator.is_valid(&json_schema_as_string));
+    }
+
+    // T11: statusSchema as optional property — valid with statusSchema
+    #[test]
+    fn valid_schema_with_status_schema_passes_meta_schema() {
+        let validator = compile_meta_schema().expect("meta-schema should compile");
+        let valid_payload = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": {
+                "type": "object",
+                "properties": {
+                    "color": { "type": "string" }
+                }
+            },
+            "statusSchema": {
+                "type": "object",
+                "properties": {
+                    "phase": { "type": "string" }
+                }
+            }
+        });
+        assert!(validator.is_valid(&valid_payload));
+    }
+
+    // T12: statusSchema as non-object fails meta-schema validation
+    #[test]
+    fn status_schema_as_non_object_fails_meta_schema() {
+        let validator = compile_meta_schema().expect("meta-schema should compile");
+        let invalid_payload = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": { "type": "object" },
+            "statusSchema": "not an object"
+        });
+        assert!(!validator.is_valid(&invalid_payload));
     }
 
     // T11: compile_meta_schema() returns a working validator

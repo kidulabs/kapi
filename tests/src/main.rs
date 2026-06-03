@@ -1,6 +1,6 @@
 use kapi_tests::{
     TestApp, all_test_stores, list_filtering, object_crud, object_labels, optimistic_concurrency,
-    schema_deletion, schema_validation, watch_events,
+    schema_deletion, schema_validation, status_subresource, watch_events,
 };
 
 #[tokio::main]
@@ -201,6 +201,67 @@ async fn main() {
         run_test!(
             "update_wrong_rv",
             optimistic_concurrency::test_update_wrong_rv
+        );
+
+        println!();
+
+        // Status subresource tests
+        println!();
+        run_test!(
+            "status_update_with_schema",
+            status_subresource::test_status_subresource_update
+        );
+        run_test!(
+            "status_not_enabled",
+            status_subresource::test_status_subresource_not_enabled
+        );
+        run_test!(
+            "status_invalid_data",
+            status_subresource::test_status_subresource_invalid_data
+        );
+        run_test!(
+            "concurrent_spec_and_status",
+            status_subresource::test_concurrent_spec_and_status_update
+        );
+        run_test!(
+            "create_ignores_status",
+            status_subresource::test_create_ignores_status_in_body
+        );
+        run_test!(
+            "status_update_nonexistent",
+            status_subresource::test_status_update_nonexistent_object
+        );
+        run_test!(
+            "status_modified_event",
+            status_subresource::test_status_update_publishes_status_modified_event
+        );
+        run_test!(
+            "status_preserves_spec",
+            status_subresource::test_status_update_preserves_spec
+        );
+        run_test!(
+            "status_bumps_rv",
+            status_subresource::test_status_update_bumps_resource_version
+        );
+        run_test!(
+            "invalid_status_schema_rejected",
+            status_subresource::test_invalid_status_schema_rejected
+        );
+        run_test!(
+            "get_status_null_when_not_set",
+            status_subresource::test_get_status_returns_null_when_not_set
+        );
+        run_test!(
+            "meta_schema_rejects_invalid_status_schema",
+            status_subresource::test_meta_schema_rejects_invalid_status_schema_type
+        );
+        run_test!(
+            "status_replaces_not_merges",
+            status_subresource::test_status_update_replaces_not_merges
+        );
+        run_test!(
+            "spec_update_modified_event",
+            status_subresource::test_spec_update_publishes_modified_not_status_modified
         );
 
         println!();

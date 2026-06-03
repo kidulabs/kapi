@@ -67,6 +67,7 @@ impl ObjectStore for InMemoryStore {
                 updated_at: now,
             },
             spec: SpecData { value: spec },
+            status: None,
         };
 
         self.objects.insert(entry, object.clone());
@@ -176,6 +177,27 @@ impl ObjectStore for InMemoryStore {
 
     async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError> {
         Ok(self.objects.iter().any(|r| r.key().0 == *key))
+    }
+
+    async fn update_status(
+        &self,
+        key: &ResourceKey,
+        name: &str,
+        status: Value,
+    ) -> Result<StoredObject, AppError> {
+        let entry = (key.clone(), name.to_string());
+        let mut guard = self
+            .objects
+            .get_mut(&entry)
+            .ok_or_else(|| AppError::NotFound {
+                what: "object".to_string(),
+                identifier: format!("{}/{}", key.kind, name),
+            })?;
+
+        guard.status = Some(SpecData { value: status });
+        guard.system.resource_version = self.next_version();
+        guard.system.updated_at = Self::now();
+        Ok(guard.clone())
     }
 }
 
@@ -450,6 +472,7 @@ mod tests {
             spec: SpecData {
                 value: json!({"x": 2}),
             },
+            status: None,
         };
 
         let updated = store.update(object).await.unwrap();
@@ -488,6 +511,7 @@ mod tests {
             spec: SpecData {
                 value: json!({"x": 2}),
             },
+            status: None,
         };
 
         let err = store.update(object).await.unwrap_err();
@@ -519,6 +543,7 @@ mod tests {
             spec: SpecData {
                 value: json!({"x": 1}),
             },
+            status: None,
         };
 
         let err = store.update(object).await.unwrap_err();
@@ -929,5 +954,127 @@ mod tests {
             kind: "Other".to_string(),
         };
         assert!(!store.exists(&other_key).await.unwrap());
+    }
+
+    // --- update_status tests ---
+
+    #[tokio::test]
+    async fn update_status_success() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        let created = store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+        assert!(created.status.is_none());
+
+        let updated = store
+            .update_status(&key, "my-widget", json!({"phase": "Running"}))
+            .await
+            .unwrap();
+        assert!(updated.status.is_some());
+        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+        assert!(updated.system.resource_version > v1);
+        // Spec should be unchanged
+        assert_eq!(updated.spec.value, json!({"color": "blue"}));
+    }
+
+    #[tokio::test]
+    async fn update_status_not_found() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        let err = store
+            .update_status(&key, "nonexistent", json!({"phase": "Running"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn update_status_replaces_existing_status() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .update_status(&key, "my-widget", json!({"phase": "Pending"}))
+            .await
+            .unwrap();
+
+        let updated = store
+            .update_status(&key, "my-widget", json!({"phase": "Running"}))
+            .await
+            .unwrap();
+        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+    }
+
+    #[tokio::test]
+    async fn update_status_bumps_resource_version() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        let created = store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+
+        let updated = store
+            .update_status(&key, "my-widget", json!({"phase": "Running"}))
+            .await
+            .unwrap();
+        assert!(updated.system.resource_version > v1);
+    }
+
+    #[tokio::test]
+    async fn update_status_preserves_spec() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await
+            .unwrap();
+
+        let updated = store
+            .update_status(&key, "my-widget", json!({"phase": "Running"}))
+            .await
+            .unwrap();
+        assert_eq!(updated.spec.value, json!({"color": "blue", "size": 10}));
     }
 }

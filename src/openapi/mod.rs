@@ -180,6 +180,7 @@ mod tests {
                     "size": { "type": "integer" }
                 }
             }),
+            status_schema: None,
         };
         let (name, schema) = build_kind_spec_component(&schema_data, "WidgetExampleIo");
         assert_eq!(name, "WidgetExampleIo");
@@ -294,6 +295,7 @@ mod tests {
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
             json_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let path_map: std::collections::HashMap<&str, &Value> =
@@ -316,6 +318,7 @@ mod tests {
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
             json_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, collection) = paths
@@ -336,6 +339,7 @@ mod tests {
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
             json_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, collection) = paths
@@ -359,6 +363,7 @@ mod tests {
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
             json_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, collection) = paths
@@ -381,6 +386,7 @@ mod tests {
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
             json_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, collection) = paths
@@ -401,6 +407,7 @@ mod tests {
             target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
             json_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, item) = paths

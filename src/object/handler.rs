@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use crate::error::AppError;
 use crate::object::types::{
     ContinueToken, FieldSelector, LabelRequirement, LabelSelector, ListOptions, ObjectMeta,
-    StoredObject, WatchFilter,
+    StoredObject, WatchFilter, SpecData,
 };
 use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
@@ -133,10 +133,11 @@ pub async fn create(
         ObjectMeta { name, labels }
     };
 
-    // Remove metadata from body before passing to service
-    // (metadata is a kapi-level concern, not part of the schema/object data)
+    // Remove metadata and status from body before passing to service
+    // (metadata is a kapi-level concern, status is managed via the /status subresource)
     if let Some(obj) = body.as_object_mut() {
         obj.remove("metadata");
+        obj.remove("status");
     }
 
     let key = ResourceKey {
@@ -432,6 +433,54 @@ pub async fn delete(
 
     let deleted = state.object_service().delete(key, path.name).await?;
     Ok(Json(deleted))
+}
+
+/// Gets the status subresource of an object.
+///
+/// Extracts path parameters, calls `object_service.get_status()`,
+/// and returns the status value as JSON. Returns 404 if status subresource
+/// is not enabled for this kind.
+pub async fn get_status(
+    State(state): State<AppState>,
+    Path(path): Path<ObjectNamePath>,
+) -> Result<Json<Option<SpecData>>, AppError> {
+    let key = ResourceKey {
+        group: path.group,
+        version: path.version,
+        kind: path.kind,
+    };
+
+    let status = state.object_service().get_status(key, path.name).await?;
+    Ok(Json(status))
+}
+
+/// Updates the status subresource of an object.
+///
+/// Extracts path parameters, deserializes body, extracts the `status` field,
+/// calls `object_service.update_status()`, and returns the full `StoredObject`.
+/// Returns 404 if status subresource is not enabled for this kind.
+pub async fn update_status(
+    State(state): State<AppState>,
+    Path(path): Path<ObjectNamePath>,
+    Json(body): Json<Value>,
+) -> Result<Json<StoredObject>, AppError> {
+    let key = ResourceKey {
+        group: path.group,
+        version: path.version,
+        kind: path.kind,
+    };
+
+    // Extract status field from body
+    let status = body
+        .get("status")
+        .cloned()
+        .unwrap_or(Value::Object(serde_json::Map::new()));
+
+    let updated = state
+        .object_service()
+        .update_status(key, path.name, status)
+        .await?;
+    Ok(Json(updated))
 }
 
 #[cfg(test)]

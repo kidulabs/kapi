@@ -226,6 +226,7 @@ mod tests {
                 spec: SpecData {
                     value: serde_json::json!({"type": "object"}),
                 },
+                status: None,
             },
         }
     }

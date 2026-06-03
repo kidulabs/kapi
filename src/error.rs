@@ -42,6 +42,10 @@ pub enum AppError {
     #[error("schema has objects: kind={kind}")]
     SchemaHasObjects { kind: String },
 
+    // Status subresource is not enabled for this kind (no statusSchema defined)
+    #[error("status subresource not enabled for kind '{kind}'")]
+    StatusSubresourceNotEnabled { kind: String },
+
     #[error("stored schema '{schema_name}' compilation failed: {reason}")]
     StoredSchemaCompilationFailed { schema_name: String, reason: String },
 
@@ -113,6 +117,13 @@ impl IntoResponse for AppError {
                 "StoredSchemaCompilationFailed",
                 format!("stored schema '{schema_name}' compilation failed: {reason}"),
                 json!({ "schemaName": schema_name, "reason": reason }),
+            ),
+            // StatusSubresourceNotEnabled maps to HTTP 404 Not Found
+            AppError::StatusSubresourceNotEnabled { kind } => (
+                StatusCode::NOT_FOUND,
+                "StatusSubresourceNotEnabled",
+                format!("status subresource not enabled for kind '{kind}'"),
+                json!({ "kind": kind }),
             ),
             // SchemaHasObjects maps to HTTP 409 Conflict
             AppError::SchemaHasObjects { kind } => (

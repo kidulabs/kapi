@@ -102,6 +102,7 @@ pub enum WatchEventType {
     Added,
     Modified,
     Deleted,
+    StatusModified,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -123,6 +124,8 @@ pub struct SchemaData {
     pub target_version: String,
     pub target_kind: String,
     pub json_schema: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_schema: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -147,11 +150,14 @@ pub struct StoredObject {
     pub metadata: ObjectMeta,
     pub system: SystemMetadata,
     pub spec: SpecData,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<SpecData>,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     fn make_event(name: &str) -> WatchEvent {
         WatchEvent {
@@ -174,6 +180,7 @@ mod tests {
                 spec: SpecData {
                     value: serde_json::json!({}),
                 },
+                status: None,
             },
         }
     }
@@ -403,6 +410,7 @@ mod tests {
                 spec: SpecData {
                     value: serde_json::json!({}),
                 },
+                status: None,
             },
         };
         assert!(filter.matches(&event));
@@ -439,6 +447,7 @@ mod tests {
                 spec: SpecData {
                     value: serde_json::json!({}),
                 },
+                status: None,
             },
         };
         assert!(!filter.matches(&event));
@@ -478,6 +487,7 @@ mod tests {
                 spec: SpecData {
                     value: serde_json::json!({}),
                 },
+                status: None,
             },
         };
         assert!(combined.matches(&event));
@@ -529,6 +539,7 @@ mod tests {
                 spec: SpecData {
                     value: serde_json::json!({}),
                 },
+                status: None,
             },
         };
         assert!(!combined.matches(&event));
@@ -575,8 +586,141 @@ mod tests {
                 spec: SpecData {
                     value: serde_json::json!({}),
                 },
+                status: None,
             },
         };
         assert!(combined.matches(&event));
+    }
+
+    // --- Status subresource tests ---
+
+    #[test]
+    fn stored_object_serializes_with_status() {
+        let obj = StoredObject {
+            key: ResourceKey {
+                group: "example.io".to_string(),
+                version: "v1".to_string(),
+                kind: "Widget".to_string(),
+            },
+            metadata: ObjectMeta {
+                name: "test".to_string(),
+                labels: HashMap::new(),
+            },
+            system: SystemMetadata {
+                resource_version: 1,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            spec: SpecData {
+                value: json!({"color": "blue"}),
+            },
+            status: Some(SpecData {
+                value: json!({"phase": "Running"}),
+            }),
+        };
+        let serialized = serde_json::to_string(&obj).unwrap();
+        assert!(serialized.contains("\"status\""));
+        assert!(serialized.contains("\"phase\""));
+        assert!(serialized.contains("\"Running\""));
+    }
+
+    #[test]
+    fn stored_object_serializes_without_status() {
+        let obj = StoredObject {
+            key: ResourceKey {
+                group: "example.io".to_string(),
+                version: "v1".to_string(),
+                kind: "Widget".to_string(),
+            },
+            metadata: ObjectMeta {
+                name: "test".to_string(),
+                labels: HashMap::new(),
+            },
+            system: SystemMetadata {
+                resource_version: 1,
+                created_at: chrono::Utc::now(),
+                updated_at: chrono::Utc::now(),
+            },
+            spec: SpecData {
+                value: json!({"color": "blue"}),
+            },
+            status: None,
+        };
+        let serialized = serde_json::to_string(&obj).unwrap();
+        // status field should be omitted when None
+        assert!(!serialized.contains("\"status\""));
+    }
+
+    #[test]
+    fn stored_object_deserializes_with_status() {
+        let json = json!({
+            "key": {"group": "example.io", "version": "v1", "kind": "Widget"},
+            "metadata": {"name": "test", "labels": {}},
+            "system": {"resourceVersion": 1, "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z"},
+            "spec": {"value": {"color": "blue"}},
+            "status": {"value": {"phase": "Running"}}
+        });
+        let obj: StoredObject = serde_json::from_value(json).unwrap();
+        assert!(obj.status.is_some());
+        assert_eq!(obj.status.unwrap().value, json!({"phase": "Running"}));
+    }
+
+    #[test]
+    fn stored_object_deserializes_without_status() {
+        let json = json!({
+            "key": {"group": "example.io", "version": "v1", "kind": "Widget"},
+            "metadata": {"name": "test", "labels": {}},
+            "system": {"resourceVersion": 1, "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z"},
+            "spec": {"value": {"color": "blue"}}
+        });
+        let obj: StoredObject = serde_json::from_value(json).unwrap();
+        assert!(obj.status.is_none());
+    }
+
+    #[test]
+    fn schema_data_with_status_schema() {
+        let json = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": {"type": "object"},
+            "statusSchema": {"type": "object", "properties": {"phase": {"type": "string"}}}
+        });
+        let data: SchemaData = serde_json::from_value(json).unwrap();
+        assert!(data.status_schema.is_some());
+        assert_eq!(data.status_schema.unwrap()["type"], "object");
+    }
+
+    #[test]
+    fn schema_data_without_status_schema() {
+        let json = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": {"type": "object"}
+        });
+        let data: SchemaData = serde_json::from_value(json).unwrap();
+        assert!(data.status_schema.is_none());
+    }
+
+    #[test]
+    fn schema_data_serializes_status_schema_as_camel_case() {
+        let data = SchemaData {
+            target_group: "example.io".to_string(),
+            target_version: "v1".to_string(),
+            target_kind: "Widget".to_string(),
+            json_schema: json!({"type": "object"}),
+            status_schema: Some(json!({"type": "object"})),
+        };
+        let serialized = serde_json::to_string(&data).unwrap();
+        assert!(serialized.contains("\"statusSchema\""));
+    }
+
+    #[test]
+    fn watch_event_type_status_modified() {
+        let event_type = WatchEventType::StatusModified;
+        // Verify it serializes correctly
+        let serialized = serde_json::to_string(&event_type).unwrap();
+        assert!(serialized.contains("StatusModified"));
     }
 }

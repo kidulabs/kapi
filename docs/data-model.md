@@ -86,21 +86,26 @@ struct StoredObject {
     metadata: ObjectMeta,
     system: SystemMetadata,
     spec: SpecData,
+    status: Option<SpecData>,   // nullable, None for kinds without statusSchema
 }
 ```
+
+The `status` field is managed via the `/status` subresource endpoint. It starts as `null` on create and is updated independently of `spec` (no optimistic concurrency check). When serialized, the `status` field is omitted if `None`.
 
 ### WatchEvent
 
 Notification payload for real-time change events over SSE.
 
 ```rust
-enum WatchEventType { Added, Modified, Deleted }
+enum WatchEventType { Added, Modified, Deleted, StatusModified }
 
 struct WatchEvent {
     event_type: WatchEventType,
     object: StoredObject,
 }
 ```
+
+`StatusModified` is published when the status subresource is updated via `PUT /status`.
 
 ### SchemaData
 
@@ -112,10 +117,11 @@ struct SchemaData {
     target_version: String,   // e.g. "v1"
     target_kind: String,      // e.g. "Widget"
     json_schema: Value,       // valid JSON Schema (Draft 2020-12)
+    status_schema: Option<Value>,  // optional status subresource schema
 }
 ```
 
-Wire format uses camelCase: `targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`.
+Wire format uses camelCase: `targetGroup`, `targetVersion`, `targetKind`, `jsonSchema`, `statusSchema`. The `statusSchema` field is optional — when present, it enables the `/status` subresource for objects of this kind.
 
 ### Pagination Types
 
@@ -163,6 +169,7 @@ All errors conform to a standard JSON envelope:
 | `SchemaValidation` | 422 | Object data violates registered schema |
 | `InvalidSchema` | 422 | Schema registration fails meta-schema or compilation |
 | `SchemaHasObjects` | 409 | Attempting to delete a Schema that has existing objects |
+| `StatusSubresourceNotEnabled` | 404 | Attempting to access `/status` for a kind without `statusSchema` |
 | `InvalidLabel` | 400 | Label key or value violates format or length rules |
 | `InvalidLabelSelector` | 400 | labelSelector query parameter is malformed or used without watch=true |
 | `InvalidFieldSelector` | 400 | fieldSelector query parameter is malformed, unsupported field, or used without watch=true |
@@ -235,9 +242,17 @@ data: {"eventType":"Modified","object":{...}}
     },
     "spec": {
         "replicas": 3
+    },
+    "status": {
+        "value": {
+            "phase": "Running",
+            "availableReplicas": 3
+        }
     }
 }
 ```
+
+When `status` is `null`, the field is omitted from the response.
 
 ## Pagination
 

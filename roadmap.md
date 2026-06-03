@@ -41,6 +41,8 @@
 - [ ] **Generation field** — `SystemMetadata.generation: u64` bumped only on spec changes, not status changes; enables controllers to detect spec drift
 - [ ] **Watch event type filtering** — `WatchFilter` support for filtering by `StatusModified` vs `Modified` event types
 - [ ] **kapi-controller-runtime** — Separate crate/project: reconcile loops, informers, work queues, leader election, finalizer management
+- [ ] Modify the jsonschema to specschema in schema 
+- [ ] Status updates should be upsert. ie it should create the status if it does not exist. only POST or PUT is needed
 
 ## Explorations
 

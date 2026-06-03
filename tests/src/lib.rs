@@ -24,6 +24,7 @@ pub mod object_labels;
 pub mod optimistic_concurrency;
 pub mod schema_deletion;
 pub mod schema_validation;
+pub mod status_subresource;
 pub mod watch_events;
 
 pub struct TestApp {

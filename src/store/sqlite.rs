@@ -57,6 +57,7 @@ impl SQLiteStore {
                 resource_kind      TEXT    NOT NULL,
                 name               TEXT    NOT NULL,
                 spec               TEXT    NOT NULL,
+                status             TEXT,
                 resource_version   INTEGER NOT NULL,
                 created_at         TEXT    NOT NULL,
                 updated_at         TEXT    NOT NULL,
@@ -123,12 +124,20 @@ impl SQLiteStore {
         kind: String,
         name: String,
         spec: String,
+        status: Option<String>,
         resource_version: i64,
         created_at: String,
         updated_at: String,
     ) -> Result<StoredObject, AppError> {
         let spec_value: Value =
             serde_json::from_str(&spec).map_err(|e| AppError::Internal(e.into()))?;
+        let status_value: Option<SpecData> = status
+            .map(|s| {
+                serde_json::from_str(&s)
+                    .map(|v| SpecData { value: v })
+                    .map_err(|e| AppError::Internal(e.into()))
+            })
+            .transpose()?;
         let created_at =
             DateTime::parse_from_rfc3339(&created_at).map_err(|e| AppError::Internal(e.into()))?;
         let updated_at =
@@ -149,6 +158,7 @@ impl SQLiteStore {
                 updated_at: updated_at.with_timezone(&Utc),
             },
             spec: SpecData { value: spec_value },
+            status: status_value,
         })
     }
 
@@ -246,6 +256,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
     let kind: String = row.get("resource_kind")?;
     let name: String = row.get("name")?;
     let spec: String = row.get("spec")?;
+    let status: Option<String> = row.get("status")?;
     let resource_version: i64 = row.get("resource_version")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
@@ -255,6 +266,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
         kind,
         name,
         spec,
+        status,
         resource_version,
         created_at,
         updated_at,
@@ -290,11 +302,11 @@ impl ObjectStore for SQLiteStore {
             let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
             let result = tx.execute(
-                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, resource_version, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, resource_version, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     key.group, key.version, key.kind, meta.name,
-                    spec_json, version as i64, created_at, updated_at
+                    spec_json, None::<String>, version as i64, created_at, updated_at
                 ],
             );
 
@@ -325,6 +337,7 @@ impl ObjectStore for SQLiteStore {
                             updated_at: now,
                         },
                         spec: SpecData { value: spec },
+                        status: None,
                     })
                 }
                 Err(rusqlite::Error::SqliteFailure(err, _))
@@ -353,7 +366,7 @@ impl ObjectStore for SQLiteStore {
         tokio::task::spawn_blocking(move || {
             let c = conn.lock().unwrap();
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, resource_version, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let mut obj = stmt
@@ -497,7 +510,7 @@ impl ObjectStore for SQLiteStore {
             params_vec.push(Box::new(query_limit as i64));
 
             let sql = format!(
-                "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.spec, \
+                "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.spec, o.status, \
                  o.resource_version, o.created_at, o.updated_at \
                  FROM objects o \
                  WHERE {where_sql} \
@@ -671,6 +684,23 @@ impl ObjectStore for SQLiteStore {
                 }
             }
 
+            // Read existing status to preserve during spec update
+            let existing_status: Option<String> = tx.query_row(
+                "SELECT status FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
+                params![
+                    object.key.group,
+                    object.key.version,
+                    object.key.kind,
+                    object.metadata.name,
+                ],
+                |row| row.get(0),
+            ).optional().map_err(|e| AppError::Internal(e.into()))?
+            .flatten();
+
+            let status_value: Option<SpecData> = existing_status
+                .map(|s| serde_json::from_str(&s).map_err(|e| AppError::Internal(e.into())))
+                .transpose()?;
+
             tx.commit().map_err(|e| AppError::Internal(e.into()))?;
 
             Ok(StoredObject {
@@ -682,6 +712,7 @@ impl ObjectStore for SQLiteStore {
                     updated_at: now,
                 },
                 spec: object.spec,
+                status: status_value,
             })
         })
         .await
@@ -717,7 +748,7 @@ impl ObjectStore for SQLiteStore {
 
             // Fetch the object first so we can return it after deletion
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, resource_version, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let mut obj = stmt
@@ -748,6 +779,75 @@ impl ObjectStore for SQLiteStore {
                 "DELETE FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
                 params![key.group, key.version, key.kind, name],
             ).map_err(|e| AppError::Internal(e.into()))?;
+
+            Ok(obj)
+        })
+        .await
+        .map_err(|e| AppError::Internal(e.into()))?
+    }
+
+    async fn update_status(
+        &self,
+        key: &ResourceKey,
+        name: &str,
+        status: Value,
+    ) -> Result<StoredObject, AppError> {
+        let key = key.clone();
+        let name = name.to_string();
+        let conn = Arc::clone(&self.conn);
+        let next_version = Arc::clone(&self.next_version);
+
+        tokio::task::spawn_blocking(move || {
+            let now = SQLiteStore::now();
+            let new_version = next_version.fetch_add(1, Ordering::Relaxed);
+
+            let status_json = serde_json::to_string(&status).map_err(|e| AppError::Internal(e.into()))?;
+            let updated_at = now.to_rfc3339();
+
+            let c = conn.lock().unwrap();
+
+            let rows = c.execute(
+                "UPDATE objects SET status = ?1, resource_version = ?2, updated_at = ?3
+                 WHERE resource_group = ?4 AND api_version = ?5 AND resource_kind = ?6 AND name = ?7",
+                params![
+                    status_json,
+                    new_version as i64,
+                    updated_at,
+                    key.group,
+                    key.version,
+                    key.kind,
+                    name,
+                ],
+            ).map_err(|e| AppError::Internal(e.into()))?;
+
+            if rows == 0 {
+                return Err(AppError::NotFound {
+                    what: "object".to_string(),
+                    identifier: format!("{}/{}", key.kind, name),
+                });
+            }
+
+            // Fetch the updated object to return
+            let mut stmt = c.prepare(
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, created_at, updated_at
+                 FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
+            ).map_err(|e| AppError::Internal(e.into()))?;
+            let obj = stmt
+                .query_row(
+                    params![key.group, key.version, key.kind, name],
+                    row_to_object,
+                )
+                .optional()
+                .map_err(|e| AppError::Internal(e.into()))?;
+
+            let mut obj = obj.ok_or_else(|| AppError::NotFound {
+                what: "object".to_string(),
+                identifier: format!("{}/{}", key.kind, name),
+            })?;
+
+            obj.metadata.labels = SQLiteStore::query_labels(
+                &c, &key.group, &key.version, &key.kind, &name
+            )?;
 
             Ok(obj)
         })
@@ -1037,6 +1137,7 @@ mod tests {
             spec: SpecData {
                 value: json!({"x": 2}),
             },
+            status: None,
         };
 
         let updated = store.update(object).await.unwrap();
@@ -1075,6 +1176,7 @@ mod tests {
             spec: SpecData {
                 value: json!({"x": 2}),
             },
+            status: None,
         };
 
         let err = store.update(object).await.unwrap_err();
@@ -1100,6 +1202,7 @@ mod tests {
             spec: SpecData {
                 value: json!({"x": 1}),
             },
+            status: None,
         };
 
         let err = store.update(object).await.unwrap_err();
@@ -1725,5 +1828,126 @@ mod tests {
             kind: "Other".to_string(),
         };
         assert!(!store.exists(&other_key).await.unwrap());
+    }
+
+    // --- update_status tests ---
+
+    #[tokio::test]
+    async fn update_status_success() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let created = store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+        assert!(created.status.is_none());
+
+        let updated = store
+            .update_status(&key, "my-widget", json!({"phase": "Running"}))
+            .await
+            .unwrap();
+        assert!(updated.status.is_some());
+        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+        assert!(updated.system.resource_version > v1);
+        assert_eq!(updated.spec.value, json!({"color": "blue"}));
+    }
+
+    #[tokio::test]
+    async fn update_status_not_found() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let err = store
+            .update_status(&key, "nonexistent", json!({"phase": "Running"}))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn update_status_replaces_existing_status() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+
+        store
+            .update_status(&key, "my-widget", json!({"phase": "Pending"}))
+            .await
+            .unwrap();
+
+        let updated = store
+            .update_status(&key, "my-widget", json!({"phase": "Running"}))
+            .await
+            .unwrap();
+        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+    }
+
+    #[tokio::test]
+    async fn update_status_bumps_resource_version() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let created = store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({}),
+            )
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+
+        let updated = store
+            .update_status(&key, "my-widget", json!({"phase": "Running"}))
+            .await
+            .unwrap();
+        assert!(updated.system.resource_version > v1);
+    }
+
+    #[tokio::test]
+    async fn update_status_preserves_spec() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await
+            .unwrap();
+
+        let updated = store
+            .update_status(&key, "my-widget", json!({"phase": "Running"}))
+            .await
+            .unwrap();
+        assert_eq!(updated.spec.value, json!({"color": "blue", "size": 10}));
     }
 }

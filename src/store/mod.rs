@@ -32,4 +32,14 @@ pub trait ObjectStore: Send + Sync {
     async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError>;
     async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
     async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError>;
+    /// Updates only the status field of an object (no CAS check).
+    ///
+    /// Reads the object, replaces the `status` field with the given value,
+    /// bumps `resource_version`, sets `updated_at`, and returns the updated object.
+    async fn update_status(
+        &self,
+        key: &ResourceKey,
+        name: &str,
+        status: Value,
+    ) -> Result<StoredObject, AppError>;
 }

@@ -13,7 +13,7 @@ use crate::error::AppError;
 use crate::event::EventPublisher;
 use crate::object::types::{
     ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, WatchEvent, WatchEventType,
-    WatchFilter,
+    WatchFilter, SpecData,
 };
 use crate::schema::{SchemaRegistry, SchemaValidator, SCHEMA_KIND};
 #[cfg(test)]
@@ -239,6 +239,49 @@ impl ObjectService {
         self.event_bus.subscribe(key, filter)
     }
 
+    /// Updates the status subresource of an object.
+    ///
+    /// Validates that a statusSchema exists for the kind, validates the status
+    /// against it, calls the store's update_status, and publishes a StatusModified event.
+    pub async fn update_status(
+        &self,
+        key: ResourceKey,
+        name: String,
+        status: Value,
+    ) -> Result<StoredObject, AppError> {
+        // Check that status subresource is enabled
+        self.schema_registry.get_status_validator(&key).await?;
+
+        // Validate status against statusSchema
+        let validator = self.schema_registry.get_status_validator(&key).await?;
+        if !validator.is_valid(&status) {
+            let errors = Self::map_validation_errors(validator.validate(&status));
+            return Err(AppError::SchemaValidation(errors));
+        }
+
+        // Update status in store
+        let updated = self.store.update_status(&key, &name, status).await?;
+        self.publish_event(&key, WatchEventType::StatusModified, &updated);
+        Ok(updated)
+    }
+
+    /// Gets the status subresource of an object.
+    ///
+    /// Validates that a statusSchema exists for the kind, fetches the object,
+    /// and returns the status field.
+    pub async fn get_status(
+        &self,
+        key: ResourceKey,
+        name: String,
+    ) -> Result<Option<SpecData>, AppError> {
+        // Check that status subresource is enabled
+        self.schema_registry.get_status_validator(&key).await?;
+
+        // Fetch object and return status
+        let object = self.store.get(&key, &name).await?;
+        Ok(object.status)
+    }
+
     // --- Private helper methods ---
 
     /// Maps schema validation errors to domain validation errors.
@@ -272,9 +315,14 @@ impl ObjectService {
         spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
-        let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&spec)?;
+        let (_schema_data, compiled, status_compiled) =
+            self.schema_registry.validate_and_compile(&spec)?;
         let stored = self.store.create(&key, meta.clone(), spec).await?;
         self.schema_registry.insert(&meta.name, compiled);
+        if let Some(status_validator) = status_compiled {
+            self.schema_registry
+                .insert_status(&meta.name, status_validator);
+        }
         self.publish_event(&key, WatchEventType::Added, &stored);
         Ok(stored)
     }
@@ -306,10 +354,15 @@ impl ObjectService {
         spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
-        let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&spec)?;
+        let (_schema_data, compiled, status_compiled) =
+            self.schema_registry.validate_and_compile(&spec)?;
         let updated = self.store.update(object).await?;
         self.schema_registry
             .insert(&updated.metadata.name, compiled);
+        if let Some(status_validator) = status_compiled {
+            self.schema_registry
+                .insert_status(&updated.metadata.name, status_validator);
+        }
         self.publish_event(&updated.key, WatchEventType::Modified, &updated);
         Ok(updated)
     }
@@ -1113,5 +1166,268 @@ mod tests {
         let long_prefix = "a".repeat(254);
         labels.insert(format!("{}/name", long_prefix), "value".to_string());
         assert!(validate_labels(&labels).is_err());
+    }
+
+    // --- Status subresource tests ---
+
+    // Helper to register a Schema with statusSchema
+    async fn register_test_schema_with_status(service: &ObjectService) {
+        let schema_key = schema_key();
+        let schema_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "jsonSchema": {
+                "type": "object",
+                "properties": {
+                    "color": { "type": "string" },
+                    "size": { "type": "integer" }
+                }
+            },
+            "statusSchema": {
+                "type": "object",
+                "properties": {
+                    "phase": { "type": "string" }
+                }
+            }
+        });
+        service
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: "Widget.example.io".to_string(),
+                    labels: HashMap::new(),
+                },
+                schema_data,
+            )
+            .await
+            .expect("schema registration should succeed");
+    }
+
+    #[tokio::test]
+    async fn update_status_with_status_schema_succeeds() {
+        let service = make_service();
+        register_test_schema_with_status(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await
+            .unwrap();
+        assert!(created.status.is_none());
+
+        let updated = service
+            .update_status(
+                widget_key.clone(),
+                "my-widget".to_string(),
+                json!({"phase": "Running"}),
+            )
+            .await
+            .unwrap();
+        assert!(updated.status.is_some());
+        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+    }
+
+    #[tokio::test]
+    async fn update_status_without_status_schema_returns_error() {
+        let service = make_service();
+        // Register schema WITHOUT statusSchema
+        register_test_schema(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+
+        let err = service
+            .update_status(
+                widget_key.clone(),
+                "my-widget".to_string(),
+                json!({"phase": "Running"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::StatusSubresourceNotEnabled { .. }));
+    }
+
+    #[tokio::test]
+    async fn update_status_invalid_status_returns_validation_error() {
+        let service = make_service();
+        register_test_schema_with_status(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+
+        // phase should be string, not integer
+        let err = service
+            .update_status(
+                widget_key.clone(),
+                "my-widget".to_string(),
+                json!({"phase": 123}),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::SchemaValidation(_)));
+    }
+
+    #[tokio::test]
+    async fn update_status_not_found() {
+        let service = make_service();
+        register_test_schema_with_status(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+
+        let err = service
+            .update_status(
+                widget_key.clone(),
+                "nonexistent".to_string(),
+                json!({"phase": "Running"}),
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    #[tokio::test]
+    async fn get_status_with_status_schema_returns_status() {
+        let service = make_service();
+        register_test_schema_with_status(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+
+        // Initially None
+        let status = service
+            .get_status(widget_key.clone(), "my-widget".to_string())
+            .await
+            .unwrap();
+        assert!(status.is_none());
+
+        // After update
+        service
+            .update_status(
+                widget_key.clone(),
+                "my-widget".to_string(),
+                json!({"phase": "Running"}),
+            )
+            .await
+            .unwrap();
+
+        let status = service
+            .get_status(widget_key.clone(), "my-widget".to_string())
+            .await
+            .unwrap();
+        assert!(status.is_some());
+        assert_eq!(status.unwrap().value, json!({"phase": "Running"}));
+    }
+
+    #[tokio::test]
+    async fn get_status_without_status_schema_returns_error() {
+        let service = make_service();
+        register_test_schema(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+
+        let err = service
+            .get_status(widget_key.clone(), "my-widget".to_string())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, AppError::StatusSubresourceNotEnabled { .. }));
+    }
+
+    #[tokio::test]
+    async fn create_strips_status_from_body() {
+        let service = make_service();
+        register_test_schema_with_status(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+
+        // Create with status in body — should be ignored
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "status": {"phase": "Running"}}),
+            )
+            .await
+            .unwrap();
+        assert!(created.status.is_none());
     }
 }

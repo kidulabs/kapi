@@ -295,10 +295,12 @@ pub(crate) fn build_kind_paths(
 
     let collection_path = format!("/apis/{group}/{version}/{kind}");
     let item_path = format!("/apis/{group}/{version}/{kind}/{{name}}");
+    let status_path = format!("/apis/{group}/{version}/{kind}/{{name}}/status");
 
     let stored_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}StoredObject") });
     let list_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}ListResponse") });
     let error_ref = json!({ "$ref": "#/components/schemas/AppError" });
+    let spec_data_ref = json!({ "$ref": "#/components/schemas/SpecData" });
 
     vec![
         // Collection path: GET (list) + POST (create)
@@ -489,6 +491,78 @@ pub(crate) fn build_kind_paths(
                 }
             }),
         ),
+        // Status subresource path: GET (get status) + PUT (update status)
+        (
+            status_path,
+            json!({
+                "get": {
+                    "summary": format!("Get the status subresource of a {} object", kind),
+                    "operationId": format!("get{}Status", comp_name),
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": true,
+                            "schema": { "type": "string" },
+                            "description": "The object name"
+                        }
+                    ],
+                    "responses": {
+                        "200": {
+                            "description": format!("The status of the {} object (null if not set)", kind),
+                            "content": {
+                                "application/json": {
+                                    "schema": spec_data_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": format!("{} object not found or status subresource not enabled for this kind", kind),
+                            "content": { "application/json": { "schema": error_ref } }
+                        }
+                    }
+                },
+                "put": {
+                    "summary": format!("Update the status subresource of a {} object", kind),
+                    "operationId": format!("update{}Status", comp_name),
+                    "parameters": [
+                        {
+                            "name": "name",
+                            "in": "path",
+                            "required": true,
+                            "schema": { "type": "string" },
+                            "description": "The object name"
+                        }
+                    ],
+                    "requestBody": {
+                        "required": true,
+                        "content": {
+                            "application/json": {
+                                "schema": build_status_update_request_schema(schema_data)
+                            }
+                        }
+                    },
+                    "responses": {
+                        "200": {
+                            "description": format!("{} status updated", kind),
+                            "content": {
+                                "application/json": {
+                                    "schema": stored_ref
+                                }
+                            }
+                        },
+                        "404": {
+                            "description": format!("{} object not found or status subresource not enabled for this kind", kind),
+                            "content": { "application/json": { "schema": error_ref } }
+                        },
+                        "422": {
+                            "description": "Status validation failed against statusSchema",
+                            "content": { "application/json": { "schema": error_ref } }
+                        }
+                    }
+                }
+            }),
+        ),
     ]
 }
 
@@ -522,5 +596,21 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
             metadata_part,
             schema_data.json_schema
         ]
+    })
+}
+
+/// Builds the request body schema for updating the status subresource.
+///
+/// The wire format is `{ status: ...userDataProperties }`.
+fn build_status_update_request_schema(schema_data: &crate::object::types::SchemaData) -> Value {
+    let status_schema = schema_data.status_schema.clone()
+        .unwrap_or_else(|| json!({ "type": "object" }));
+
+    json!({
+        "type": "object",
+        "properties": {
+            "status": status_schema
+        },
+        "required": ["status"]
     })
 }

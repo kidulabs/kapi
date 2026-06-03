@@ -48,7 +48,14 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
         "color": { "type": "string" },
         "size": { "type": "integer" }
       },
-      "required": ["color", "size"]
+      "required": ["color"]
+    },
+    "statusSchema": {
+      "type": "object",
+      "properties": {
+        "phase": { "type": "string" },
+        "message": { "type": "string" }
+      }
     }
   }'
 
@@ -1177,6 +1184,360 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
 
 ---
 
+## Test 30: Status subresource — create object, update status via /status
+
+**Goal:** Verify that a Schema with `statusSchema` enables the `/status` endpoint for reading and updating status.
+
+```bash
+# 1. Create an object
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"status-widget-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}" | python3 -m json.tool
+
+# 2. Verify status is null on created object
+echo "=== Status on created object ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/status-widget-$TEST_RUN" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+print(f\"Status: {obj.get('status', 'MISSING')}\")
+"
+
+# 3. Update status via PUT /status
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/status-widget-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\",\"message\":\"All systems go\"}}" | python3 -m json.tool
+
+# 4. GET /status to verify
+echo "=== GET /status ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/status-widget-$TEST_RUN/status" | python3 -m json.tool
+
+# 5. GET full object to verify status persisted
+echo "=== GET full object ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/status-widget-$TEST_RUN" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+print(f\"Status: {obj['status']}\")
+print(f\"Spec: {obj['spec']}\")
+"
+```
+
+**Expected results:**
+- Created object has `status: null`
+- PUT /status returns 200 with full `StoredObject` including updated status
+- GET /status returns the status value (with `value` wrapper: `{"value":{"phase":"Running","message":"All systems go"}}`)
+- Full object GET shows both spec and status
+
+---
+
+## Test 31: Status subresource not enabled — Schema without statusSchema returns 404
+
+**Goal:** Verify that `/status` endpoints return `StatusSubresourceNotEnabled` for kinds without `statusSchema`.
+
+```bash
+# 1. Register a Schema WITHOUT statusSchema
+curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targetGroup": "test.io",
+    "targetVersion": "v1",
+    "targetKind": "Gadget",
+    "jsonSchema": {
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" }
+      }
+    }
+  }'
+
+# 2. Create an object
+curl -s -X POST http://localhost:8080/apis/test.io/v1/Gadget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"no-status-gadget-$TEST_RUN\"},\"name\":\"test\"}" > /dev/null
+
+# 3. GET /status should return 404
+echo "=== GET /status (should be 404) ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
+  "http://localhost:8080/apis/test.io/v1/Gadget/no-status-gadget-$TEST_RUN/status"
+
+# 4. PUT /status should return 404
+echo "=== PUT /status (should be 404) ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X PUT \
+  "http://localhost:8080/apis/test.io/v1/Gadget/no-status-gadget-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\"}}"
+```
+
+**Expected results:**
+- Both GET and PUT /status return HTTP 404
+- Response body contains `"code": "StatusSubresourceNotEnabled"`
+
+---
+
+## Test 32: Status update with invalid data returns 422
+
+**Goal:** Verify that status updates are validated against `statusSchema`.
+
+```bash
+# 1. Create object
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"invalid-status-$TEST_RUN\"},\"color\":\"blue\"}" > /dev/null
+
+# 2. Update status with invalid type (phase should be string, not integer)
+echo "=== Invalid status update ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X PUT \
+  "http://localhost:8080/apis/example.io/v1/Widget/invalid-status-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":123}}"
+```
+
+**Expected results:**
+- HTTP 422 Unprocessable Entity
+- Response body contains `"code": "SchemaValidation"` with validation error details
+
+---
+
+## Test 33: Status update for non-existent object returns 404 NotFound
+
+**Goal:** Verify that updating status on a non-existent object returns `NotFound`.
+
+```bash
+# 1. PUT /status for non-existent object
+echo "=== Status update for non-existent object ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X PUT \
+  "http://localhost:8080/apis/example.io/v1/Widget/nonexistent-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\"}}"
+```
+
+**Expected results:**
+- HTTP 404 Not Found
+- Response body contains `"code": "NotFound"`
+
+---
+
+## Test 34: Status update does not modify spec
+
+**Goal:** Verify that updating status leaves the spec field unchanged.
+
+```bash
+# 1. Create object
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"spec-preserve-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}" > /dev/null
+
+# 2. Update status
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/spec-preserve-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\"}}" > /dev/null
+
+# 3. Verify spec is unchanged
+echo "=== Verify spec unchanged ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/spec-preserve-$TEST_RUN" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+spec = obj['spec']['value']
+status = obj['status']
+print(f\"Spec color: {spec['color']}\")
+print(f\"Spec size: {spec['size']}\")
+print(f\"Status: {status}\")
+assert spec['color'] == 'blue', 'spec.color should be unchanged'
+assert spec['size'] == 10, 'spec.size should be unchanged'
+print('PASS: spec unchanged, status set')
+"
+```
+
+**Expected results:**
+- `spec.color` is still `"blue"`, `spec.size` is still `10`
+- `status` is `{"value":{"phase":"Running"}}`
+
+---
+
+## Test 35: Status update bumps resourceVersion
+
+**Goal:** Verify that status updates increment `resourceVersion`.
+
+```bash
+# 1. Create object and capture resourceVersion
+CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"rv-bump-$TEST_RUN\"},\"color\":\"blue\"}")
+INITIAL_RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+echo "Initial resourceVersion: $INITIAL_RV"
+
+# 2. Update status
+STATUS_RESP=$(curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/rv-bump-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\"}}")
+STATUS_RV=$(echo "$STATUS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+echo "After status update resourceVersion: $STATUS_RV"
+
+# 3. Verify bumped
+python3 -c "
+initial = $INITIAL_RV
+after = $STATUS_RV
+assert after > initial, f'resourceVersion should be bumped: {after} > {initial}'
+print(f'PASS: resourceVersion bumped from {initial} to {after}')
+"
+```
+
+**Expected results:**
+- `resourceVersion` after status update is greater than initial `resourceVersion`
+
+---
+
+## Test 36: Create object with status in body — status is ignored
+
+**Goal:** Verify that `status` field in the create request body is stripped and ignored.
+
+```bash
+# 1. Create object with status in body
+echo "=== Create with status in body ==="
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"create-with-status-$TEST_RUN\"},\"color\":\"blue\",\"status\":{\"phase\":\"Pre-set\"}}" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+status = obj.get('status')
+assert status is None or status == 'null' or (isinstance(status, dict) and status.get('value') is None), \
+    f'status should be null, got: {status}'
+print(f'Status: {status}')
+print('PASS: status ignored on create')
+"
+```
+
+**Expected results:**
+- Object created successfully (201)
+- `status` field is `null` in the response
+
+---
+
+## Test 37: Status update replaces status (not merged)
+
+**Goal:** Verify that status updates completely replace the status field, not merge.
+
+```bash
+# 1. Create object
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"replace-status-$TEST_RUN\"},\"color\":\"blue\"}" > /dev/null
+
+# 2. Set status with both phase and message
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/replace-status-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\",\"message\":\"initial message\"}}" > /dev/null
+
+# 3. Update status with only phase (no message)
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/replace-status-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Completed\"}}" > /dev/null
+
+# 4. Verify message is gone (replaced, not merged)
+echo "=== Verify status replaced ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/replace-status-$TEST_RUN/status" | python3 -c "
+import sys, json
+status = json.load(sys.stdin)['value']
+print(f'Status: {status}')
+assert status.get('phase') == 'Completed', f'phase should be Completed, got {status.get(\"phase\")}'
+assert 'message' not in status, f'message should be removed, but got: {status.get(\"message\")}'
+print('PASS: status replaced, not merged')
+"
+```
+
+**Expected results:**
+- After second update, `status` contains only `{"phase":"Completed"}` — `message` is gone
+
+---
+
+## Test 38: StatusModified watch event published on status update
+
+**Goal:** Verify that status updates publish a `StatusModified` watch event (not `Modified`).
+
+```bash
+# 1. Create object
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"status-event-$TEST_RUN\"},\"color\":\"blue\"}" > /dev/null
+
+# 2. Start watching BEFORE status update
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
+  > /tmp/watch-status-event.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# 3. Update status
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/status-event-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\"}}" > /dev/null
+
+sleep 2
+
+# 4. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 5. Verify StatusModified event received
+echo "=== Watch events ==="
+cat /tmp/watch-status-event.log
+
+echo "=== Event types ==="
+grep -o '"event_type":"[^"]*"' /tmp/watch-status-event.log
+```
+
+**Expected results:**
+- Watch log contains `"event_type":"StatusModified"` event
+- Event object includes full `StoredObject` (both spec and status)
+- No `"event_type":"Modified"` for the status update
+
+---
+
+## Test 39: Spec update publishes Modified event (not StatusModified)
+
+**Goal:** Verify that regular spec updates still publish `Modified` events (unchanged behavior).
+
+```bash
+# 1. Create object
+CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"spec-event-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}")
+RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+CREATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
+UPDATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+
+# 2. Start watching
+curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
+  > /tmp/watch-spec-event.log 2>&1 &
+WATCH_PID=$!
+sleep 2
+
+# 3. Update spec (regular PUT)
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/spec-event-$TEST_RUN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
+    \"metadata\":{\"name\":\"spec-event-$TEST_RUN\"},
+    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"spec\":{\"value\":{\"color\":\"red\",\"size\":20}}
+  }" > /dev/null
+
+sleep 2
+
+# 4. Kill the watch
+kill $WATCH_PID 2>/dev/null
+
+# 5. Verify Modified event (not StatusModified)
+echo "=== Watch events ==="
+cat /tmp/watch-spec-event.log
+
+echo "=== Event types ==="
+grep -o '"event_type":"[^"]*"' /tmp/watch-spec-event.log
+```
+
+**Expected results:**
+- Watch log contains `"event_type":"Modified"` for the spec update
+- No `"event_type":"StatusModified"` for the spec update
+
+---
+
 ## Cleanup
 
 ```bash
@@ -1187,6 +1548,23 @@ kill $(lsof -ti :8080) 2>/dev/null || true
 rm -f /tmp/watch-*.log /tmp/kapi-server.log /tmp/kapi-server-persist.log
 rm -f /tmp/kapi-persist-test.db /tmp/kapi-test.db
 ```
+
+---
+
+## Status Subresource Test Summary
+
+| Test | Goal |
+|---|---|
+| 30 | Create object, update status via `/status`, verify status is set (schema includes `statusSchema` from Test 1) |
+| 31 | Schema without statusSchema → GET/PUT `/status` returns 404 `StatusSubresourceNotEnabled` |
+| 32 | Update status with invalid data → 422 `SchemaValidation` |
+| 33 | Update status for non-existent object → 404 `NotFound` |
+| 34 | Status update does not modify spec field |
+| 35 | Status update bumps `resourceVersion` |
+| 36 | Create object with `status` in body → status is ignored (null) |
+| 37 | Status update replaces status completely (not merged) |
+| 38 | Status update publishes `StatusModified` watch event |
+| 39 | Spec update publishes `Modified` event (unchanged behavior) |
 
 ---
 
@@ -1216,6 +1594,7 @@ export TEST_RUN=$(date +%s)
 # Run each test block in order (Tests 1–13 on the same server)
 # Tests 15–21 (label selector watch) can be run after Test 13 on the same server
 # Tests 22–29 (list filtering + combined watch selectors) can be run after Test 21 on the same server
+# Tests 30–39 (status subresource) can be run after Test 29 on the same server
 # Test 14 requires a server restart with KAPI_DB_PATH, so run it separately.
 ```
 

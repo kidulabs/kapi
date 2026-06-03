@@ -105,7 +105,12 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "key": { "$ref": "#/components/schemas/ResourceKey" },
                     "metadata": { "$ref": "#/components/schemas/ObjectMeta" },
                     "system": { "$ref": "#/components/schemas/SystemMetadata" },
-                    "spec": { "$ref": "#/components/schemas/SpecData" }
+                    "spec": { "$ref": "#/components/schemas/SpecData" },
+                    "status": {
+                        "$ref": "#/components/schemas/SpecData",
+                        "nullable": true,
+                        "description": "Status subresource, managed via /status endpoint. Null for kinds without statusSchema."
+                    }
                 },
                 "required": ["key", "metadata", "system", "spec"]
             }),
@@ -145,7 +150,7 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
             "WatchEventType".to_string(),
             json!({
                 "type": "string",
-                "enum": ["Added", "Modified", "Deleted"]
+                "enum": ["Added", "Modified", "Deleted", "StatusModified"]
             }),
         ),
         // ValidationError: field-level validation failure
@@ -200,7 +205,11 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "targetGroup": { "type": "string" },
                     "targetVersion": { "type": "string" },
                     "targetKind": { "type": "string" },
-                    "jsonSchema": {}
+                    "jsonSchema": {},
+                    "statusSchema": {
+                        "type": "object",
+                        "description": "Optional JSON Schema for validating the status subresource. When present, enables GET/PUT /status endpoints for objects of this kind."
+                    }
                 },
                 "required": ["targetGroup", "targetVersion", "targetKind", "jsonSchema"]
             }),

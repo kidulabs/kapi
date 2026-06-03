@@ -30,6 +30,12 @@ POST /apis/kapi.io/v1/Schema
             "size": { "type": "integer" }
         },
         "required": ["color"]
+    },
+    "statusSchema": {
+        "type": "object",
+        "properties": {
+            "phase": { "type": "string" }
+        }
     }
 }
 ```
@@ -387,6 +393,84 @@ Labels on `ObjectMeta` follow structured validation rules. Invalid labels cause 
 
 ---
 
+## Status Subresource
+
+The status subresource provides a separate write path for controller-runtime semantics. Controllers write observed state to `status` while users write desired state to `spec`. Status updates do not use optimistic concurrency control.
+
+### Get Status
+
+```
+GET /apis/{group}/{version}/{kind}/{name}/status
+```
+
+**Response:** `200 OK` — returns the status as `SpecData` (with `value` wrapper), or `null` if not set.
+
+```json
+{
+    "value": {
+        "phase": "Running",
+        "message": "All systems go"
+    }
+}
+```
+
+**Response:** `404 Not Found` — if the kind does not have a `statusSchema` defined.
+
+```json
+{
+    "error": "status subresource not enabled for kind 'Widget'",
+    "code": "StatusSubresourceNotEnabled",
+    "details": { "kind": "Widget" }
+}
+```
+
+### Update Status
+
+```
+PUT /apis/{group}/{version}/{kind}/{name}/status
+```
+
+**Request body:**
+
+```json
+{
+    "status": {
+        "phase": "Running",
+        "message": "All systems go"
+    }
+}
+```
+
+**Response:** `200 OK` — returns the full `StoredObject` with updated status.
+
+```json
+{
+    "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
+    "metadata": { "name": "my-widget", "labels": {} },
+    "system": { "resourceVersion": 5, "createdAt": "...", "updatedAt": "..." },
+    "spec": { "value": { "color": "blue", "size": 10 } },
+    "status": { "value": { "phase": "Running", "message": "All systems go" } }
+}
+```
+
+**Response:** `404 Not Found` — if the kind does not have a `statusSchema` defined.
+
+**Response:** `422 Unprocessable Entity` — if the status fails validation against `statusSchema`.
+
+```json
+{
+    "error": "object data violates schema",
+    "code": "SchemaValidation",
+    "details": {
+        "errors": [
+            { "path": "phase", "message": "expected string, got integer" }
+        ]
+    }
+}
+```
+
+---
+
 ## OpenAPI
 
 ### GET /openapi
@@ -416,6 +500,7 @@ All errors follow this format:
 | Status | Code | Description |
 |--------|------|-------------|
 | 404 | `NotFound` | Resource not found |
+| 404 | `StatusSubresourceNotEnabled` | Status subresource accessed for kind without statusSchema |
 | 409 | `Conflict` | OCC version mismatch or duplicate |
 | 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
 | 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field or malformed syntax) |

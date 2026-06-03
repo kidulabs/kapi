@@ -17,6 +17,8 @@ pub trait ObjectStore: Send + Sync {
         -> Result<StoredObject, AppError>;
     async fn delete(&self, key: &ResourceKey, name: &str)
         -> Result<StoredObject, AppError>;
+    async fn update_status(&self, key: &ResourceKey, name: &str, status: Value)
+        -> Result<StoredObject, AppError>;
 }
 ```
 
@@ -26,6 +28,7 @@ pub trait ObjectStore: Send + Sync {
 - **`create`/`get`/`list`** take `(key, name)` — the object doesn't exist yet (create) or the caller may not have the full object (get, list).
 - **`update`** takes the full `StoredObject`. The implementation peeks at `object.system.resource_version` for optimistic concurrency control. On match, applies data, bumps version, updates `updated_at`. On mismatch, returns `Conflict`.
 - **`delete`** is unconditional — no version check. Returns the deleted object.
+- **`update_status`** updates only the `status` field without optimistic concurrency control. Reads the object, replaces `status`, bumps `resource_version`, sets `updated_at`, returns updated object.
 - **`key` and `name`** from the incoming object during `update` are trusted from the URL, not the client payload. The handler validates the match before calling the store.
 
 ## InMemoryStore
@@ -45,6 +48,7 @@ Key behaviors:
 - **Pagination:** Results sorted alphabetically by name. Cursor-based pagination with base64-encoded continue tokens. The token encodes the last item name in the current page.
 - **Conflict detection:** Create checks for duplicate `(key, name)` pairs. Update compares stored `resource_version` against the supplied version.
 - **Thread safety:** All operations use `DashMap` for concurrent access without external synchronization.
+- **Status handling:** The `status` field is `None` on create. `update_status` replaces the status value, bumps `resource_version`, and sets `updated_at`.
 
 ## SQLiteStore
 
@@ -61,7 +65,7 @@ Key behaviors:
 
 - **Construction:** `SQLiteStore::new(path)` creates parent directories, opens (or creates) the SQLite database, and runs schema initialization automatically
 - **Schema:** Two tables:
-  - `objects` — composite primary key `(group, version, kind, name)`, JSON spec column, RFC 3339 timestamps
+  - `objects` — composite primary key `(group, version, kind, name)`, JSON spec column, nullable `status` TEXT column, RFC 3339 timestamps
   - `labels` — separate table for label storage (see below)
 - **Versioning:** Global monotonic `AtomicU64` counter, initialized from `MAX(resource_version)` on startup
 - **Pagination:** SQL-level `ORDER BY name ASC` with `LIMIT` and `name > ?` skip condition for efficient cursor-based pagination
