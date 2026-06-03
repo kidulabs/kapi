@@ -167,14 +167,14 @@ impl ObjectService {
         &self,
         key: ResourceKey,
         meta: ObjectMeta,
-        data: Value,
+        spec: Value,
     ) -> Result<StoredObject, AppError> {
         if key.kind == SCHEMA_KIND {
             // Schema path: meta-schema validate → compile → cache → store → publish
-            self.validate_and_create_schema(key, meta, data).await
+            self.validate_and_create_schema(key, meta, spec).await
         } else {
             // Object path: lookup schema → validate → store → publish
-            self.validate_and_create_object(key, meta, data).await
+            self.validate_and_create_object(key, meta, spec).await
         }
     }
 
@@ -198,14 +198,14 @@ impl ObjectService {
     /// After successful store update, publishes a Modified event.
     pub async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
         let key = object.key.clone();
-        let data = object.data.value.clone();
+        let spec = object.spec.value.clone();
 
         if key.kind == SCHEMA_KIND {
             // Schema path: meta-schema validate → compile → cache → store → publish
-            self.validate_and_update_schema(object, data).await
+            self.validate_and_update_schema(object, spec).await
         } else {
             // Object path: lookup schema → validate → store → publish
-            self.validate_and_update_object(object, data).await
+            self.validate_and_update_object(object, spec).await
         }
     }
 
@@ -269,11 +269,11 @@ impl ObjectService {
         &self,
         key: ResourceKey,
         meta: ObjectMeta,
-        data: Value,
+        spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
-        let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&data)?;
-        let stored = self.store.create(&key, meta.clone(), data).await?;
+        let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&spec)?;
+        let stored = self.store.create(&key, meta.clone(), spec).await?;
         self.schema_registry.insert(&meta.name, compiled);
         self.publish_event(&key, WatchEventType::Added, &stored);
         Ok(stored)
@@ -284,17 +284,17 @@ impl ObjectService {
         &self,
         key: ResourceKey,
         meta: ObjectMeta,
-        data: Value,
+        spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
         let validator = self.schema_registry.get_validator(&key).await?;
 
-        if !validator.is_valid(&data) {
-            let errors = Self::map_validation_errors(validator.validate(&data));
+        if !validator.is_valid(&spec) {
+            let errors = Self::map_validation_errors(validator.validate(&spec));
             return Err(AppError::SchemaValidation(errors));
         }
 
-        let stored = self.store.create(&key, meta, data).await?;
+        let stored = self.store.create(&key, meta, spec).await?;
         self.publish_event(&key, WatchEventType::Added, &stored);
         Ok(stored)
     }
@@ -303,10 +303,10 @@ impl ObjectService {
     async fn validate_and_update_schema(
         &self,
         object: StoredObject,
-        data: Value,
+        spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
-        let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&data)?;
+        let (_schema_data, compiled) = self.schema_registry.validate_and_compile(&spec)?;
         let updated = self.store.update(object).await?;
         self.schema_registry
             .insert(&updated.metadata.name, compiled);
@@ -318,13 +318,13 @@ impl ObjectService {
     async fn validate_and_update_object(
         &self,
         object: StoredObject,
-        data: Value,
+        spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
         let validator = self.schema_registry.get_validator(&object.key).await?;
 
-        if !validator.is_valid(&data) {
-            let errors = Self::map_validation_errors(validator.validate(&data));
+        if !validator.is_valid(&spec) {
+            let errors = Self::map_validation_errors(validator.validate(&spec));
             return Err(AppError::SchemaValidation(errors));
         }
 
@@ -343,7 +343,7 @@ impl ObjectService {
         let schema_obj = self.store.get(&key, &name).await?;
 
         // Step 2: Parse schema data to extract target kind
-        let schema_data: SchemaData = serde_json::from_value(schema_obj.data.value.clone())
+        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.value.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         // Step 3: Build target key and check for existing objects
@@ -585,7 +585,7 @@ mod tests {
 
         let v1 = created.system.resource_version;
         let mut updated_obj = created;
-        updated_obj.data.value = json!({ "color": "red", "size": 20 });
+        updated_obj.spec.value = json!({ "color": "red", "size": 20 });
         updated_obj.system.resource_version = v1;
 
         let result = service.update(updated_obj).await;
@@ -617,7 +617,7 @@ mod tests {
             .unwrap();
 
         let mut wrong_version_obj = created;
-        wrong_version_obj.data.value = json!({ "color": "red" });
+        wrong_version_obj.spec.value = json!({ "color": "red" });
         wrong_version_obj.system.resource_version = 999;
 
         let result = service.update(wrong_version_obj).await;

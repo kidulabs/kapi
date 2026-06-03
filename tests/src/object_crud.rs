@@ -30,11 +30,11 @@ pub async fn test_create_schema_then_object(app: &TestApp) -> Result<(), String>
         "GET returned wrong name"
     );
     assert_eq!(
-        fetched["data"]["value"]["color"], "blue",
+        fetched["spec"]["value"]["color"], "blue",
         "GET returned wrong color"
     );
     assert_eq!(
-        fetched["data"]["value"]["size"], 42,
+        fetched["spec"]["value"]["size"], 42,
         "GET returned wrong size"
     );
 
@@ -69,7 +69,7 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
         "metadata": { "name": "crud-widget" },
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
-        "data": { "value": { "color": "green", "size": 20 } }
+        "spec": { "value": { "color": "green", "size": 20 } }
     });
     let resp = client
         .put("/apis/example.io/v1/Widget/crud-widget", update_body)

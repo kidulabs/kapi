@@ -194,7 +194,7 @@ impl Stream for WatchStream {
 mod tests {
     use super::*;
     use crate::object::types::{
-        FieldSelector, ObjectMeta, StoredObject, SystemMetadata, UserData, WatchEventType,
+        FieldSelector, ObjectMeta, SpecData, StoredObject, SystemMetadata, WatchEventType,
     };
     use crate::schema::SCHEMA_KIND;
     use chrono::Utc;
@@ -223,7 +223,7 @@ mod tests {
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                 },
-                data: UserData {
+                spec: SpecData {
                     value: serde_json::json!({"type": "object"}),
                 },
             },

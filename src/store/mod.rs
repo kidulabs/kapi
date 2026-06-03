@@ -20,7 +20,7 @@ pub trait ObjectStore: Send + Sync {
         &self,
         key: &ResourceKey,
         meta: ObjectMeta,
-        data: Value,
+        spec: Value,
     ) -> Result<StoredObject, AppError>;
     async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
     /// Lists objects for a resource key with optional filtering and pagination.

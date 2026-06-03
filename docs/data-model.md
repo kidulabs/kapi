@@ -66,12 +66,12 @@ struct SystemMetadata {
 
 Wire format uses camelCase: `resourceVersion`, `createdAt`, `updatedAt`.
 
-### UserData
+### SpecData
 
-Envelope for the user's domain payload. This is what gets validated against the registered JSON Schema.
+Envelope for the user's domain payload (the spec). This is what gets validated against the registered JSON Schema.
 
 ```rust
-struct UserData {
+struct SpecData {
     value: serde_json::Value,
 }
 ```
@@ -85,7 +85,7 @@ struct StoredObject {
     key: ResourceKey,
     metadata: ObjectMeta,
     system: SystemMetadata,
-    data: UserData,
+    spec: SpecData,
 }
 ```
 
@@ -233,7 +233,7 @@ data: {"eventType":"Modified","object":{...}}
         "createdAt": "2024-01-01T00:00:00Z",
         "updatedAt": "2024-01-01T00:00:00Z"
     },
-    "data": {
+    "spec": {
         "replicas": 3
     }
 }

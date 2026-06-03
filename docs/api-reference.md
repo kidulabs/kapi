@@ -52,7 +52,7 @@ POST /apis/kapi.io/v1/Schema
         "createdAt": "2024-01-01T00:00:00Z",
         "updatedAt": "2024-01-01T00:00:00Z"
     },
-    "data": {
+    "spec": {
         "targetGroup": "example.io",
         "targetVersion": "v1",
         "targetKind": "Widget",
@@ -149,7 +149,7 @@ The `metadata.name` field is extracted by the handler. The optional `metadata.la
         "createdAt": "2024-01-01T00:00:00Z",
         "updatedAt": "2024-01-01T00:00:00Z"
     },
-    "data": {
+    "spec": {
         "color": "blue",
         "size": 10
     }
@@ -199,7 +199,7 @@ Requires the full StoredObject with the correct `system.resourceVersion`.
 PUT /apis/{group}/{version}/{kind}/{name}
 ```
 
-**Request body:** Full StoredObject with updated `data.value` and optionally updated `metadata.labels`.
+**Request body:** Full StoredObject with updated `spec.value` and optionally updated `metadata.labels`.
 
 ```json
 {
@@ -216,7 +216,7 @@ PUT /apis/{group}/{version}/{kind}/{name}
         "createdAt": "2024-01-01T00:00:00Z",
         "updatedAt": "2024-01-01T00:00:00Z"
     },
-    "data": {
+    "spec": {
         "color": "red",
         "size": 20
     }

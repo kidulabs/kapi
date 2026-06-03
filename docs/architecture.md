@@ -121,11 +121,11 @@ POST /apis/example.io/v1/Widget
   │
   ▼ Handler: extract group/version/kind/body, extract ObjectMeta + labels, strip metadata
   │
-  ▼ ObjectService::create(key, meta, data)
+  ▼ ObjectService::create(key, meta, spec)
   │   ├── validate_labels(meta.labels) → 400 if invalid
   │   ├── Schema path: SchemaRegistry.validate_and_compile() → cache insert
   │   ├── Object path:  SchemaRegistry.get_validator() → validate against compiled schema
-  │   ├── store.create(key, meta, data) → StoredObject
+  │   ├── store.create(key, meta, spec) → StoredObject
   │   └── event_bus.publish(key, WatchEvent::Added(obj))
   │
   ▼ Response: 201 Created + StoredObject JSON
@@ -141,7 +141,7 @@ PUT /apis/example.io/v1/Widget/my-widget
   │
   ▼ ObjectService::update(stored_object)
   │   ├── validate_labels(stored_object.metadata.labels) → 400 if invalid
-  │   ├── Validate data payload against schema
+  │   ├── Validate spec payload against schema
   │   ├── store.update(object) — OCC check on system.resourceVersion
   │   │   └── diff-based label update (read existing → compute delta → apply)
   │   └── event_bus.publish(key, WatchEvent::Modified(obj))

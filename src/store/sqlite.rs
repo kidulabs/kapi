@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use crate::error::AppError;
 use crate::object::types::{
     ContinueToken, FieldSelector, LabelRequirement, ListOptions, ListResponse, ObjectMeta,
-    StoredObject, SystemMetadata, UserData,
+    StoredObject, SystemMetadata, SpecData,
 };
 use crate::store::{ObjectStore, ResourceKey};
 
@@ -56,7 +56,7 @@ impl SQLiteStore {
                 api_version        TEXT    NOT NULL,
                 resource_kind      TEXT    NOT NULL,
                 name               TEXT    NOT NULL,
-                data               TEXT    NOT NULL,
+                spec               TEXT    NOT NULL,
                 resource_version   INTEGER NOT NULL,
                 created_at         TEXT    NOT NULL,
                 updated_at         TEXT    NOT NULL,
@@ -122,13 +122,13 @@ impl SQLiteStore {
         version: String,
         kind: String,
         name: String,
-        data: String,
+        spec: String,
         resource_version: i64,
         created_at: String,
         updated_at: String,
     ) -> Result<StoredObject, AppError> {
-        let data_value: Value =
-            serde_json::from_str(&data).map_err(|e| AppError::Internal(e.into()))?;
+        let spec_value: Value =
+            serde_json::from_str(&spec).map_err(|e| AppError::Internal(e.into()))?;
         let created_at =
             DateTime::parse_from_rfc3339(&created_at).map_err(|e| AppError::Internal(e.into()))?;
         let updated_at =
@@ -148,7 +148,7 @@ impl SQLiteStore {
                 created_at: created_at.with_timezone(&Utc),
                 updated_at: updated_at.with_timezone(&Utc),
             },
-            data: UserData { value: data_value },
+            spec: SpecData { value: spec_value },
         })
     }
 
@@ -245,7 +245,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
     let version: String = row.get("api_version")?;
     let kind: String = row.get("resource_kind")?;
     let name: String = row.get("name")?;
-    let data: String = row.get("data")?;
+    let spec: String = row.get("spec")?;
     let resource_version: i64 = row.get("resource_version")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
@@ -254,7 +254,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
         version,
         kind,
         name,
-        data,
+        spec,
         resource_version,
         created_at,
         updated_at,
@@ -270,7 +270,7 @@ impl ObjectStore for SQLiteStore {
         &self,
         key: &ResourceKey,
         meta: ObjectMeta,
-        data: Value,
+        spec: Value,
     ) -> Result<StoredObject, AppError> {
         let key = key.clone();
         let conn = Arc::clone(&self.conn);
@@ -280,7 +280,7 @@ impl ObjectStore for SQLiteStore {
             let now = SQLiteStore::now();
             let version = next_version.fetch_add(1, Ordering::Relaxed);
 
-            let data_json = serde_json::to_string(&data).map_err(|e| AppError::Internal(e.into()))?;
+            let spec_json = serde_json::to_string(&spec).map_err(|e| AppError::Internal(e.into()))?;
             let created_at = now.to_rfc3339();
             let updated_at = now.to_rfc3339();
 
@@ -290,11 +290,11 @@ impl ObjectStore for SQLiteStore {
             let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
             let result = tx.execute(
-                "INSERT INTO objects (resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at)
+                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, resource_version, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
                 params![
                     key.group, key.version, key.kind, meta.name,
-                    data_json, version as i64, created_at, updated_at
+                    spec_json, version as i64, created_at, updated_at
                 ],
             );
 
@@ -324,7 +324,7 @@ impl ObjectStore for SQLiteStore {
                             created_at: now,
                             updated_at: now,
                         },
-                        data: UserData { value: data },
+                        spec: SpecData { value: spec },
                     })
                 }
                 Err(rusqlite::Error::SqliteFailure(err, _))
@@ -353,7 +353,7 @@ impl ObjectStore for SQLiteStore {
         tokio::task::spawn_blocking(move || {
             let c = conn.lock().unwrap();
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, resource_version, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let mut obj = stmt
@@ -497,7 +497,7 @@ impl ObjectStore for SQLiteStore {
             params_vec.push(Box::new(query_limit as i64));
 
             let sql = format!(
-                "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.data, \
+                "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.spec, \
                  o.resource_version, o.created_at, o.updated_at \
                  FROM objects o \
                  WHERE {where_sql} \
@@ -564,7 +564,7 @@ impl ObjectStore for SQLiteStore {
             let now = SQLiteStore::now();
             let new_version = next_version.fetch_add(1, Ordering::Relaxed);
 
-            let data_json = serde_json::to_string(&object.data.value).map_err(|e| AppError::Internal(e.into()))?;
+            let spec_json = serde_json::to_string(&object.spec.value).map_err(|e| AppError::Internal(e.into()))?;
             let updated_at = now.to_rfc3339();
             let expected_version = object.system.resource_version as i64;
 
@@ -574,11 +574,11 @@ impl ObjectStore for SQLiteStore {
             let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
             let rows = tx.execute(
-                "UPDATE objects SET data = ?1, resource_version = ?2, updated_at = ?3
+                "UPDATE objects SET spec = ?1, resource_version = ?2, updated_at = ?3
                  WHERE resource_group = ?4 AND api_version = ?5 AND resource_kind = ?6 AND name = ?7
                  AND resource_version = ?8",
                 params![
-                    data_json,
+                    spec_json,
                     new_version as i64,
                     updated_at,
                     object.key.group,
@@ -681,7 +681,7 @@ impl ObjectStore for SQLiteStore {
                     created_at: object.system.created_at,
                     updated_at: now,
                 },
-                data: object.data,
+                spec: object.spec,
             })
         })
         .await
@@ -717,7 +717,7 @@ impl ObjectStore for SQLiteStore {
 
             // Fetch the object first so we can return it after deletion
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, data, resource_version, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, resource_version, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let mut obj = stmt
@@ -812,13 +812,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
-        assert_eq!(created.data.value, data);
+        assert_eq!(created.spec.value, data);
         assert_eq!(created.key, key);
         assert_eq!(created.system.resource_version, 1);
 
         let retrieved = store.get(&key, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
-        assert_eq!(retrieved.data.value, created.data.value);
+        assert_eq!(retrieved.spec.value, created.spec.value);
         assert_eq!(
             retrieved.system.resource_version,
             created.system.resource_version
@@ -1034,14 +1034,14 @@ mod tests {
                 created_at: created.system.created_at,
                 updated_at: created.system.updated_at,
             },
-            data: UserData {
+            spec: SpecData {
                 value: json!({"x": 2}),
             },
         };
 
         let updated = store.update(object).await.unwrap();
         assert!(updated.system.resource_version > v1);
-        assert_eq!(updated.data.value, json!({"x": 2}));
+        assert_eq!(updated.spec.value, json!({"x": 2}));
     }
 
     #[tokio::test]
@@ -1072,7 +1072,7 @@ mod tests {
                 created_at: created.system.created_at,
                 updated_at: created.system.updated_at,
             },
-            data: UserData {
+            spec: SpecData {
                 value: json!({"x": 2}),
             },
         };
@@ -1097,7 +1097,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            data: UserData {
+            spec: SpecData {
                 value: json!({"x": 1}),
             },
         };
@@ -1125,7 +1125,7 @@ mod tests {
 
         let deleted = store.delete(&key, "my-widget").await.unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
-        assert_eq!(deleted.data.value, created.data.value);
+        assert_eq!(deleted.spec.value, created.spec.value);
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
@@ -1186,7 +1186,7 @@ mod tests {
             let store = SQLiteStore::new(db_path.to_str().unwrap()).unwrap();
             let key = test_key();
             let retrieved = store.get(&key, "persistent").await.unwrap();
-            assert_eq!(retrieved.data.value, json!({"data": "hello"}));
+            assert_eq!(retrieved.spec.value, json!({"data": "hello"}));
         }
     }
 

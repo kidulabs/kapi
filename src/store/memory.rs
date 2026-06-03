@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::error::AppError;
 use crate::object::types::{
     ContinueToken, FieldSelector, ListOptions, ListResponse, ObjectMeta, StoredObject,
-    SystemMetadata, UserData,
+    SystemMetadata, SpecData,
 };
 use crate::store::{ObjectStore, ResourceKey};
 
@@ -47,7 +47,7 @@ impl ObjectStore for InMemoryStore {
         &self,
         key: &ResourceKey,
         meta: ObjectMeta,
-        data: Value,
+        spec: Value,
     ) -> Result<StoredObject, AppError> {
         let entry = (key.clone(), meta.name.clone());
         if self.objects.contains_key(&entry) {
@@ -66,7 +66,7 @@ impl ObjectStore for InMemoryStore {
                 created_at: now,
                 updated_at: now,
             },
-            data: UserData { value: data },
+            spec: SpecData { value: spec },
         };
 
         self.objects.insert(entry, object.clone());
@@ -155,7 +155,7 @@ impl ObjectStore for InMemoryStore {
         }
 
         guard.metadata.labels = object.metadata.labels;
-        guard.data = object.data;
+        guard.spec = object.spec;
         guard.system.resource_version = self.next_version();
         guard.system.updated_at = Self::now();
         Ok(guard.clone())
@@ -225,13 +225,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
-        assert_eq!(created.data.value, data);
+        assert_eq!(created.spec.value, data);
         assert_eq!(created.key, key);
         assert_eq!(created.system.resource_version, 1);
 
         let retrieved = store.get(&key, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
-        assert_eq!(retrieved.data.value, created.data.value);
+        assert_eq!(retrieved.spec.value, created.spec.value);
         assert_eq!(
             retrieved.system.resource_version,
             created.system.resource_version
@@ -447,14 +447,14 @@ mod tests {
                 created_at: created.system.created_at,
                 updated_at: created.system.updated_at,
             },
-            data: UserData {
+            spec: SpecData {
                 value: json!({"x": 2}),
             },
         };
 
         let updated = store.update(object).await.unwrap();
         assert!(updated.system.resource_version > v1);
-        assert_eq!(updated.data.value, json!({"x": 2}));
+        assert_eq!(updated.spec.value, json!({"x": 2}));
     }
 
     #[tokio::test]
@@ -485,7 +485,7 @@ mod tests {
                 created_at: created.system.created_at,
                 updated_at: created.system.updated_at,
             },
-            data: UserData {
+            spec: SpecData {
                 value: json!({"x": 2}),
             },
         };
@@ -516,7 +516,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            data: UserData {
+            spec: SpecData {
                 value: json!({"x": 1}),
             },
         };
@@ -544,7 +544,7 @@ mod tests {
 
         let deleted = store.delete(&key, "my-widget").await.unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
-        assert_eq!(deleted.data.value, created.data.value);
+        assert_eq!(deleted.spec.value, created.spec.value);
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
@@ -584,7 +584,7 @@ mod tests {
         assert!(matches!(err, AppError::NotFound { .. }));
 
         let other = store.get(&key, "other").await.unwrap();
-        assert_eq!(other.data.value, json!({"x": 2}));
+        assert_eq!(other.spec.value, json!({"x": 2}));
     }
 
     #[tokio::test]

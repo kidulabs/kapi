@@ -85,9 +85,9 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                 "required": ["resourceVersion", "createdAt", "updatedAt"]
             }),
         ),
-        // UserData: envelope holding arbitrary JSON data
+        // SpecData: envelope holding arbitrary JSON spec data
         (
-            "UserData".to_string(),
+            "SpecData".to_string(),
             json!({
                 "type": "object",
                 "properties": {
@@ -105,9 +105,9 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "key": { "$ref": "#/components/schemas/ResourceKey" },
                     "metadata": { "$ref": "#/components/schemas/ObjectMeta" },
                     "system": { "$ref": "#/components/schemas/SystemMetadata" },
-                    "data": { "$ref": "#/components/schemas/UserData" }
+                    "spec": { "$ref": "#/components/schemas/SpecData" }
                 },
-                "required": ["key", "metadata", "system", "data"]
+                "required": ["key", "metadata", "system", "spec"]
             }),
         ),
         // ListResponse: paginated list of StoredObjects
@@ -208,10 +208,10 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
     ]
 }
 
-/// Builds the data component schema for a registered kind.
+/// Builds the spec component schema for a registered kind.
 ///
 /// Wraps the user's `jsonSchema` as an OpenAPI Schema Object.
-pub(crate) fn build_kind_data_component(
+pub(crate) fn build_kind_spec_component(
     schema_data: &SchemaData,
     comp_name: &str,
 ) -> (String, Value) {
@@ -227,8 +227,8 @@ pub(crate) fn build_kind_data_component(
 
 /// Builds the StoredObject envelope component for a registered kind.
 ///
-/// Mirrors the wire format: `{ key, metadata, system, data }` where `data` references
-/// the kind-specific data component.
+/// Mirrors the wire format: `{ key, metadata, system, spec }` where `spec` references
+/// the kind-specific spec component.
 pub(crate) fn build_kind_stored_object_component(comp_name: &str) -> (String, Value) {
     let stored_name = format!("{comp_name}StoredObject");
     let schema = json!({
@@ -237,9 +237,9 @@ pub(crate) fn build_kind_stored_object_component(comp_name: &str) -> (String, Va
             "key": { "$ref": "#/components/schemas/ResourceKey" },
             "metadata": { "$ref": "#/components/schemas/ObjectMeta" },
             "system": { "$ref": "#/components/schemas/SystemMetadata" },
-            "data": { "$ref": format!("#/components/schemas/{comp_name}") }
+            "spec": { "$ref": format!("#/components/schemas/{comp_name}") }
         },
-        "required": ["key", "metadata", "system", "data"]
+        "required": ["key", "metadata", "system", "spec"]
     });
     (stored_name, schema)
 }

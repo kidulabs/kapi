@@ -41,7 +41,7 @@ impl SchemaRegistry {
         }
     }
 
-    /// Validates `data` against the meta-schema, parses it into `SchemaData`,
+    /// Validates `spec` against the meta-schema, parses it into `SchemaData`,
     /// and compiles the json_schema into a validator.
     ///
     /// Returns the parsed [`SchemaData`] and compiled validator.
@@ -51,18 +51,18 @@ impl SchemaRegistry {
     /// # Errors
     ///
     /// Returns `AppError::InvalidSchema` if:
-    /// - The data fails meta-schema validation
-    /// - The data cannot be parsed into `SchemaData`
+    /// - The spec fails meta-schema validation
+    /// - The spec cannot be parsed into `SchemaData`
     /// - The json_schema cannot be compiled
     pub fn validate_and_compile(
         &self,
-        data: &Value,
+        spec: &Value,
     ) -> Result<(SchemaData, Arc<dyn SchemaValidator>), AppError> {
         // Validate against meta-schema
-        if !self.meta_validator.is_valid(data) {
+        if !self.meta_validator.is_valid(spec) {
             let errors: Vec<String> = self
                 .meta_validator
-                .validate(data)
+                .validate(spec)
                 .into_iter()
                 .map(|e| e.message)
                 .collect();
@@ -70,7 +70,7 @@ impl SchemaRegistry {
         }
 
         // Parse into SchemaData
-        let schema_data: SchemaData = serde_json::from_value(data.clone())
+        let schema_data: SchemaData = serde_json::from_value(spec.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         // Compile json_schema
@@ -117,7 +117,7 @@ impl SchemaRegistry {
             })?;
 
         // Parse and compile
-        let schema_data: SchemaData = serde_json::from_value(schema_obj.data.value)
+        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.value)
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         let compiled = JsonSchemaValidator::compile(&schema_data.json_schema)
@@ -194,7 +194,7 @@ mod tests {
     #[tokio::test]
     async fn validate_and_compile_valid_data_returns_schema_and_validator() {
         let registry = make_registry();
-        let data = json!({
+        let spec = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
@@ -204,7 +204,7 @@ mod tests {
             }
         });
 
-        let result = registry.validate_and_compile(&data);
+        let result = registry.validate_and_compile(&spec);
         assert!(result.is_ok());
         let (schema_data, _validator) = result.unwrap();
         assert_eq!(schema_data.target_kind, "Widget");
@@ -218,23 +218,23 @@ mod tests {
     async fn validate_and_compile_invalid_meta_schema_returns_invalid_schema() {
         let registry = make_registry();
         // Missing required fields targetVersion, targetKind, jsonSchema
-        let data = json!({ "targetGroup": "example.io" });
+        let spec = json!({ "targetGroup": "example.io" });
 
-        let result = registry.validate_and_compile(&data);
+        let result = registry.validate_and_compile(&spec);
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
 
     #[tokio::test]
     async fn validate_and_compile_uncompilable_jsonschema_returns_invalid_schema() {
         let registry = make_registry();
-        let data = json!({
+        let spec = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
             "jsonSchema": { "type": "not-a-real-type" }
         });
 
-        let result = registry.validate_and_compile(&data);
+        let result = registry.validate_and_compile(&spec);
         assert!(matches!(result, Err(AppError::InvalidSchema(_))));
     }
 

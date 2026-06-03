@@ -41,7 +41,7 @@ pub async fn get_openapi_handler(State(state): State<AppState>) -> Result<Json<V
 #[cfg(test)]
 mod tests {
     use super::components::{
-        build_kind_data_component, build_kind_list_response_component,
+        build_kind_spec_component, build_kind_list_response_component,
         build_kind_stored_object_component, build_static_components, component_name,
     };
     use super::paths::{build_kind_paths, build_openapi_spec, build_static_paths};
@@ -76,7 +76,7 @@ mod tests {
             "ResourceKey",
             "ObjectMeta",
             "SystemMetadata",
-            "UserData",
+            "SpecData",
             "StoredObject",
             "ListResponse",
             "WatchEvent",
@@ -105,7 +105,7 @@ mod tests {
         assert!(props.contains_key("key"));
         assert!(props.contains_key("metadata"));
         assert!(props.contains_key("system"));
-        assert!(props.contains_key("data"));
+        assert!(props.contains_key("spec"));
         assert_eq!(props["key"]["$ref"], "#/components/schemas/ResourceKey");
         assert_eq!(props["metadata"]["$ref"], "#/components/schemas/ObjectMeta");
         assert_eq!(
@@ -168,7 +168,7 @@ mod tests {
     }
 
     #[test]
-    fn build_kind_data_component_wraps_user_schema() {
+    fn build_kind_spec_component_wraps_user_schema() {
         let schema_data = crate::object::types::SchemaData {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
@@ -181,7 +181,7 @@ mod tests {
                 }
             }),
         };
-        let (name, schema) = build_kind_data_component(&schema_data, "WidgetExampleIo");
+        let (name, schema) = build_kind_spec_component(&schema_data, "WidgetExampleIo");
         assert_eq!(name, "WidgetExampleIo");
         let obj = schema.as_object().unwrap();
         assert_eq!(obj["type"], "object");
@@ -208,14 +208,14 @@ mod tests {
             "#/components/schemas/SystemMetadata"
         );
         assert_eq!(
-            props["data"]["$ref"],
+            props["spec"]["$ref"],
             "#/components/schemas/WidgetExampleIo"
         );
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "key"));
         assert!(required.iter().any(|r| r == "metadata"));
         assert!(required.iter().any(|r| r == "system"));
-        assert!(required.iter().any(|r| r == "data"));
+        assert!(required.iter().any(|r| r == "spec"));
     }
 
     #[test]
@@ -456,7 +456,7 @@ mod tests {
         let schemas = spec["components"]["schemas"].as_object().unwrap();
         assert!(
             schemas.contains_key("WidgetExampleIo"),
-            "missing data component"
+            "missing spec component"
         );
         assert!(
             schemas.contains_key("WidgetExampleIoStoredObject"),

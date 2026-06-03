@@ -11,7 +11,7 @@ use crate::error::AppError;
 use crate::object::service::ObjectService;
 use crate::object::types::ListOptions;
 use crate::openapi::components::{
-    build_kind_data_component, build_kind_list_response_component,
+    build_kind_spec_component, build_kind_list_response_component,
     build_kind_stored_object_component, build_static_components, component_name,
 };
 use crate::schema::schema_key;
@@ -56,7 +56,7 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
     // Parse each StoredObject's data field into SchemaData and generate dynamic content
     for item in &schema_list.items {
         let schema_data: crate::object::types::SchemaData =
-            match serde_json::from_value(item.data.value.clone()) {
+            match serde_json::from_value(item.spec.value.clone()) {
                 Ok(sd) => sd,
                 Err(_) => continue,
             };
@@ -65,8 +65,8 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
         let comp_name = component_name(&schema_name);
 
         // Generate the three component schemas for this kind
-        let (data_name, data_schema) = build_kind_data_component(&schema_data, &comp_name);
-        all_schemas.insert(data_name, data_schema);
+        let (spec_name, spec_schema) = build_kind_spec_component(&schema_data, &comp_name);
+        all_schemas.insert(spec_name, spec_schema);
 
         let (stored_name, stored_schema) = build_kind_stored_object_component(&comp_name);
         all_schemas.insert(stored_name, stored_schema);

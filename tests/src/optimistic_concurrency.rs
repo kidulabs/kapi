@@ -31,7 +31,7 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
         "metadata": { "name": "occ-correct" },
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
-        "data": { "value": { "color": "blue", "size": 2 } }
+        "spec": { "value": { "color": "blue", "size": 2 } }
     });
 
     let resp = client
@@ -77,7 +77,7 @@ pub async fn test_update_wrong_rv(app: &TestApp) -> Result<(), String> {
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
         "metadata": { "name": "occ-wrong" },
         "system": { "resourceVersion": wrong_rv, "createdAt": created_at, "updatedAt": updated_at },
-        "data": { "value": { "color": "yellow", "size": 4 } }
+        "spec": { "value": { "color": "yellow", "size": 4 } }
     });
 
     let resp = client

@@ -111,7 +111,7 @@ pub struct WatchEvent {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct UserData {
+pub struct SpecData {
     pub value: serde_json::Value,
 }
 
@@ -146,7 +146,7 @@ pub struct StoredObject {
     pub key: ResourceKey,
     pub metadata: ObjectMeta,
     pub system: SystemMetadata,
-    pub data: UserData,
+    pub spec: SpecData,
 }
 
 #[cfg(test)]
@@ -171,7 +171,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                data: UserData {
+                spec: SpecData {
                     value: serde_json::json!({}),
                 },
             },
@@ -400,7 +400,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                data: UserData {
+                spec: SpecData {
                     value: serde_json::json!({}),
                 },
             },
@@ -436,7 +436,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                data: UserData {
+                spec: SpecData {
                     value: serde_json::json!({}),
                 },
             },
@@ -475,7 +475,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                data: UserData {
+                spec: SpecData {
                     value: serde_json::json!({}),
                 },
             },
@@ -526,7 +526,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                data: UserData {
+                spec: SpecData {
                     value: serde_json::json!({}),
                 },
             },
@@ -572,7 +572,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                data: UserData {
+                spec: SpecData {
                     value: serde_json::json!({}),
                 },
             },

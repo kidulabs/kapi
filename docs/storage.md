@@ -7,7 +7,7 @@ The `ObjectStore` trait defines a pluggable storage backend for all objects, inc
 ```rust
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
-    async fn create(&self, key: &ResourceKey, meta: ObjectMeta, data: Value)
+    async fn create(&self, key: &ResourceKey, meta: ObjectMeta, spec: Value)
         -> Result<StoredObject, AppError>;
     async fn get(&self, key: &ResourceKey, name: &str)
         -> Result<StoredObject, AppError>;
@@ -61,7 +61,7 @@ Key behaviors:
 
 - **Construction:** `SQLiteStore::new(path)` creates parent directories, opens (or creates) the SQLite database, and runs schema initialization automatically
 - **Schema:** Two tables:
-  - `objects` — composite primary key `(group, version, kind, name)`, JSON data column, RFC 3339 timestamps
+  - `objects` — composite primary key `(group, version, kind, name)`, JSON spec column, RFC 3339 timestamps
   - `labels` — separate table for label storage (see below)
 - **Versioning:** Global monotonic `AtomicU64` counter, initialized from `MAX(resource_version)` on startup
 - **Pagination:** SQL-level `ORDER BY name ASC` with `LIMIT` and `name > ?` skip condition for efficient cursor-based pagination

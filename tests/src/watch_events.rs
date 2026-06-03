@@ -79,7 +79,7 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
         "metadata": { "name": "watch-test" },
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
-        "data": { "value": { "color": "orange", "size": 99 } }
+        "spec": { "value": { "color": "orange", "size": 99 } }
     });
     let resp = client
         .put("/apis/example.io/v1/Widget/watch-test", update_body)

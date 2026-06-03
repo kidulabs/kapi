@@ -130,7 +130,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/lifecycle-$TEST_
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"lifecycle-$TEST_RUN\"},
     \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
-    \"data\":{\"value\":{\"color\":\"yellow\",\"size\":10}}
+    \"spec\":{\"value\":{\"color\":\"yellow\",\"size\":10}}
   }"
 
 sleep 1
@@ -341,7 +341,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$
       \"labels\": { \"app\": \"httpd\", \"app.kubernetes.io/version\": \"v1.2.3\", \"tier\": \"frontend\" }
     },
     \"system\": {\"resourceVersion\":$RV,\"createdAt\":\"$CREATED\",\"updatedAt\":\"$UPDATED\"},
-    \"data\": {\"value\":{\"color\":\"blue\",\"size\":10}}
+    \"spec\": {\"value\":{\"color\":\"blue\",\"size\":10}}
   }" | python3 -m json.tool
 
 # 3. GET and verify labels changed
@@ -580,7 +580,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" \
       \"labels\": { \"app\": \"httpd\", \"app.kubernetes.io/version\": \"v1.2.3\", \"tier\": \"frontend\" }
     },
     \"system\": {\"resourceVersion\":$RV,\"createdAt\":\"$CREATED\",\"updatedAt\":\"$UPDATED\"},
-    \"data\": {\"value\":{\"color\":\"blue\",\"size\":10}}
+    \"spec\": {\"value\":{\"color\":\"blue\",\"size\":10}}
   }" > /dev/null
 
 # 4. Verify labels before restart
@@ -1112,14 +1112,16 @@ curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
 
 sleep 1
 
-# 3. Create widget matching only field selector (should NOT be delivered)
+# 3. Create widget with matching name but wrong label (should NOT be delivered — label mismatch)
+# NOTE: Uses a different name to avoid conflict; the fieldSelector filters by name, so
+# a different name won't match the fieldSelector anyway. This tests label filtering independently.
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"watch-combo-target-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"color\":\"red\",\"size\":20}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"watch-combo-wrong-label-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"color\":\"red\",\"size\":20}" > /dev/null
 
 sleep 1
 
-# 4. Create widget matching only label selector (should NOT be delivered)
+# 4. Create widget with matching label but wrong name (should NOT be delivered — name mismatch)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"name\":\"watch-combo-other-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"green\",\"size\":30}" > /dev/null
@@ -1138,8 +1140,8 @@ grep -o '"name":"[^"]*"' /tmp/watch-combo.log
 
 **Expected results:**
 - Only `watch-combo-target-$TEST_RUN` with `app=nginx` label is delivered
-- The duplicate name with wrong label is filtered out (AND requires both to match)
-- The wrong name with correct label is filtered out
+- `watch-combo-wrong-label-$TEST_RUN` is filtered out (wrong label)
+- `watch-combo-other-$TEST_RUN` is filtered out (wrong name)
 
 ---
 
