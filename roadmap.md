@@ -22,7 +22,7 @@
 - [ ] **Field selector variants** — `FieldSelector::NameNotEquals`, `FieldSelector::NameIn` for more expressive field-based filtering
 - [ ] **Zombie watcher cleanup** — Dead watchers (client disconnected) are only cleaned up lazily on next `publish()` for that `ResourceKey`. If no objects of a kind ever exist, watchers accumulate unbounded. Preferred: periodic background cleanup task. Secondary: `Drop` impl on `EventBus` entries.
 - [x] **Rename data to spec** — Rename `StoredObject.data` → `.spec` and `UserData` → `SpecData` across all layers (`openspec/changes/rename-data-to-spec`)
-- [ ] **Add status subresource** — `StoredObject.status: Option<SpecData>`, `PUT/GET /status` endpoint, `StatusModified` event, `update_status()` on store, `statusSchema` in meta-schema (`openspec/changes/add-status-subresource`)
+- [x] **Add status subresource** — `StoredObject.status: Option<SpecData>`, `PUT/GET /status` endpoint, `StatusModified` event, `update_status()` on store, `statusSchema` in meta-schema (`openspec/changes/add-status-subresource`)
 - [ ] **Add Finalizer Support** — add finalizer support
 - [ ] **Metadata update versioning** — should resource_version bump on metadata-only updates (labels, annotations)?
 
@@ -42,7 +42,6 @@
 - [ ] **Watch event type filtering** — `WatchFilter` support for filtering by `StatusModified` vs `Modified` event types
 - [ ] **kapi-controller-runtime** — Separate crate/project: reconcile loops, informers, work queues, leader election, finalizer management
 - [x] Modify the jsonschema to specschema in schema 
-- [ ] Status updates should be upsert. ie it should create the status if it does not exist. only POST or PUT is needed
 
 ## Explorations
 
