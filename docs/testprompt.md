@@ -1538,6 +1538,287 @@ grep -o '"event_type":"[^"]*"' /tmp/watch-spec-event.log
 
 ---
 
+## Test 40: Generation — starts at 1 on create
+
+**Goal:** Verify that newly created objects have `generation: 1`.
+
+```bash
+# 1. Create an object
+CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"gen-create-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}")
+
+echo "=== Create response ==="
+echo "$CREATE_RESP" | python3 -m json.tool
+
+# 2. Verify generation is 1
+echo "$CREATE_RESP" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+gen = obj['system']['generation']
+rv = obj['system']['resourceVersion']
+print(f'generation: {gen}')
+print(f'resourceVersion: {rv}')
+assert gen == 1, f'generation should be 1 on create, got {gen}'
+print('PASS: generation starts at 1')
+"
+```
+
+**Expected results:**
+- `system.generation` equals `1`
+- `system.resourceVersion` equals `1`
+
+---
+
+## Test 41: Generation — metadata-only update does NOT bump generation
+
+**Goal:** Verify that updating only labels (no spec change) increments `resourceVersion` but leaves `generation` unchanged.
+
+```bash
+# 1. Create object with labels
+CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":10}")
+INITIAL_GEN=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['generation'])")
+INITIAL_RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+CREATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
+UPDATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+
+echo "Initial: generation=$INITIAL_GEN, resourceVersion=$INITIAL_RV"
+
+# 2. Update with same spec but different labels (remove app, add env)
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_RUN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
+    \"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},
+    \"system\":{\"resourceVersion\":$INITIAL_RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"spec\":{\"value\":{\"color\":\"blue\",\"size\":10}}
+  }" > /tmp/gen-meta-update.json
+
+echo "=== After metadata-only update ==="
+cat /tmp/gen-meta-update.json | python3 -m json.tool
+
+# 3. Verify generation unchanged, resourceVersion bumped
+cat /tmp/gen-meta-update.json | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+gen = obj['system']['generation']
+rv = obj['system']['resourceVersion']
+print(f'generation: {gen}')
+print(f'resourceVersion: {rv}')
+assert gen == $INITIAL_GEN, f'generation should stay {INITIAL_GEN}, got {gen}'
+assert rv > $INITIAL_RV, f'resourceVersion should bump, {rv} > {INITIAL_RV}'
+print('PASS: generation unchanged, resourceVersion bumped')
+"
+```
+
+**Expected results:**
+- `generation` stays at `1` (unchanged)
+- `resourceVersion` increments (e.g., `1` → `2`)
+- Labels changed from `{"app":"nginx"}` to `{"env":"prod"}`
+
+---
+
+## Test 42: Generation — spec change bumps generation
+
+**Goal:** Verify that updating the spec increments both `generation` and `resourceVersion`.
+
+```bash
+# 1. Get current state
+CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_RUN")
+BEFORE_GEN=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['generation'])")
+BEFORE_RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+CREATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
+UPDATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+
+echo "Before: generation=$BEFORE_GEN, resourceVersion=$BEFORE_RV"
+
+# 2. Update spec (change color)
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_RUN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
+    \"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},
+    \"system\":{\"resourceVersion\":$BEFORE_RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"spec\":{\"value\":{\"color\":\"red\",\"size\":10}}
+  }" > /tmp/gen-spec-update.json
+
+echo "=== After spec update ==="
+cat /tmp/gen-spec-update.json | python3 -m json.tool
+
+# 3. Verify both counters bumped
+cat /tmp/gen-spec-update.json | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+gen = obj['system']['generation']
+rv = obj['system']['resourceVersion']
+print(f'generation: {gen}')
+print(f'resourceVersion: {rv}')
+assert gen == $BEFORE_GEN + 1, f'generation should bump to {$BEFORE_GEN + 1}, got {gen}'
+assert rv > $BEFORE_RV, f'resourceVersion should bump, {rv} > {BEFORE_RV}'
+print('PASS: both generation and resourceVersion bumped')
+"
+```
+
+**Expected results:**
+- `generation` increments (e.g., `1` → `2`)
+- `resourceVersion` increments
+- Spec changed from `{"color":"blue","size":10}` to `{"color":"red","size":10}`
+
+---
+
+## Test 43: Generation — status update does NOT bump generation
+
+**Goal:** Verify that updating status via `/status` increments `resourceVersion` but leaves `generation` unchanged.
+
+```bash
+# 1. Get current state
+CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_RUN")
+BEFORE_GEN=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['generation'])")
+BEFORE_RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+
+echo "Before: generation=$BEFORE_GEN, resourceVersion=$BEFORE_RV"
+
+# 2. Update status
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\"}}" > /tmp/gen-status-update.json
+
+echo "=== After status update ==="
+cat /tmp/gen-status-update.json | python3 -m json.tool
+
+# 3. Verify generation unchanged, resourceVersion bumped
+cat /tmp/gen-status-update.json | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+gen = obj['system']['generation']
+rv = obj['system']['resourceVersion']
+print(f'generation: {gen}')
+print(f'resourceVersion: {rv}')
+assert gen == $BEFORE_GEN, f'generation should stay {BEFORE_GEN}, got {gen}'
+assert rv > $BEFORE_RV, f'resourceVersion should bump, {rv} > {BEFORE_RV}'
+print('PASS: generation unchanged, resourceVersion bumped on status update')
+"
+```
+
+**Expected results:**
+- `generation` stays unchanged
+- `resourceVersion` increments
+- Status set to `{"value":{"phase":"Running"}}`
+
+---
+
+## Test 44: Generation — generation and resourceVersion are independent counters
+
+**Goal:** Verify that after a sequence of mixed updates, `generation` reflects only spec changes while `resourceVersion` reflects all changes.
+
+```bash
+# 1. Start fresh — create a new object
+CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"gen-indep-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}")
+echo "=== Step 0: CREATE ==="
+echo "$CREATE_RESP" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+print(f'  generation={obj[\"system\"][\"generation\"]}, resourceVersion={obj[\"system\"][\"resourceVersion\"]}')
+"
+
+# 2. Update labels only (metadata change)
+CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN")
+RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+CREATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
+UPDATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
+    \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},
+    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"spec\":{\"value\":{\"color\":\"blue\",\"size\":10}}
+  }" > /dev/null
+echo "=== Step 1: UPDATE labels only ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+print(f'  generation={obj[\"system\"][\"generation\"]}, resourceVersion={obj[\"system\"][\"resourceVersion\"]}')
+"
+
+# 3. Update spec
+CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN")
+RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+CREATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
+UPDATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
+    \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},
+    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"spec\":{\"value\":{\"color\":\"red\",\"size\":20}}
+  }" > /dev/null
+echo "=== Step 2: UPDATE spec ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+print(f'  generation={obj[\"system\"][\"generation\"]}, resourceVersion={obj[\"system\"][\"resourceVersion\"]}')
+"
+
+# 4. Update status
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN/status" \
+  -H "Content-Type: application/json" \
+  -d "{\"status\":{\"phase\":\"Running\"}}" > /dev/null
+echo "=== Step 3: UPDATE status ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+print(f'  generation={obj[\"system\"][\"generation\"]}, resourceVersion={obj[\"system\"][\"resourceVersion\"]}')
+"
+
+# 5. Update labels again (metadata change)
+CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN")
+RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+CREATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
+UPDATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
+    \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"httpd\",\"env\":\"prod\"}},
+    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"spec\":{\"value\":{\"color\":\"red\",\"size\":20}}
+  }" > /dev/null
+echo "=== Step 4: UPDATE labels again ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+gen = obj['system']['generation']
+rv = obj['system']['resourceVersion']
+print(f'  generation={gen}, resourceVersion={rv}')
+assert gen == 2, f'generation should be 2 (only 1 spec change), got {gen}'
+assert rv == 5, f'resourceVersion should be 5 (create + 4 updates), got {rv}'
+print('PASS: generation=2 (spec-only), resourceVersion=5 (all changes)')
+"
+```
+
+**Expected results:**
+
+| Step | Action | generation | resourceVersion |
+|------|--------|------------|-----------------|
+| 0 | CREATE | 1 | 1 |
+| 1 | UPDATE labels only | 1 | 2 |
+| 2 | UPDATE spec | 2 | 3 |
+| 3 | UPDATE status | 2 | 4 |
+| 4 | UPDATE labels again | 2 | 5 |
+
+Final assertion: `generation == 2`, `resourceVersion == 5`
+
+---
+
 ## Cleanup
 
 ```bash
@@ -1565,6 +1846,11 @@ rm -f /tmp/kapi-persist-test.db /tmp/kapi-test.db
 | 37 | Status update replaces status completely (not merged) |
 | 38 | Status update publishes `StatusModified` watch event |
 | 39 | Spec update publishes `Modified` event (unchanged behavior) |
+| 40 | Generation starts at 1 on create |
+| 41 | Metadata-only update (labels change) does NOT bump generation |
+| 42 | Spec change bumps generation |
+| 43 | Status update does NOT bump generation |
+| 44 | Generation and resourceVersion are independent counters (full lifecycle) |
 
 ---
 
@@ -1595,6 +1881,7 @@ export TEST_RUN=$(date +%s)
 # Tests 15–21 (label selector watch) can be run after Test 13 on the same server
 # Tests 22–29 (list filtering + combined watch selectors) can be run after Test 21 on the same server
 # Tests 30–39 (status subresource) can be run after Test 29 on the same server
+# Tests 40–44 (generation field) can be run after Test 39 on the same server
 # Test 14 requires a server restart with KAPI_DB_PATH, so run it separately.
 ```
 
