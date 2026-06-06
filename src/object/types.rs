@@ -136,10 +136,19 @@ pub struct ObjectMeta {
     pub labels: HashMap<String, String>,
 }
 
+/// Server-maintained metadata for stored objects.
+///
+/// - `resource_version`: Monotonic counter that bumps on every modification
+///   (spec, metadata, or status changes). Used for watch ordering and CAS.
+/// - `generation`: Counter that bumps only when the `spec` changes. Enables
+///   controllers to detect spec drift without reacting to metadata-only or
+///   status-only updates. Starts at 1 on create.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemMetadata {
     pub resource_version: u64,
+    #[serde(default)]
+    pub generation: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -174,6 +183,7 @@ mod tests {
                 },
                 system: SystemMetadata {
                     resource_version: 1,
+                    generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
@@ -404,6 +414,7 @@ mod tests {
                 },
                 system: SystemMetadata {
                     resource_version: 1,
+                    generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
@@ -441,6 +452,7 @@ mod tests {
                 },
                 system: SystemMetadata {
                     resource_version: 1,
+                    generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
@@ -481,6 +493,7 @@ mod tests {
                 },
                 system: SystemMetadata {
                     resource_version: 1,
+                    generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
@@ -533,6 +546,7 @@ mod tests {
                 },
                 system: SystemMetadata {
                     resource_version: 1,
+                    generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
@@ -580,6 +594,7 @@ mod tests {
                 },
                 system: SystemMetadata {
                     resource_version: 1,
+                    generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
@@ -608,6 +623,7 @@ mod tests {
             },
             system: SystemMetadata {
                 resource_version: 1,
+                generation: 1,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
@@ -638,6 +654,7 @@ mod tests {
             },
             system: SystemMetadata {
                 resource_version: 1,
+                generation: 1,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
