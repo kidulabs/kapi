@@ -18,6 +18,7 @@ use kapi::store::ObjectStore;
 use kapi::store::memory::InMemoryStore;
 use kapi::store::sqlite::SQLiteStore;
 
+pub mod generation_semantics;
 pub mod list_filtering;
 pub mod object_crud;
 pub mod object_labels;

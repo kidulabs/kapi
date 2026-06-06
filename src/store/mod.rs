@@ -14,6 +14,15 @@ pub struct ResourceKey {
     pub kind: String,
 }
 
+/// Pluggable object storage trait.
+///
+/// Generation contract:
+///
+/// - [`create()`](ObjectStore::create) initializes `generation` to `1`.
+/// - [`update()`](ObjectStore::update) bumps `generation` if and only if
+///   `spec.value` differs from the stored value.
+/// - [`update_status()`](ObjectStore::update_status) does **not** bump
+///   `generation`.
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
     async fn create(

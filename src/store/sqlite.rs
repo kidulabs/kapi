@@ -59,6 +59,7 @@ impl SQLiteStore {
                 spec               TEXT    NOT NULL,
                 status             TEXT,
                 resource_version   INTEGER NOT NULL,
+                generation         INTEGER NOT NULL DEFAULT 1,
                 created_at         TEXT    NOT NULL,
                 updated_at         TEXT    NOT NULL,
                 PRIMARY KEY (resource_group, api_version, resource_kind, name)
@@ -126,6 +127,7 @@ impl SQLiteStore {
         spec: String,
         status: Option<String>,
         resource_version: i64,
+        generation: i64,
         created_at: String,
         updated_at: String,
     ) -> Result<StoredObject, AppError> {
@@ -154,6 +156,7 @@ impl SQLiteStore {
             },
             system: SystemMetadata {
                 resource_version: resource_version as u64,
+                generation: generation as u64,
                 created_at: created_at.with_timezone(&Utc),
                 updated_at: updated_at.with_timezone(&Utc),
             },
@@ -258,6 +261,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
     let spec: String = row.get("spec")?;
     let status: Option<String> = row.get("status")?;
     let resource_version: i64 = row.get("resource_version")?;
+    let generation: i64 = row.get("generation")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
     SQLiteStore::deserialize_row(
@@ -268,6 +272,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
         spec,
         status,
         resource_version,
+        generation,
         created_at,
         updated_at,
     )
@@ -302,11 +307,11 @@ impl ObjectStore for SQLiteStore {
             let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
             let result = tx.execute(
-                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, resource_version, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
                     key.group, key.version, key.kind, meta.name,
-                    spec_json, None::<String>, version as i64, created_at, updated_at
+                    spec_json, None::<String>, version as i64, 1i64, created_at, updated_at
                 ],
             );
 
@@ -333,6 +338,7 @@ impl ObjectStore for SQLiteStore {
                         metadata: meta,
                         system: SystemMetadata {
                             resource_version: version,
+                            generation: 1,
                             created_at: now,
                             updated_at: now,
                         },
@@ -366,7 +372,7 @@ impl ObjectStore for SQLiteStore {
         tokio::task::spawn_blocking(move || {
             let c = conn.lock().unwrap();
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let mut obj = stmt
@@ -511,7 +517,7 @@ impl ObjectStore for SQLiteStore {
 
             let sql = format!(
                 "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.spec, o.status, \
-                 o.resource_version, o.created_at, o.updated_at \
+                 o.resource_version, o.generation, o.created_at, o.updated_at \
                  FROM objects o \
                  WHERE {where_sql} \
                  ORDER BY o.name ASC \
@@ -586,13 +592,42 @@ impl ObjectStore for SQLiteStore {
             // Use immediate transaction for atomicity of object update + label diff
             let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
+            // Read existing spec and generation to determine if generation should bump
+            let existing: Option<(String, i64)> = tx.query_row(
+                "SELECT spec, generation FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
+                params![
+                    object.key.group,
+                    object.key.version,
+                    object.key.kind,
+                    object.metadata.name,
+                ],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            ).optional().map_err(|e| AppError::Internal(e.into()))?;
+
+            let (existing_spec_json, existing_generation) = match existing {
+                Some(v) => v,
+                None => {
+                    return Err(AppError::NotFound {
+                        what: "object".to_string(),
+                        identifier: format!("{}/{}", object.key.kind, object.metadata.name),
+                    });
+                }
+            };
+
+            let new_generation = if existing_spec_json != spec_json {
+                existing_generation + 1
+            } else {
+                existing_generation
+            };
+
             let rows = tx.execute(
-                "UPDATE objects SET spec = ?1, resource_version = ?2, updated_at = ?3
-                 WHERE resource_group = ?4 AND api_version = ?5 AND resource_kind = ?6 AND name = ?7
-                 AND resource_version = ?8",
+                "UPDATE objects SET spec = ?1, resource_version = ?2, generation = ?3, updated_at = ?4
+                 WHERE resource_group = ?5 AND api_version = ?6 AND resource_kind = ?7 AND name = ?8
+                 AND resource_version = ?9",
                 params![
                     spec_json,
                     new_version as i64,
+                    new_generation,
                     updated_at,
                     object.key.group,
                     object.key.version,
@@ -603,40 +638,21 @@ impl ObjectStore for SQLiteStore {
             ).map_err(|e| AppError::Internal(e.into()))?;
 
             if rows == 0 {
-                // Zero rows updated: either version mismatch or object doesn't exist
-                let exists = tx.query_row(
-                    "SELECT 1 FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
+                // Version mismatch — read actual rv for Conflict error
+                let actual: u64 = tx.query_row(
+                    "SELECT resource_version FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
                     params![
                         object.key.group,
                         object.key.version,
                         object.key.kind,
                         object.metadata.name,
                     ],
-                    |_| Ok(()),
-                ).optional().map_err(|e| AppError::Internal(e.into()))?;
-
-                return match exists {
-                    Some(_) => {
-                        let actual: u64 = tx.query_row(
-                            "SELECT resource_version FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
-                            params![
-                                object.key.group,
-                                object.key.version,
-                                object.key.kind,
-                                object.metadata.name,
-                            ],
-                            |row| row.get(0),
-                        ).map_err(|e| AppError::Internal(e.into()))?;
-                        Err(AppError::Conflict {
-                            expected: expected_version as u64,
-                            actual,
-                        })
-                    }
-                    None => Err(AppError::NotFound {
-                        what: "object".to_string(),
-                        identifier: format!("{}/{}", object.key.kind, object.metadata.name),
-                    }),
-                };
+                    |row| row.get(0),
+                ).map_err(|e| AppError::Internal(e.into()))?;
+                return Err(AppError::Conflict {
+                    expected: expected_version as u64,
+                    actual,
+                });
             }
 
             // Diff-based label update: read existing, compute diff, apply
@@ -708,6 +724,7 @@ impl ObjectStore for SQLiteStore {
                 metadata: object.metadata,
                 system: SystemMetadata {
                     resource_version: new_version,
+                    generation: new_generation as u64,
                     created_at: object.system.created_at,
                     updated_at: now,
                 },
@@ -748,7 +765,7 @@ impl ObjectStore for SQLiteStore {
 
             // Fetch the object first so we can return it after deletion
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let mut obj = stmt
@@ -829,7 +846,7 @@ impl ObjectStore for SQLiteStore {
 
             // Fetch the updated object to return
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let obj = stmt
@@ -1131,6 +1148,7 @@ mod tests {
             },
             system: SystemMetadata {
                 resource_version: v1,
+                generation: 1,
                 created_at: created.system.created_at,
                 updated_at: created.system.updated_at,
             },
@@ -1170,6 +1188,7 @@ mod tests {
             },
             system: SystemMetadata {
                 resource_version: 99,
+                generation: 1,
                 created_at: created.system.created_at,
                 updated_at: created.system.updated_at,
             },
@@ -1196,6 +1215,7 @@ mod tests {
             },
             system: SystemMetadata {
                 resource_version: 1,
+                generation: 1,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },

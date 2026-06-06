@@ -63,6 +63,7 @@ impl ObjectStore for InMemoryStore {
             metadata: meta,
             system: SystemMetadata {
                 resource_version: self.next_version(),
+                generation: 1, // generation starts at 1 on create
                 created_at: now,
                 updated_at: now,
             },
@@ -156,6 +157,10 @@ impl ObjectStore for InMemoryStore {
         }
 
         guard.metadata.labels = object.metadata.labels;
+        // Bump generation only when spec changes (not on metadata-only updates)
+        if guard.spec.value != object.spec.value {
+            guard.system.generation += 1;
+        }
         guard.spec = object.spec;
         guard.system.resource_version = self.next_version();
         guard.system.updated_at = Self::now();
@@ -466,6 +471,7 @@ mod tests {
             },
             system: SystemMetadata {
                 resource_version: v1,
+                generation: 1,
                 created_at: created.system.created_at,
                 updated_at: created.system.updated_at,
             },
@@ -505,6 +511,7 @@ mod tests {
             },
             system: SystemMetadata {
                 resource_version: 99,
+                generation: 1,
                 created_at: created.system.created_at,
                 updated_at: created.system.updated_at,
             },
@@ -537,6 +544,7 @@ mod tests {
             },
             system: SystemMetadata {
                 resource_version: 1,
+                generation: 1,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
@@ -1076,5 +1084,91 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(updated.spec.value, json!({"color": "blue", "size": 10}));
+    }
+
+    #[tokio::test]
+    async fn update_metadata_only_does_not_bump_generation() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        let created = store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+        let gen_before = created.system.generation;
+        assert_eq!(gen_before, 1);
+
+        // Update with same spec but different labels
+        let mut labels = HashMap::new();
+        labels.insert("env".to_string(), "prod".to_string());
+        let object = StoredObject {
+            key: key.clone(),
+            metadata: ObjectMeta {
+                name: "my-widget".to_string(),
+                labels,
+            },
+            system: SystemMetadata {
+                resource_version: created.system.resource_version,
+                generation: created.system.generation,
+                created_at: created.system.created_at,
+                updated_at: created.system.updated_at,
+            },
+            spec: SpecData {
+                value: json!({"color": "blue"}), // same spec
+            },
+            status: None,
+        };
+
+        let updated = store.update(object).await.unwrap();
+        assert_eq!(updated.system.generation, gen_before);
+    }
+
+    #[tokio::test]
+    async fn update_spec_change_bumps_generation() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        let created = store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue"}),
+            )
+            .await
+            .unwrap();
+        let gen_before = created.system.generation;
+        assert_eq!(gen_before, 1);
+
+        // Update with different spec
+        let object = StoredObject {
+            key: key.clone(),
+            metadata: ObjectMeta {
+                name: "my-widget".to_string(),
+                labels: HashMap::new(),
+            },
+            system: SystemMetadata {
+                resource_version: created.system.resource_version,
+                generation: created.system.generation,
+                created_at: created.system.created_at,
+                updated_at: created.system.updated_at,
+            },
+            spec: SpecData {
+                value: json!({"color": "red"}), // different spec
+            },
+            status: None,
+        };
+
+        let updated = store.update(object).await.unwrap();
+        assert_eq!(updated.system.generation, gen_before + 1);
     }
 }

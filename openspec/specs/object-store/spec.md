@@ -9,6 +9,17 @@ The system SHALL define an `ObjectStore` async trait with methods `create`, `get
 - **WHEN** a type implements `ObjectStore`
 - **THEN** it can be used as `dyn ObjectStore` inside `Arc` and sent across threads
 
+### Requirement: ObjectStore trait documents generation contract
+
+The `ObjectStore` trait definition SHALL include documentation specifying that:
+- `create()` initializes `generation` to 1
+- `update()` bumps `generation` iff `spec.value` differs from the stored value
+- `update_status()` does NOT bump `generation`
+
+#### Scenario: Trait documentation is present
+- **WHEN** reading the `ObjectStore` trait definition
+- **THEN** the generation behavior is documented in the trait's doc comment
+
 #### Scenario: create accepts ObjectMeta and raw JSON value
 - **WHEN** a caller invokes `create(key, meta, data)` with an `ObjectMeta` containing `name` and `labels` and a `serde_json::Value`
 - **THEN** the implementation wraps the value into `SpecData` internally and uses `meta.name` for the object name and `meta.labels` for labels, without the caller needing to know about `SpecData`
@@ -45,6 +56,14 @@ The `create` method SHALL store a new object with the given `ResourceKey`, `Obje
 #### Scenario: Create object without labels
 - **WHEN** `create()` is called with an object that has empty labels
 - **THEN** the object SHALL be stored with an empty `HashMap` in `metadata.labels`
+
+### Requirement: generation field in SystemMetadata
+
+`SystemMetadata` SHALL include a `generation: u64` field. This field is server-maintained and represents the number of times the object's spec has been changed. It SHALL be initialized to 1 on CREATE.
+
+#### Scenario: New object has generation 1
+- **WHEN** an object is created via `store.create()`
+- **THEN** the returned `StoredObject.system.generation` equals 1
 
 ### Requirement: get retrieves an existing object
 The `get` method SHALL return the `StoredObject` for the given `ResourceKey` and name, including any labels stored with the object. If no such object exists, it SHALL return `AppError::NotFound`.
@@ -99,6 +118,16 @@ The `list` method SHALL return all `StoredObject` instances matching the given `
 ### Requirement: update modifies an existing object with optimistic concurrency
 The `update` method SHALL accept a `StoredObject` and replace the spec and `metadata` (including `labels`) of the existing object identified by `object.metadata.name` and the object's key. It SHALL compare the stored object's `system.resource_version` against `object.system.resource_version` and return `AppError::Conflict` if they do not match. On a successful update, it SHALL increment `resource_version` via the global counter, set `updated_at` to the current UTC time, and return the updated `StoredObject`. If the object does not exist, it SHALL return `AppError::NotFound`.
 
+It SHALL also compare the incoming object's `spec.value` with the stored object's `spec.value`. If they differ (using `serde_json::Value` structural equality), it SHALL increment `generation` by 1. If they are equal, `generation` SHALL remain unchanged.
+
+#### Scenario: Spec change bumps generation
+- **WHEN** `update()` is called with a different `spec.value` than the stored object
+- **THEN** the returned `StoredObject.system.generation` is exactly 1 greater than the stored generation
+
+#### Scenario: Same spec does not bump generation
+- **WHEN** `update()` is called with the same `spec.value` but different `metadata.labels`
+- **THEN** the returned `StoredObject.system.generation` equals the stored generation (unchanged)
+
 #### Scenario: Successful update increments version
 - **WHEN** `update` is called with a `StoredObject` whose `system.resource_version` matches the stored version
 - **THEN** the returned `StoredObject` has a higher `system.resource_version` and updated `system.updated_at`
@@ -140,7 +169,7 @@ The `delete` method SHALL remove the object for the given `ResourceKey` and name
 - **THEN** the object row SHALL be deleted and all associated label data SHALL be automatically deleted
 
 ### Requirement: ObjectStore update_status method
-The `ObjectStore` trait SHALL define an `update_status` method that accepts `key: &ResourceKey`, `name: &str`, and `status: serde_json::Value`, and returns `Result<StoredObject, AppError>`. The method SHALL perform a server-side read-modify-write: read the current object, replace only the `status` field, bump `resource_version`, set `updated_at` to the current time, and write back. It SHALL NOT perform optimistic concurrency checking (no CAS on `resource_version`). If the object does not exist, it SHALL return `AppError::NotFound`.
+The `ObjectStore` trait SHALL define an `update_status` method that accepts `key: &ResourceKey`, `name: &str`, and `status: serde_json::Value`, and returns `Result<StoredObject, AppError>`. The method SHALL perform a server-side read-modify-write: read the current object, replace only the `status` field, bump `resource_version`, set `updated_at` to the current time, and write back. It SHALL NOT perform optimistic concurrency checking (no CAS on `resource_version`). It SHALL NOT modify the `generation` field. If the object does not exist, it SHALL return `AppError::NotFound`.
 
 #### Scenario: Update status succeeds
 - **WHEN** `update_status(key, name, status_value)` is called for an existing object
@@ -161,6 +190,10 @@ The `ObjectStore` trait SHALL define an `update_status` method that accepts `key
 #### Scenario: Update status bumps resource_version
 - **WHEN** `update_status(key, name, status_value)` is called on an object with `resource_version: 5`
 - **THEN** the returned `StoredObject` SHALL have `resource_version: 6`
+
+#### Scenario: Update status does not bump generation
+- **WHEN** `update_status()` is called on an object with `generation: N`
+- **THEN** the returned `StoredObject.system.generation` equals N (unchanged)
 
 ### Requirement: InMemoryStore implements update_status
 `InMemoryStore` SHALL implement `update_status` by acquiring a write lock on the DashMap entry, replacing the `status` field, incrementing `resource_version`, and setting `updated_at`.
@@ -235,4 +268,21 @@ All existing tests that construct `InMemoryStore` directly SHALL continue to com
 #### Scenario: OpenAPI tests construct InMemoryStore
 - **WHEN** `make_test_service()` in `src/openapi.rs` tests creates `std::sync::Arc::new(crate::store::memory::InMemoryStore::new())`
 - **THEN** compilation succeeds and tests pass
+
+### Requirement: Integration test verifies generation semantics
+
+The integration test suite SHALL include a test that verifies generation behavior across all store implementations. The test SHALL:
+1. Create an object and verify `generation == 1`
+2. Update with same spec, different labels, verify `generation` unchanged
+3. Update with different spec, verify `generation` incremented
+4. Update status, verify `generation` unchanged
+5. Update with same spec, different labels again, verify `generation` unchanged
+
+#### Scenario: Generation test passes for InMemoryStore
+- **WHEN** the integration test runs against InMemoryStore
+- **THEN** all generation assertions pass
+
+#### Scenario: Generation test passes for SQLiteStore
+- **WHEN** the integration test runs against SQLiteStore
+- **THEN** all generation assertions pass
 

@@ -220,6 +220,7 @@ mod tests {
                 },
                 system: SystemMetadata {
                     resource_version: 1,
+                    generation: 1,
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                 },

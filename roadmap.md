@@ -12,19 +12,20 @@
 - [x] **Label filtering (list)** — `labelSelector` on non-watch list requests with store-level filtering in both InMemoryStore and SQLiteStore
 - [x] **Watch filtering on list requests** — `fieldSelector`/`labelSelector` on non-watch list requests with store-level filtering before pagination
 - [x] **Watch filter combinators** — `WatchFilter::And(Box<WatchFilter>, Box<WatchFilter>)` for composing field and label selectors on watch
+- [x] **Rename data to spec** — Rename `StoredObject.data` → `.spec` and `UserData` → `SpecData` across all layers (`openspec/changes/rename-data-to-spec`)
+- [x] **Add status subresource** — `StoredObject.status: Option<SpecData>`, `PUT/GET /status` endpoint, `StatusModified` event, `update_status()` on store, `statusSchema` in meta-schema (`openspec/changes/add-status-subresource`)
+- [x] **Extract SchemaRegistry** — Extract schema compilation, caching, and lookup from `ObjectService` into a `SchemaRegistry` collaborator (`openspec/changes/extract-schema-registry`)
+- [x] **Generation field** — `SystemMetadata.generation: u64` bumped only on spec changes, not status changes; enables controllers to detect spec drift
 
 ## Pending
 
-- [x] **Extract SchemaRegistry** — Extract schema compilation, caching, and lookup from `ObjectService` into a `SchemaRegistry` collaborator (`openspec/changes/extract-schema-registry`)
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
 - [ ] **Watch resume** — `resourceVersion` param for watch resume with ring buffer replay
 - [ ] **Watch bookmarks** — Periodic bookmark events with current resourceVersion
 - [ ] **Field selector variants** — `FieldSelector::NameNotEquals`, `FieldSelector::NameIn` for more expressive field-based filtering
 - [ ] **Zombie watcher cleanup** — Dead watchers (client disconnected) are only cleaned up lazily on next `publish()` for that `ResourceKey`. If no objects of a kind ever exist, watchers accumulate unbounded. Preferred: periodic background cleanup task. Secondary: `Drop` impl on `EventBus` entries.
-- [x] **Rename data to spec** — Rename `StoredObject.data` → `.spec` and `UserData` → `SpecData` across all layers (`openspec/changes/rename-data-to-spec`)
-- [x] **Add status subresource** — `StoredObject.status: Option<SpecData>`, `PUT/GET /status` endpoint, `StatusModified` event, `update_status()` on store, `statusSchema` in meta-schema (`openspec/changes/add-status-subresource`)
 - [ ] **Add Finalizer Support** — add finalizer support
-- [ ] **Metadata update versioning** — should resource_version bump on metadata-only updates (labels, annotations)?
+
 
 ## Deferred Improvements
 
@@ -38,10 +39,8 @@
 - [ ] **Label indexing** — Index label key-value pairs for efficient high-cardinality label queries at scale
 - [ ] **Annotations** — Free-form key-value metadata on `ObjectMeta` without selection semantics (no validation beyond key-value structure)
 - [ ] **Schema object status** — kapi-defined status shape for Schema objects (server-maintained: objectCount, schemaVersion, validationState)
-- [ ] **Generation field** — `SystemMetadata.generation: u64` bumped only on spec changes, not status changes; enables controllers to detect spec drift
 - [ ] **Watch event type filtering** — `WatchFilter` support for filtering by `StatusModified` vs `Modified` event types
 - [ ] **kapi-controller-runtime** — Separate crate/project: reconcile loops, informers, work queues, leader election, finalizer management
-- [x] Modify the jsonschema to specschema in schema 
 
 ## Explorations
 
