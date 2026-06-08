@@ -25,6 +25,8 @@
 - [ ] **Field selector variants** — `FieldSelector::NameNotEquals`, `FieldSelector::NameIn` for more expressive field-based filtering
 - [ ] **Zombie watcher cleanup** — Dead watchers (client disconnected) are only cleaned up lazily on next `publish()` for that `ResourceKey`. If no objects of a kind ever exist, watchers accumulate unbounded. Preferred: periodic background cleanup task. Secondary: `Drop` impl on `EventBus` entries.
 - [ ] **Add Finalizer Support** — add finalizer support
+- [ ] **Make the store dumb** - the store need not worry about generation, resourceversion, updated timestamps etc
+
 
 
 ## Deferred Improvements
