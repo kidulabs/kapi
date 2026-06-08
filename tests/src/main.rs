@@ -199,8 +199,8 @@ async fn main() {
             optimistic_concurrency::test_update_correct_rv
         );
         run_test!(
-            "update_wrong_rv",
-            optimistic_concurrency::test_update_wrong_rv
+            "update_wrong_rv_still_succeeds",
+            optimistic_concurrency::test_update_wrong_rv_still_succeeds
         );
 
         println!();

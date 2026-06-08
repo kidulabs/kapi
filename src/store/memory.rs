@@ -11,7 +11,7 @@ use crate::object::types::{
     ContinueToken, FieldSelector, ListOptions, ListResponse, ObjectMeta, StoredObject,
     SystemMetadata, SpecData,
 };
-use crate::store::{ObjectStore, ResourceKey};
+use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 pub struct InMemoryStore {
     objects: DashMap<(ResourceKey, String), StoredObject>,
@@ -137,72 +137,48 @@ impl ObjectStore for InMemoryStore {
         })
     }
 
-    async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
-        let name = &object.metadata.name;
-        let entry = (object.key.clone(), name.to_string());
+    fn transaction(
+        &self,
+        key: &ResourceKey,
+        name: &str,
+        op: Box<dyn FnOnce(&StoredObject) -> TransactionOp + Send>,
+    ) -> Result<StoredObject, AppError> {
+        let entry = (key.clone(), name.to_string());
+
+        // Acquire exclusive lock on this specific object via DashMap's per-key locking.
+        // The lock is held for the entire transaction (read → callback → write).
         let mut guard = self
             .objects
             .get_mut(&entry)
             .ok_or_else(|| AppError::NotFound {
                 what: "object".to_string(),
-                identifier: format!("{}/{}", object.key.kind, name),
-            })?;
-
-        let expected = object.system.resource_version;
-        if guard.system.resource_version != expected {
-            return Err(AppError::Conflict {
-                expected,
-                actual: guard.system.resource_version,
-            });
-        }
-
-        guard.metadata.labels = object.metadata.labels;
-        // Bump generation only when spec changes (not on metadata-only updates)
-        if guard.spec.value != object.spec.value {
-            guard.system.generation += 1;
-        }
-        guard.spec = object.spec;
-        guard.system.resource_version = self.next_version();
-        guard.system.updated_at = Self::now();
-        Ok(guard.clone())
-    }
-
-    async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
-        let entry = (key.clone(), name.to_string());
-        let (_, object) = self
-            .objects
-            .remove(&entry)
-            .ok_or_else(|| AppError::NotFound {
-                what: "object".to_string(),
                 identifier: format!("{}/{}", key.kind, name),
             })?;
 
-        Ok(object)
+        let existing = guard.clone();
+        let txn_op = op(&existing);
+
+        match txn_op {
+            TransactionOp::Apply(mut new_obj) => {
+                // Store bumps resource_version and updated_at automatically
+                new_obj.system.resource_version = self.next_version();
+                new_obj.system.updated_at = Self::now();
+                *guard = new_obj.clone();
+                Ok(new_obj)
+            }
+            TransactionOp::Delete => {
+                // Drop the guard before removing to avoid deadlock on the DashMap shard
+                let deleted = guard.clone();
+                drop(guard);
+                self.objects.remove(&entry);
+                Ok(deleted)
+            }
+            TransactionOp::Abort(err) => Err(err),
+        }
     }
 
     async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError> {
         Ok(self.objects.iter().any(|r| r.key().0 == *key))
-    }
-
-    async fn update_status(
-        &self,
-        key: &ResourceKey,
-        name: &str,
-        status: Value,
-    ) -> Result<StoredObject, AppError> {
-        let entry = (key.clone(), name.to_string());
-        let mut guard = self
-            .objects
-            .get_mut(&entry)
-            .ok_or_else(|| AppError::NotFound {
-                what: "object".to_string(),
-                identifier: format!("{}/{}", key.kind, name),
-            })?;
-
-        guard.status = Some(SpecData { value: status });
-        guard.system.resource_version = self.next_version();
-        guard.system.updated_at = Self::now();
-        Ok(guard.clone())
     }
 }
 
@@ -445,8 +421,10 @@ mod tests {
         assert!(second.continue_token.is_some());
     }
 
+    // --- Transaction-based tests (replacing old update/delete/update_status) ---
+
     #[tokio::test]
-    async fn update_correct_version_succeeds() {
+    async fn transaction_apply_succeeds() {
         let store = InMemoryStore::new();
         let key = test_key();
 
@@ -454,7 +432,7 @@ mod tests {
             .create(
                 &key,
                 ObjectMeta {
-                    name: "my-widget".to_string(),
+                    name: "test".to_string(),
                     labels: HashMap::new(),
                 },
                 json!({"x": 1}),
@@ -463,98 +441,34 @@ mod tests {
             .unwrap();
         let v1 = created.system.resource_version;
 
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: ObjectMeta {
-                name: "my-widget".to_string(),
-                labels: HashMap::new(),
-            },
-            system: SystemMetadata {
-                resource_version: v1,
-                generation: 1,
-                created_at: created.system.created_at,
-                updated_at: created.system.updated_at,
-            },
-            spec: SpecData {
-                value: json!({"x": 2}),
-            },
-            status: None,
-        };
-
-        let updated = store.update(object).await.unwrap();
-        assert!(updated.system.resource_version > v1);
-        assert_eq!(updated.spec.value, json!({"x": 2}));
-    }
-
-    #[tokio::test]
-    async fn update_wrong_version_conflict() {
-        let store = InMemoryStore::new();
-        let key = test_key();
-
-        let created = store
-            .create(
+        let result = store
+            .transaction(
                 &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
+                "test",
+                Box::new(|existing| {
+                    let mut updated = existing.clone();
+                    updated.spec.value = json!({"x": 2});
+                    TransactionOp::Apply(updated)
+                }),
             )
-            .await
             .unwrap();
 
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: ObjectMeta {
-                name: "my-widget".to_string(),
-                labels: HashMap::new(),
-            },
-            system: SystemMetadata {
-                resource_version: 99,
-                generation: 1,
-                created_at: created.system.created_at,
-                updated_at: created.system.updated_at,
-            },
-            spec: SpecData {
-                value: json!({"x": 2}),
-            },
-            status: None,
-        };
-
-        let err = store.update(object).await.unwrap_err();
-        assert!(matches!(
-            err,
-            AppError::Conflict {
-                expected: 99,
-                actual: 1
-            }
-        ));
+        assert!(result.system.resource_version > v1);
+        assert_eq!(result.spec.value, json!({"x": 2}));
     }
 
     #[tokio::test]
-    async fn update_missing_not_found() {
+    async fn transaction_not_found() {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: ObjectMeta {
-                name: "nonexistent".to_string(),
-                labels: HashMap::new(),
-            },
-            system: SystemMetadata {
-                resource_version: 1,
-                generation: 1,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-            spec: SpecData {
-                value: json!({"x": 1}),
-            },
-            status: None,
-        };
-
-        let err = store.update(object).await.unwrap_err();
+        let err = store
+            .transaction(
+                &key,
+                "nonexistent",
+                Box::new(|_existing| unreachable!()),
+            )
+            .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -575,7 +489,9 @@ mod tests {
             .await
             .unwrap();
 
-        let deleted = store.delete(&key, "my-widget").await.unwrap();
+        let deleted = store
+            .transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
         assert_eq!(deleted.spec.value, created.spec.value);
 
@@ -611,7 +527,9 @@ mod tests {
             .await
             .unwrap();
 
-        store.delete(&key, "my-widget").await.unwrap();
+        store
+            .transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .unwrap();
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
@@ -625,7 +543,13 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let err = store.delete(&key, "nonexistent").await.unwrap_err();
+        let err = store
+            .transaction(
+                &key,
+                "nonexistent",
+                Box::new(|_existing| unreachable!()),
+            )
+            .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -964,7 +888,7 @@ mod tests {
         assert!(!store.exists(&other_key).await.unwrap());
     }
 
-    // --- update_status tests ---
+    // --- Status transaction tests (replacing update_status) ---
 
     #[tokio::test]
     async fn update_status_success() {
@@ -986,11 +910,24 @@ mod tests {
         assert!(created.status.is_none());
 
         let updated = store
-            .update_status(&key, "my-widget", json!({"phase": "Running"}))
-            .await
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut obj = existing.clone();
+                    obj.status = Some(SpecData {
+                        value: json!({"phase": "Running"}),
+                    });
+                    TransactionOp::Apply(obj)
+                }),
+            )
             .unwrap();
+
         assert!(updated.status.is_some());
-        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+        assert_eq!(
+            updated.status.clone().unwrap().value,
+            json!({"phase": "Running"})
+        );
         assert!(updated.system.resource_version > v1);
         // Spec should be unchanged
         assert_eq!(updated.spec.value, json!({"color": "blue"}));
@@ -1002,8 +939,11 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .update_status(&key, "nonexistent", json!({"phase": "Running"}))
-            .await
+            .transaction(
+                &key,
+                "nonexistent",
+                Box::new(|_existing| unreachable!()),
+            )
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -1025,16 +965,40 @@ mod tests {
             .await
             .unwrap();
 
+        // First status update
         store
-            .update_status(&key, "my-widget", json!({"phase": "Pending"}))
-            .await
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut obj = existing.clone();
+                    obj.status = Some(SpecData {
+                        value: json!({"phase": "Pending"}),
+                    });
+                    TransactionOp::Apply(obj)
+                }),
+            )
             .unwrap();
 
+        // Second status update (replace)
         let updated = store
-            .update_status(&key, "my-widget", json!({"phase": "Running"}))
-            .await
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut obj = existing.clone();
+                    obj.status = Some(SpecData {
+                        value: json!({"phase": "Running"}),
+                    });
+                    TransactionOp::Apply(obj)
+                }),
+            )
             .unwrap();
-        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+
+        assert_eq!(
+            updated.status.unwrap().value,
+            json!({"phase": "Running"})
+        );
     }
 
     #[tokio::test]
@@ -1056,9 +1020,19 @@ mod tests {
         let v1 = created.system.resource_version;
 
         let updated = store
-            .update_status(&key, "my-widget", json!({"phase": "Running"}))
-            .await
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut obj = existing.clone();
+                    obj.status = Some(SpecData {
+                        value: json!({"phase": "Running"}),
+                    });
+                    TransactionOp::Apply(obj)
+                }),
+            )
             .unwrap();
+
         assert!(updated.system.resource_version > v1);
     }
 
@@ -1080,11 +1054,23 @@ mod tests {
             .unwrap();
 
         let updated = store
-            .update_status(&key, "my-widget", json!({"phase": "Running"}))
-            .await
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut obj = existing.clone();
+                    obj.status = Some(SpecData {
+                        value: json!({"phase": "Running"}),
+                    });
+                    TransactionOp::Apply(obj)
+                }),
+            )
             .unwrap();
+
         assert_eq!(updated.spec.value, json!({"color": "blue", "size": 10}));
     }
+
+    // --- Generation transaction tests (replacing old update generation tests) ---
 
     #[tokio::test]
     async fn update_metadata_only_does_not_bump_generation() {
@@ -1105,28 +1091,23 @@ mod tests {
         let gen_before = created.system.generation;
         assert_eq!(gen_before, 1);
 
-        // Update with same spec but different labels
-        let mut labels = HashMap::new();
-        labels.insert("env".to_string(), "prod".to_string());
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: ObjectMeta {
-                name: "my-widget".to_string(),
-                labels,
-            },
-            system: SystemMetadata {
-                resource_version: created.system.resource_version,
-                generation: created.system.generation,
-                created_at: created.system.created_at,
-                updated_at: created.system.updated_at,
-            },
-            spec: SpecData {
-                value: json!({"color": "blue"}), // same spec
-            },
-            status: None,
-        };
+        // Update with same spec but different labels; caller keeps generation unchanged
+        let updated = store
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(move |existing| {
+                    let mut obj = existing.clone();
+                    let mut labels = HashMap::new();
+                    labels.insert("env".to_string(), "prod".to_string());
+                    obj.metadata.labels = labels;
+                    // Keep same spec, keep same generation
+                    obj.system.generation = gen_before;
+                    TransactionOp::Apply(obj)
+                }),
+            )
+            .unwrap();
 
-        let updated = store.update(object).await.unwrap();
         assert_eq!(updated.system.generation, gen_before);
     }
 
@@ -1149,26 +1130,131 @@ mod tests {
         let gen_before = created.system.generation;
         assert_eq!(gen_before, 1);
 
-        // Update with different spec
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: ObjectMeta {
-                name: "my-widget".to_string(),
-                labels: HashMap::new(),
-            },
-            system: SystemMetadata {
-                resource_version: created.system.resource_version,
-                generation: created.system.generation,
-                created_at: created.system.created_at,
-                updated_at: created.system.updated_at,
-            },
-            spec: SpecData {
-                value: json!({"color": "red"}), // different spec
-            },
-            status: None,
-        };
+        // Update with different spec; caller bumps generation
+        let updated = store
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(move |existing| {
+                    let mut obj = existing.clone();
+                    obj.spec.value = json!({"color": "red"});
+                    obj.system.generation = gen_before + 1;
+                    TransactionOp::Apply(obj)
+                }),
+            )
+            .unwrap();
 
-        let updated = store.update(object).await.unwrap();
         assert_eq!(updated.system.generation, gen_before + 1);
+    }
+
+    // --- New transaction tests ---
+
+    #[tokio::test]
+    async fn transaction_abort_does_not_modify() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
+            .await
+            .unwrap();
+
+        // Attempt transaction that aborts
+        let err = store
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|_existing| {
+                    TransactionOp::Abort(AppError::Internal(anyhow::anyhow!("aborted")))
+                }),
+            )
+            .unwrap_err();
+
+        assert!(matches!(err, AppError::Internal(_)));
+
+        // Object should be unchanged
+        let obj = store.get(&key, "my-widget").await.unwrap();
+        assert_eq!(obj.spec.value, json!({"x": 1}));
+    }
+
+    #[tokio::test]
+    async fn transaction_bumps_resource_version_on_apply() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        let created = store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+
+        let result = store
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut obj = existing.clone();
+                    obj.spec.value = json!({"x": 2});
+                    TransactionOp::Apply(obj)
+                }),
+            )
+            .unwrap();
+
+        assert!(result.system.resource_version > v1);
+
+        let result2 = store
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut obj = existing.clone();
+                    obj.spec.value = json!({"x": 3});
+                    TransactionOp::Apply(obj)
+                }),
+            )
+            .unwrap();
+
+        assert!(result2.system.resource_version > result.system.resource_version);
+    }
+
+    #[tokio::test]
+    async fn transaction_delete_removes_object() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store
+            .create(
+                &key,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"x": 1}),
+            )
+            .await
+            .unwrap();
+
+        // Delete via transaction
+        store
+            .transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .unwrap();
+
+        // Get should now fail with NotFound
+        let err = store.get(&key, "my-widget").await.unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
     }
 }

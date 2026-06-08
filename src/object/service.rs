@@ -18,7 +18,7 @@ use crate::object::types::{
 use crate::schema::{SchemaRegistry, SchemaValidator, SCHEMA_KIND};
 #[cfg(test)]
 use crate::schema::schema_key;
-use crate::store::{ObjectStore, ResourceKey};
+use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 /// Validates a label key according to label validation rules.
 /// Keys must be non-empty, max 256 chars, matching `[a-zA-Z0-9][-_.a-zA-Z0-9]*`
@@ -224,8 +224,11 @@ impl ObjectService {
             // Schema path: check for existing objects before deletion
             self.delete_schema(key, name).await
         } else {
-            // Regular object path: delete and publish
-            let deleted = self.store.delete(&key, &name).await?;
+            // Regular object path: delete via transaction and publish
+            let deleted = self.store.transaction(
+                &key, &name,
+                Box::new(|_existing| TransactionOp::Delete),
+            )?;
             self.publish_event(&key, WatchEventType::Deleted, &deleted);
             Ok(deleted)
         }
@@ -259,8 +262,15 @@ impl ObjectService {
             return Err(AppError::SchemaValidation(errors));
         }
 
-        // Update status in store
-        let updated = self.store.update_status(&key, &name, status).await?;
+        // Update status in store via transaction
+        let updated = self.store.transaction(
+            &key, &name,
+            Box::new(move |existing| {
+                let mut updated = existing.clone();
+                updated.status = Some(SpecData { value: status });
+                TransactionOp::Apply(updated)
+            }),
+        )?;
         self.publish_event(&key, WatchEventType::StatusModified, &updated);
         Ok(updated)
     }
@@ -356,7 +366,16 @@ impl ObjectService {
         validate_labels(&object.metadata.labels)?;
         let (_schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
-        let updated = self.store.update(object).await?;
+
+        let key = object.key.clone();
+        let name = object.metadata.name.clone();
+        let updated = self.store.transaction(&key, &name, Box::new(move |existing| {
+            let mut updated = object;
+            // Preserve system metadata (store will bump rv and updated_at)
+            updated.system.resource_version = existing.system.resource_version;
+            updated.system.created_at = existing.system.created_at;
+            TransactionOp::Apply(updated)
+        }))?;
         self.schema_registry
             .insert(&updated.metadata.name, compiled);
         if let Some(status_validator) = status_compiled {
@@ -381,7 +400,21 @@ impl ObjectService {
             return Err(AppError::SchemaValidation(errors));
         }
 
-        let updated = self.store.update(object).await?;
+        let key = object.key.clone();
+        let name = object.metadata.name.clone();
+        let updated = self.store.transaction(&key, &name, Box::new(move |existing| {
+            let mut updated = object;
+            // Business logic: bump generation only on spec change
+            if updated.spec.value != existing.spec.value {
+                updated.system.generation = existing.system.generation + 1;
+            } else {
+                updated.system.generation = existing.system.generation;
+            }
+            // Preserve system metadata (store will bump rv and updated_at)
+            updated.system.resource_version = existing.system.resource_version;
+            updated.system.created_at = existing.system.created_at;
+            TransactionOp::Apply(updated)
+        }))?;
         self.publish_event(&updated.key, WatchEventType::Modified, &updated);
         Ok(updated)
     }
@@ -413,8 +446,11 @@ impl ObjectService {
             });
         }
 
-        // Step 4: Delete the schema
-        let deleted = self.store.delete(&key, &name).await?;
+        // Step 4: Delete the schema via transaction
+        let deleted = self.store.transaction(
+            &key, &name,
+            Box::new(|_existing| TransactionOp::Delete),
+        )?;
 
         // Step 5: Evict from cache
         self.schema_registry.evict(&name);
@@ -646,9 +682,9 @@ mod tests {
         assert!(result.unwrap().system.resource_version > v1);
     }
 
-    // T25: Update with wrong version → Conflict, no event published
+    // T25: Update with wrong version still succeeds (OCP is replaced by locking)
     #[tokio::test]
-    async fn update_wrong_version_returns_conflict() {
+    async fn update_with_wrong_version_still_succeeds() {
         let service = make_service();
         register_test_schema(&service).await;
 
@@ -673,8 +709,14 @@ mod tests {
         wrong_version_obj.spec.value = json!({ "color": "red" });
         wrong_version_obj.system.resource_version = 999;
 
+        // OCP is replaced by locking — wrong version doesn't cause Conflict
         let result = service.update(wrong_version_obj).await;
-        assert!(matches!(result, Err(AppError::Conflict { .. })));
+        assert!(result.is_ok());
+        assert_eq!(
+            result.unwrap().spec.value,
+            json!({ "color": "red" }),
+            "update should succeed despite wrong version"
+        );
     }
 
     // T26: Delete Schema with no objects → success, cache evicted, Deleted event published
