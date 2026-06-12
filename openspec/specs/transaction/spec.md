@@ -32,9 +32,10 @@ The transaction method SHALL accept a callback that receives a reference to the 
 
 The `TransactionOp` enum SHALL define four variants: `Apply(StoredObject)`, `Delete`, `Abort(AppError)`, and `NoOp(T)`.
 
-#### Scenario: Apply persists and bumps version
+#### Scenario: Apply persists object as-is
 - **WHEN** the callback returns `TransactionOp::Apply(obj)`
-- **THEN** the store SHALL persist the provided object, bump `resource_version`, update `updated_at`, and return `Ok(obj)`
+- **THEN** the store SHALL persist the provided object exactly as-is, without modifying any system metadata fields (resource_version, generation, updated_at)
+- **AND** the store SHALL return `Ok(obj)`
 
 #### Scenario: Delete removes the object
 - **WHEN** the callback returns `TransactionOp::Delete`
@@ -62,11 +63,12 @@ The callback MUST be fast and non-blocking. It MUST NOT perform I/O operations, 
 
 ### Requirement: Automatic resource version bumping
 
-The store SHALL automatically bump `resource_version` and update `updated_at` when `TransactionOp::Apply` is returned.
+The store SHALL NOT automatically bump `resource_version` or update `updated_at` when `TransactionOp::Apply` is returned. The caller (service layer) is responsible for setting all system metadata before returning `TransactionOp::Apply`.
 
-#### Scenario: Version bumps on Apply
-- **WHEN** `TransactionOp::Apply(obj)` is returned
-- **THEN** the stored object's `resource_version` SHALL be incremented and `updated_at` SHALL be set to the current time
+#### Scenario: No automatic version bump on Apply
+- **WHEN** `TransactionOp::Apply(obj)` is returned with `obj.system.resource_version = 5`
+- **THEN** the stored object's `resource_version` SHALL be exactly 5 (not incremented by the store)
+- **AND** the stored object's `updated_at` SHALL be exactly what was in `obj` (not modified by the store)
 
 #### Scenario: No version bump on other ops
 - **WHEN** `TransactionOp::Delete`, `Abort`, or `NoOp` is returned

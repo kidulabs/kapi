@@ -1,49 +1,29 @@
 ## Purpose
 
-Define the `ObjectStore` trait and its `InMemoryStore` implementation for persisting, retrieving, listing, updating, and deleting `StoredObject` instances identified by `ResourceKey` and name.
+Define the `ObjectStore` trait and its `InMemoryStore` implementation for persisting, retrieving, listing, and deleting `StoredObject` instances identified by `ResourceKey` and name.
 ## Requirements
 ### Requirement: ObjectStore trait defines the storage contract
-The system SHALL define an `ObjectStore` async trait with methods `create`, `get`, `list`, `update`, `delete`, `exists`, and `update_status` that operate on `StoredObject` instances. The trait SHALL require `Send + Sync`. The `create` method SHALL accept `ObjectMeta` for the metadata parameter (which includes `name` and `labels`) and `serde_json::Value` for the `spec` parameter. The `update` method SHALL accept a full `StoredObject` and perform optimistic concurrency control by comparing the embedded `object.system.resource_version` against the stored version. The `delete` method SHALL accept only `key` and `name` parameters and perform unconditional removal. The `exists` method SHALL accept a `ResourceKey` and return `Result<bool, AppError>` indicating whether any objects exist for that key. The `update_status` method SHALL accept `key: &ResourceKey`, `name: &str`, and `status: serde_json::Value`, and return `Result<StoredObject, AppError>`. It SHALL perform a server-side read-modify-write without optimistic concurrency checking (no CAS on `resource_version`).
+The system SHALL define an `ObjectStore` async trait with methods `create`, `get`, `list`, `transaction`, and `exists` that operate on `StoredObject` instances. The trait SHALL require `Send + Sync`. The `create` method SHALL accept a complete `StoredObject` and persist it as-is. The `transaction` method SHALL accept a callback that returns a `TransactionOp`. The store SHALL NOT modify system metadata (resource_version, generation, timestamps) — it SHALL persist objects exactly as provided. The `exists` method SHALL accept a `ResourceKey` and return `Result<bool, AppError>` indicating whether any objects exist for that key.
 
 #### Scenario: Trait is object-safe and thread-safe
 - **WHEN** a type implements `ObjectStore`
 - **THEN** it can be used as `dyn ObjectStore` inside `Arc` and sent across threads
 
-### Requirement: ObjectStore trait documents generation contract
-
-The `ObjectStore` trait definition SHALL include documentation specifying that:
-- `create()` initializes `generation` to 1
-- `update()` bumps `generation` iff `spec.value` differs from the stored value
-- `update_status()` does NOT bump `generation`
-
-#### Scenario: Trait documentation is present
-- **WHEN** reading the `ObjectStore` trait definition
-- **THEN** the generation behavior is documented in the trait's doc comment
-
-#### Scenario: create accepts ObjectMeta and raw JSON value
-- **WHEN** a caller invokes `create(key, meta, data)` with an `ObjectMeta` containing `name` and `labels` and a `serde_json::Value`
-- **THEN** the implementation wraps the value into `SpecData` internally and uses `meta.name` for the object name and `meta.labels` for labels, without the caller needing to know about `SpecData`
-
-#### Scenario: update accepts full StoredObject
-- **WHEN** a caller invokes `update(object)` with a `StoredObject`
-- **THEN** the implementation uses `object.system.resource_version` for optimistic concurrency control and preserves `object.metadata.labels`
-
-#### Scenario: delete takes only key and name
-- **WHEN** a caller invokes `delete(key, name)`
-- **THEN** the implementation removes the object unconditionally without any version check
+#### Scenario: create accepts a complete StoredObject
+- **WHEN** a caller invokes `create(object)` with a `StoredObject`
+- **THEN** the implementation persists the object as-is, without modifying any system metadata fields
 
 #### Scenario: exists checks for object presence
 - **WHEN** a caller invokes `exists(key)` with a `ResourceKey`
 - **THEN** the implementation returns `Ok(true)` if any objects exist for that key, `Ok(false)` otherwise
 
-### Requirement: create stores a new object and assigns a version
-The `create` method SHALL store a new object with the given `ResourceKey`, `ObjectMeta.name`, `ObjectMeta.labels`, and spec. It SHALL assign a globally monotonic `resource_version` starting from 1, set `created_at` and `updated_at` to the current UTC time, and return the resulting `StoredObject` with `metadata` populated from the `ObjectMeta` argument and `system` populated with the server-generated fields. If an object with the same key and name already exists, it SHALL return `AppError::AlreadyExists`.
+### Requirement: create stores a new object without modifying metadata
+The `create` method SHALL store the provided `StoredObject` as-is. It SHALL NOT modify `system.resource_version`, `system.generation`, `system.created_at`, or `system.updated_at`. The caller (service layer) is responsible for setting all system metadata before calling `create`. If an object with the same key and name already exists, it SHALL return `AppError::AlreadyExists`.
 
-#### Scenario: Successful create returns stored object with version 1
-- **WHEN** `create` is called for a key/name pair that does not exist
-- **THEN** the returned `StoredObject` has `system.resource_version` >= 1, `system.created_at` set, and `system.updated_at` equal to `system.created_at`
-- **AND** `metadata.name` matches the `ObjectMeta.name` provided
-- **AND** `metadata.labels` matches the `ObjectMeta.labels` provided
+#### Scenario: Successful create persists object with caller-provided metadata
+- **WHEN** `create` is called with a `StoredObject` that has `system.resource_version = 1`, `system.generation = 1`, and timestamps set
+- **THEN** the stored object SHALL have exactly those metadata values
+- **AND** the returned `StoredObject` SHALL match the input
 
 #### Scenario: Duplicate create returns AlreadyExists
 - **WHEN** `create` is called for a key/name pair that already exists
@@ -57,13 +37,16 @@ The `create` method SHALL store a new object with the given `ResourceKey`, `Obje
 - **WHEN** `create()` is called with an object that has empty labels
 - **THEN** the object SHALL be stored with an empty `HashMap` in `metadata.labels`
 
-### Requirement: generation field in SystemMetadata
+### Requirement: Store implementations do not maintain global state
+Store implementations SHALL NOT maintain a global version counter or any other global mutable state for metadata generation. `InMemoryStore` SHALL NOT have an `AtomicU64` field. `SQLiteStore` SHALL NOT have an `init_version_counter()` method or restore version state on startup.
 
-`SystemMetadata` SHALL include a `generation: u64` field. This field is server-maintained and represents the number of times the object's spec has been changed. It SHALL be initialized to 1 on CREATE.
+#### Scenario: InMemoryStore has no global counter
+- **WHEN** `InMemoryStore` is constructed
+- **THEN** it SHALL NOT contain an `AtomicU64` or similar global counter
 
-#### Scenario: New object has generation 1
-- **WHEN** an object is created via `store.create()`
-- **THEN** the returned `StoredObject.system.generation` equals 1
+#### Scenario: SQLiteStore does not restore version state
+- **WHEN** `SQLiteStore` is opened on an existing database
+- **THEN** it SHALL NOT query `MAX(resource_version)` or restore any global counter
 
 ### Requirement: get retrieves an existing object
 The `get` method SHALL return the `StoredObject` for the given `ResourceKey` and name, including any labels stored with the object. If no such object exists, it SHALL return `AppError::NotFound`.
@@ -115,113 +98,8 @@ The `list` method SHALL return all `StoredObject` instances matching the given `
 - **WHEN** `list()` is called with a filter and a continue token
 - **THEN** the filter SHALL be applied, then the cursor skip, then truncation
 
-### Requirement: update modifies an existing object with optimistic concurrency
-The `update` method SHALL accept a `StoredObject` and replace the spec and `metadata` (including `labels`) of the existing object identified by `object.metadata.name` and the object's key. It SHALL compare the stored object's `system.resource_version` against `object.system.resource_version` and return `AppError::Conflict` if they do not match. On a successful update, it SHALL increment `resource_version` via the global counter, set `updated_at` to the current UTC time, and return the updated `StoredObject`. If the object does not exist, it SHALL return `AppError::NotFound`.
-
-It SHALL also compare the incoming object's `spec.value` with the stored object's `spec.value`. If they differ (using `serde_json::Value` structural equality), it SHALL increment `generation` by 1. If they are equal, `generation` SHALL remain unchanged.
-
-#### Scenario: Spec change bumps generation
-- **WHEN** `update()` is called with a different `spec.value` than the stored object
-- **THEN** the returned `StoredObject.system.generation` is exactly 1 greater than the stored generation
-
-#### Scenario: Same spec does not bump generation
-- **WHEN** `update()` is called with the same `spec.value` but different `metadata.labels`
-- **THEN** the returned `StoredObject.system.generation` equals the stored generation (unchanged)
-
-#### Scenario: Successful update increments version
-- **WHEN** `update` is called with a `StoredObject` whose `system.resource_version` matches the stored version
-- **THEN** the returned `StoredObject` has a higher `system.resource_version` and updated `system.updated_at`
-- **AND** `metadata.labels` reflects the updated labels
-
-#### Scenario: Update with wrong version returns conflict
-- **WHEN** `update` is called with a `StoredObject` whose `system.resource_version` does not match the stored version
-- **THEN** the error is `AppError::Conflict` with `expected` and `actual` fields
-
-#### Scenario: Update for missing object returns NotFound
-- **WHEN** `update` is called for a key/name pair that does not exist
-- **THEN** the error is `AppError::NotFound`
-
-#### Scenario: Update with label changes
-- **WHEN** `update()` is called with changed labels
-- **THEN** the object update and label changes SHALL be applied atomically
-
-#### Scenario: Update with no label changes
-- **WHEN** `update()` is called with the same labels as the existing object
-- **THEN** no label table writes SHALL occur, only the object update
-
-### Requirement: delete removes an object unconditionally
-The `delete` method SHALL remove the object for the given `ResourceKey` and name and return the deleted `StoredObject`. It SHALL NOT perform any version check. If the object does not exist, it SHALL return `AppError::NotFound`. Any associated label data SHALL be deleted along with the object.
-
-#### Scenario: Successful delete returns the deleted object
-- **WHEN** `delete` is called for an existing object
-- **THEN** the object is removed and the returned `StoredObject` matches the previously stored data
-
-#### Scenario: Delete for missing object returns NotFound
-- **WHEN** `delete` is called for a key/name pair that does not exist
-- **THEN** the error is `AppError::NotFound`
-
-#### Scenario: Delete is unconditional regardless of version
-- **WHEN** `delete` is called for an existing object
-- **THEN** the object is removed regardless of its current `resource_version`
-
-#### Scenario: Delete object with labels
-- **WHEN** `delete()` is called for an object that has labels
-- **THEN** the object row SHALL be deleted and all associated label data SHALL be automatically deleted
-
-### Requirement: ObjectStore update_status method
-The `ObjectStore` trait SHALL define an `update_status` method that accepts `key: &ResourceKey`, `name: &str`, and `status: serde_json::Value`, and returns `Result<StoredObject, AppError>`. The method SHALL perform a server-side read-modify-write: read the current object, replace only the `status` field, bump `resource_version`, set `updated_at` to the current time, and write back. It SHALL NOT perform optimistic concurrency checking (no CAS on `resource_version`). It SHALL NOT modify the `generation` field. If the object does not exist, it SHALL return `AppError::NotFound`.
-
-#### Scenario: Update status succeeds
-- **WHEN** `update_status(key, name, status_value)` is called for an existing object
-- **THEN** the object's `status` field is replaced with `Some(SpecData { value: status_value })`
-- **AND** `system.resource_version` is incremented
-- **AND** `system.updated_at` is set to the current time
-- **AND** the full `StoredObject` is returned
-
-#### Scenario: Update status for non-existent object
-- **WHEN** `update_status(key, name, status_value)` is called for an object that does not exist
-- **THEN** the error is `AppError::NotFound`
-
-#### Scenario: Update status does not modify spec
-- **WHEN** `update_status(key, name, status_value)` is called
-- **THEN** the object's `spec` field SHALL remain unchanged
-- **AND** the object's `metadata.labels` SHALL remain unchanged
-
-#### Scenario: Update status bumps resource_version
-- **WHEN** `update_status(key, name, status_value)` is called on an object with `resource_version: 5`
-- **THEN** the returned `StoredObject` SHALL have `resource_version: 6`
-
-#### Scenario: Update status does not bump generation
-- **WHEN** `update_status()` is called on an object with `generation: N`
-- **THEN** the returned `StoredObject.system.generation` equals N (unchanged)
-
-### Requirement: InMemoryStore implements update_status
-`InMemoryStore` SHALL implement `update_status` by acquiring a write lock on the DashMap entry, replacing the `status` field, incrementing `resource_version`, and setting `updated_at`.
-
-#### Scenario: InMemoryStore update_status replaces status
-- **WHEN** `update_status` is called on an InMemoryStore
-- **THEN** the stored object's `status` is replaced and `resource_version` is incremented
-
-### Requirement: SQLiteStore implements update_status
-`SQLiteStore` SHALL implement `update_status` by executing an UPDATE statement that sets `status = ?1`, `resource_version = ?2`, `updated_at = ?3` WHERE `resource_group = ?4 AND api_version = ?5 AND resource_kind = ?6 AND name = ?7`. No `AND resource_version = ?8` clause is used (no CAS).
-
-#### Scenario: SQLiteStore update_status replaces status
-- **WHEN** `update_status` is called on a SQLiteStore
-- **THEN** the `status` column is updated, `resource_version` is incremented, and `updated_at` is set
-
-### Requirement: SQLite objects table has nullable status column
-The `objects` table in SQLite SHALL include a `status TEXT` column that is nullable. Existing rows SHALL have `status = NULL`. The `init_schema` method SHALL create this column.
-
-#### Scenario: New SQLite database includes status column
-- **WHEN** a new SQLiteStore is created
-- **THEN** the `objects` table SHALL have a `status TEXT` column
-
-#### Scenario: Existing rows have null status
-- **WHEN** an object is created without status
-- **THEN** the `status` column SHALL be `NULL`
-
 ### Requirement: InMemoryStore uses DashMap for concurrent access
-The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore` using `DashMap<(ResourceKey, String), StoredObject>` as its backing store with `std::sync::atomic::AtomicU64` as its version counter, and `SQLiteStore` using a SQLite database file with `rusqlite` as its backing store. Both SHALL implement the `ObjectStore` trait and produce identical behavior for all trait methods. `InMemoryStore::create()` SHALL store labels as part of `ObjectMeta` within the `StoredObject`. `InMemoryStore::update()` SHALL replace the entire `ObjectMeta` (including labels) with the updated version.
+The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore` using `DashMap<(ResourceKey, String), StoredObject>` as its backing store, and `SQLiteStore` using a SQLite database file with `rusqlite` as its backing store. Both SHALL implement the `ObjectStore` trait and produce identical behavior for all trait methods. Neither implementation SHALL maintain global state for metadata generation.
 
 `InMemoryStore::list()` SHALL apply field and label filters in Rust after collecting objects but before sorting and pagination (order: collect → filter → sort → skip → truncate).
 
@@ -238,14 +116,6 @@ The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore`
 #### Scenario: Both implementations satisfy the same trait
 - **WHEN** either `InMemoryStore` or `SQLiteStore` is used as `Arc<dyn ObjectStore>`
 - **THEN** all trait methods behave identically for the same inputs
-
-#### Scenario: Create object with labels in InMemoryStore
-- **WHEN** `create()` is called with an object that has labels
-- **THEN** the stored `StoredObject` SHALL contain those labels in `metadata.labels`
-
-#### Scenario: Update object labels in InMemoryStore
-- **WHEN** `update()` is called with new labels
-- **THEN** the stored `StoredObject.metadata.labels` SHALL be replaced with the new labels
 
 ### Requirement: InMemoryStore visibility restricted to crate
 The `InMemoryStore` module SHALL be declared `pub(crate)` in `src/store/mod.rs` so it is visible only within the `kapi` crate, not to external consumers.
