@@ -7,29 +7,26 @@ The `ObjectStore` trait defines a pluggable storage backend for all objects, inc
 ```rust
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
-    async fn create(&self, key: &ResourceKey, meta: ObjectMeta, spec: Value)
-        -> Result<StoredObject, AppError>;
-    async fn get(&self, key: &ResourceKey, name: &str)
-        -> Result<StoredObject, AppError>;
-    async fn list(&self, key: &ResourceKey, opts: ListOptions)
-        -> Result<ListResponse, AppError>;
-    async fn update(&self, object: StoredObject)
-        -> Result<StoredObject, AppError>;
-    async fn delete(&self, key: &ResourceKey, name: &str)
-        -> Result<StoredObject, AppError>;
-    async fn update_status(&self, key: &ResourceKey, name: &str, status: Value)
-        -> Result<StoredObject, AppError>;
+    /// Persist a complete StoredObject as-is.
+    /// Does NOT modify any system metadata fields.
+    async fn create(&self, object: StoredObject) -> Result<StoredObject, AppError>;
+    async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
+    async fn list(&self, key: &ResourceKey, opts: ListOptions) -> Result<ListResponse, AppError>;
+    /// Atomic read-modify-write transaction.
+    /// The callback receives the existing object and returns a TransactionOp.
+    /// The store does NOT modify system metadata — the callback is responsible.
+    fn transaction(&self, key: &ResourceKey, name: &str, op: Box<dyn FnOnce(&StoredObject) -> TransactionOp + Send>) -> Result<StoredObject, AppError>;
+    async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError>;
 }
 ```
 
 ### Design Notes
 
+- **Dumb store**: The store is a pure persistence layer. It does NOT maintain any global version counters, bump `resource_version`, update timestamps, or manage `generation`. All system metadata is provided by the caller (service layer) and persisted as-is.
 - **Schema is also an object** — there's one store for everything. Schema objects use kind `"Schema"` in group `kapi.io`.
-- **`create`/`get`/`list`** take `(key, name)` — the object doesn't exist yet (create) or the caller may not have the full object (get, list).
-- **`update`** takes the full `StoredObject`. The implementation peeks at `object.system.resource_version` for optimistic concurrency control. On match, applies data, bumps version, updates `updated_at`. On mismatch, returns `Conflict`.
-- **`delete`** is unconditional — no version check. Returns the deleted object.
-- **`update_status`** updates only the `status` field without optimistic concurrency control. Reads the object, replaces `status`, bumps `resource_version`, sets `updated_at`, returns updated object.
-- **`key` and `name`** from the incoming object during `update` are trusted from the URL, not the client payload. The handler validates the match before calling the store.
+- **`create`** accepts a complete `StoredObject` with all system metadata pre-populated by the service. The store persists it as-is.
+- **`transaction`** is the single mutation path for updates, deletes, and status changes. The callback performs domain logic and returns a `TransactionOp`. The store executes the operation but does NOT modify metadata.
+- **The caller** (ObjectService) is responsible for: resource_version increment, generation bump on spec change, timestamp updates, created_at preservation, and OCC checks. See `apply_with_metadata()` in `object/service.rs`.
 
 ## InMemoryStore
 
@@ -38,17 +35,15 @@ The in-memory implementation uses `DashMap<(ResourceKey, String), StoredObject>`
 ```rust
 pub struct InMemoryStore {
     objects: DashMap<(ResourceKey, String), StoredObject>,
-    next_version: AtomicU64,
 }
 ```
 
 Key behaviors:
 
-- **Versioning:** Global monotonic `AtomicU64` counter, starts at 1, incremented on every create/update
+- **Dumb store:** No global version counter. Objects are persisted as-is with caller-provided metadata.
 - **Pagination:** Results sorted alphabetically by name. Cursor-based pagination with base64-encoded continue tokens. The token encodes the last item name in the current page.
-- **Conflict detection:** Create checks for duplicate `(key, name)` pairs. Update compares stored `resource_version` against the supplied version.
+- **Conflict detection:** Create checks for duplicate `(key, name)` pairs. OCC check for updates is performed by the service layer inside the transaction callback.
 - **Thread safety:** All operations use `DashMap` for concurrent access without external synchronization.
-- **Status handling:** The `status` field is `None` on create. `update_status` replaces the status value, bumps `resource_version`, and sets `updated_at`.
 
 ## SQLiteStore
 
@@ -57,19 +52,18 @@ The persistent implementation uses SQLite via `rusqlite`, wrapped in `Arc<Mutex<
 ```rust
 pub struct SQLiteStore {
     conn: Arc<Mutex<Connection>>,
-    next_version: Arc<AtomicU64>,
 }
 ```
 
 Key behaviors:
 
-- **Construction:** `SQLiteStore::new(path)` creates parent directories, opens (or creates) the SQLite database, and runs schema initialization automatically
+- **Construction:** `SQLiteStore::new(path)` creates parent directories, opens (or creates) the SQLite database, and runs schema initialization automatically.
+- **Dumb store:** No global version counter. No `init_version_counter()` on startup. Objects are persisted as-is with caller-provided metadata.
 - **Schema:** Two tables:
   - `objects` — composite primary key `(group, version, kind, name)`, JSON spec column, nullable `status` TEXT column, RFC 3339 timestamps
   - `labels` — separate table for label storage (see below)
-- **Versioning:** Global monotonic `AtomicU64` counter, initialized from `MAX(resource_version)` on startup
 - **Pagination:** SQL-level `ORDER BY name ASC` with `LIMIT` and `name > ?` skip condition for efficient cursor-based pagination
-- **Conflict detection:** `INSERT` relies on SQLite's primary key constraint for duplicate detection; `UPDATE` uses `resource_version` in WHERE clause for optimistic concurrency
+- **Conflict detection:** `INSERT` relies on SQLite's primary key constraint for duplicate detection; OCC check for updates is performed by the service layer inside the transaction callback.
 - **Thread safety:** Single connection behind `Arc<std::sync::Mutex>`, all blocking calls wrapped in `spawn_blocking`
 - **Configuration:** DB path read from `KAPI_DB_PATH` env var with fallback to `./kapi.db`
 

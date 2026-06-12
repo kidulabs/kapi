@@ -48,7 +48,7 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_update_wrong_rv_still_succeeds(app: &TestApp) -> Result<(), String> {
+pub async fn test_update_wrong_rv_returns_conflict(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -80,15 +80,11 @@ pub async fn test_update_wrong_rv_still_succeeds(app: &TestApp) -> Result<(), St
         "spec": { "value": { "color": "yellow", "size": 4 } }
     });
 
-    // OCP is replaced by locking — wrong version still succeeds
+    // OCC check in service layer rejects stale versions
     let resp = client
         .put("/apis/example.io/v1/Widget/occ-wrong", update_body)
         .await;
-    assert_status(&resp, StatusCode::OK);
-
-    let updated: Value = parse_body(resp).await;
-    let new_rv = updated["system"]["resourceVersion"].as_u64().unwrap_or(0);
-    assert!(new_rv > rv, "resourceVersion should be bumped");
+    assert_status(&resp, StatusCode::CONFLICT);
 
     Ok(())
 }

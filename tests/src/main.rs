@@ -1,6 +1,7 @@
 use kapi_tests::{
-    TestApp, all_test_stores, list_filtering, object_crud, object_labels, optimistic_concurrency,
-    schema_deletion, schema_validation, status_subresource, watch_events,
+    all_test_stores, generation_semantics, list_filtering, object_crud, object_labels,
+    optimistic_concurrency, schema_deletion, schema_validation, status_subresource, watch_events,
+    TestApp,
 };
 
 #[tokio::main]
@@ -199,8 +200,15 @@ async fn main() {
             optimistic_concurrency::test_update_correct_rv
         );
         run_test!(
-            "update_wrong_rv_still_succeeds",
-            optimistic_concurrency::test_update_wrong_rv_still_succeeds
+            "update_wrong_rv_returns_conflict",
+            optimistic_concurrency::test_update_wrong_rv_returns_conflict
+        );
+
+        println!();
+
+        run_test!(
+            "generation_semantics",
+            generation_semantics::test_generation_semantics
         );
 
         println!();

@@ -1,21 +1,15 @@
-use std::sync::atomic::{AtomicU64, Ordering};
-
 use async_trait::async_trait;
 use base64::Engine;
-use chrono::{DateTime, Utc};
 use dashmap::DashMap;
-use serde_json::Value;
 
 use crate::error::AppError;
 use crate::object::types::{
-    ContinueToken, FieldSelector, ListOptions, ListResponse, ObjectMeta, StoredObject,
-    SystemMetadata, SpecData,
+    ContinueToken, FieldSelector, ListOptions, ListResponse, StoredObject,
 };
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 pub struct InMemoryStore {
     objects: DashMap<(ResourceKey, String), StoredObject>,
-    next_version: AtomicU64,
 }
 
 impl Default for InMemoryStore {
@@ -28,48 +22,20 @@ impl InMemoryStore {
     pub fn new() -> Self {
         Self {
             objects: DashMap::new(),
-            next_version: AtomicU64::new(1),
         }
-    }
-
-    fn next_version(&self) -> u64 {
-        self.next_version.fetch_add(1, Ordering::Relaxed)
-    }
-
-    fn now() -> DateTime<Utc> {
-        Utc::now()
     }
 }
 
 #[async_trait]
 impl ObjectStore for InMemoryStore {
-    async fn create(
-        &self,
-        key: &ResourceKey,
-        meta: ObjectMeta,
-        spec: Value,
-    ) -> Result<StoredObject, AppError> {
-        let entry = (key.clone(), meta.name.clone());
+    async fn create(&self, object: StoredObject) -> Result<StoredObject, AppError> {
+        let entry = (object.key.clone(), object.metadata.name.clone());
         if self.objects.contains_key(&entry) {
             return Err(AppError::AlreadyExists {
-                kind: key.kind.clone(),
-                name: meta.name.clone(),
+                kind: object.key.kind.clone(),
+                name: object.metadata.name.clone(),
             });
         }
-
-        let now = Self::now();
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: meta,
-            system: SystemMetadata {
-                resource_version: self.next_version(),
-                generation: 1, // generation starts at 1 on create
-                created_at: now,
-                updated_at: now,
-            },
-            spec: SpecData { value: spec },
-            status: None,
-        };
 
         self.objects.insert(entry, object.clone());
         Ok(object)
@@ -159,10 +125,10 @@ impl ObjectStore for InMemoryStore {
         let txn_op = op(&existing);
 
         match txn_op {
-            TransactionOp::Apply(mut new_obj) => {
-                // Store bumps resource_version and updated_at automatically
-                new_obj.system.resource_version = self.next_version();
-                new_obj.system.updated_at = Self::now();
+            TransactionOp::Apply(new_obj) => {
+                // Store persists the object as-is — no metadata modifications.
+                // The caller (service layer) is responsible for setting all
+                // system metadata before returning Apply.
                 *guard = new_obj.clone();
                 Ok(new_obj)
             }
@@ -198,9 +164,23 @@ fn encode_continue_token(name: &str) -> ContinueToken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::types::LabelSelector;
+    use crate::object::types::{LabelSelector, ObjectMeta, SpecData, SystemMetadata};
     use serde_json::json;
     use std::collections::HashMap;
+
+    /// Helper to construct a stored object with initial metadata for tests.
+    fn test_obj(key: ResourceKey, name: &str, spec: serde_json::Value) -> StoredObject {
+        StoredObject {
+            key,
+            metadata: ObjectMeta {
+                name: name.to_string(),
+                labels: HashMap::new(),
+            },
+            system: SystemMetadata::initial(),
+            spec: SpecData { value: spec },
+            status: None,
+        }
+    }
 
     fn test_key() -> ResourceKey {
         ResourceKey {
@@ -217,14 +197,7 @@ mod tests {
         let data = json!({"color": "blue", "size": 10});
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                data.clone(),
-            )
+            .create(test_obj(key.clone(), "my-widget", data.clone()))
             .await
             .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
@@ -247,26 +220,12 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
 
         let err = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 2}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 2})))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::AlreadyExists { .. }));
@@ -287,36 +246,15 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "c".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "c", json!({})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "a".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "a", json!({})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "b".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "b", json!({})))
             .await
             .unwrap();
 
@@ -343,14 +281,7 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(
-                    &key,
-                    ObjectMeta {
-                        name: format!("item-{i}"),
-                        labels: HashMap::new(),
-                    },
-                    json!({}),
-                )
+                .create(test_obj(key.clone(), &format!("item-{i}"), json!({})))
                 .await
                 .unwrap();
         }
@@ -379,14 +310,7 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(
-                    &key,
-                    ObjectMeta {
-                        name: format!("item-{i}"),
-                        labels: HashMap::new(),
-                    },
-                    json!({}),
-                )
+                .create(test_obj(key.clone(), &format!("item-{i}"), json!({})))
                 .await
                 .unwrap();
         }
@@ -424,36 +348,34 @@ mod tests {
     // --- Transaction-based tests (replacing old update/delete/update_status) ---
 
     #[tokio::test]
-    async fn transaction_apply_succeeds() {
+    async fn transaction_apply_persists_as_is() {
         let store = InMemoryStore::new();
         let key = test_key();
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "test".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "test", json!({"x": 1})))
             .await
             .unwrap();
-        let v1 = created.system.resource_version;
 
         let result = store
             .transaction(
                 &key,
                 "test",
                 Box::new(|existing| {
+                    // Caller is responsible for setting metadata before Apply
                     let mut updated = existing.clone();
                     updated.spec.value = json!({"x": 2});
+                    updated.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(updated)
                 }),
             )
             .unwrap();
 
-        assert!(result.system.resource_version > v1);
+        // Store persists the object as-is — rv is exactly what the callback set
+        assert_eq!(
+            result.system.resource_version,
+            created.system.resource_version + 1
+        );
         assert_eq!(result.spec.value, json!({"x": 2}));
     }
 
@@ -478,14 +400,7 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
 
@@ -505,25 +420,11 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "other".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 2}),
-            )
+            .create(test_obj(key.clone(), "other", json!({"x": 2})))
             .await
             .unwrap();
 
@@ -581,36 +482,15 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "foo".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "foo", json!({})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "bar".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "bar", json!({})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "baz".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "baz", json!({})))
             .await
             .unwrap();
 
@@ -635,41 +515,18 @@ mod tests {
 
         let mut labels_nginx = HashMap::new();
         labels_nginx.insert("app".to_string(), "nginx".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "web-1".to_string(),
-                    labels: labels_nginx,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "web-1", json!({}));
+        obj.metadata.labels = labels_nginx;
+        store.create(obj).await.unwrap();
 
         let mut labels_apache = HashMap::new();
         labels_apache.insert("app".to_string(), "apache".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "web-2".to_string(),
-                    labels: labels_apache,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "web-2", json!({}));
+        obj.metadata.labels = labels_apache;
+        store.create(obj).await.unwrap();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "web-3".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "web-3", json!({})))
             .await
             .unwrap();
 
@@ -699,41 +556,18 @@ mod tests {
 
         let mut labels = HashMap::new();
         labels.insert("app".to_string(), "nginx".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "target".to_string(),
-                    labels,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "target", json!({}));
+        obj.metadata.labels = labels;
+        store.create(obj).await.unwrap();
 
         let mut labels2 = HashMap::new();
         labels2.insert("app".to_string(), "nginx".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "other".to_string(),
-                    labels: labels2,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "other", json!({}));
+        obj.metadata.labels = labels2;
+        store.create(obj).await.unwrap();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "target".to_string() + "-nolabel",
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "target-nolabel", json!({})))
             .await
             .unwrap();
 
@@ -764,21 +598,11 @@ mod tests {
 
         // Create 50 objects, only 3 match the filter
         for i in 0..50 {
-            let mut labels = HashMap::new();
+            let mut obj = test_obj(key.clone(), &format!("obj-{i:02}"), json!({}));
             if i < 3 {
-                labels.insert("app".to_string(), "nginx".to_string());
+                obj.metadata.labels.insert("app".to_string(), "nginx".to_string());
             }
-            store
-                .create(
-                    &key,
-                    ObjectMeta {
-                        name: format!("obj-{i:02}"),
-                        labels,
-                    },
-                    json!({}),
-                )
-                .await
-                .unwrap();
+            store.create(obj).await.unwrap();
         }
 
         // Filter to 3, limit 10 → should return 3 (not 10)
@@ -808,14 +632,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "foo".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "foo", json!({})))
             .await
             .unwrap();
 
@@ -841,14 +658,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "exists-test".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "exists-test", json!({"x": 1})))
             .await
             .unwrap();
 
@@ -869,14 +679,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "test".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "test", json!({})))
             .await
             .unwrap();
 
@@ -896,14 +699,7 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"color": "blue"}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue"})))
             .await
             .unwrap();
         let v1 = created.system.resource_version;
@@ -918,6 +714,8 @@ mod tests {
                     obj.status = Some(SpecData {
                         value: json!({"phase": "Running"}),
                     });
+                    // Caller sets metadata before Apply
+                    obj.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(obj)
                 }),
             )
@@ -928,7 +726,7 @@ mod tests {
             updated.status.clone().unwrap().value,
             json!({"phase": "Running"})
         );
-        assert!(updated.system.resource_version > v1);
+        assert_eq!(updated.system.resource_version, v1 + 1);
         // Spec should be unchanged
         assert_eq!(updated.spec.value, json!({"color": "blue"}));
     }
@@ -954,14 +752,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"color": "blue"}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue"})))
             .await
             .unwrap();
 
@@ -1007,14 +798,7 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({})))
             .await
             .unwrap();
         let v1 = created.system.resource_version;
@@ -1028,12 +812,14 @@ mod tests {
                     obj.status = Some(SpecData {
                         value: json!({"phase": "Running"}),
                     });
+                    // Caller bumps resource_version
+                    obj.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(obj)
                 }),
             )
             .unwrap();
 
-        assert!(updated.system.resource_version > v1);
+        assert_eq!(updated.system.resource_version, v1 + 1);
     }
 
     #[tokio::test]
@@ -1042,14 +828,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"color": "blue", "size": 10}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue", "size": 10})))
             .await
             .unwrap();
 
@@ -1078,14 +857,7 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"color": "blue"}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue"})))
             .await
             .unwrap();
         let gen_before = created.system.generation;
@@ -1117,14 +889,7 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"color": "blue"}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue"})))
             .await
             .unwrap();
         let gen_before = created.system.generation;
@@ -1155,14 +920,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
 
@@ -1185,22 +943,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn transaction_bumps_resource_version_on_apply() {
+    async fn transaction_persists_caller_provided_rv() {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+        store
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
-        let v1 = created.system.resource_version;
 
         let result = store
             .transaction(
@@ -1209,12 +959,13 @@ mod tests {
                 Box::new(|existing| {
                     let mut obj = existing.clone();
                     obj.spec.value = json!({"x": 2});
+                    obj.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(obj)
                 }),
             )
             .unwrap();
 
-        assert!(result.system.resource_version > v1);
+        assert_eq!(result.system.resource_version, 2);
 
         let result2 = store
             .transaction(
@@ -1223,12 +974,13 @@ mod tests {
                 Box::new(|existing| {
                     let mut obj = existing.clone();
                     obj.spec.value = json!({"x": 3});
+                    obj.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(obj)
                 }),
             )
             .unwrap();
 
-        assert!(result2.system.resource_version > result.system.resource_version);
+        assert_eq!(result2.system.resource_version, 3);
     }
 
     #[tokio::test]
@@ -1237,14 +989,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
 

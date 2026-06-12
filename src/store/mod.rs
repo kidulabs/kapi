@@ -2,10 +2,9 @@ pub mod memory;
 pub mod sqlite;
 
 use async_trait::async_trait;
-use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::{ListOptions, ListResponse, ObjectMeta, StoredObject};
+use crate::object::types::{ListOptions, ListResponse, StoredObject};
 
 #[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ResourceKey {
@@ -18,10 +17,16 @@ pub struct ResourceKey {
 ///
 /// The store holds an exclusive lock while the callback executes (see
 /// [`ObjectStore::transaction()`]). The callback MUST be fast and non-blocking.
+///
+/// The store persists the object as-is when `Apply` is returned. It does NOT
+/// modify system metadata — the caller (service layer) is responsible for
+/// setting `resource_version`, `generation`, and timestamps before returning
+/// `Apply`.
 #[derive(Debug)]
 pub enum TransactionOp {
     /// Persist the provided object, replacing the existing one.
-    /// The store will bump `resource_version` and `updated_at` automatically.
+    /// The store does NOT modify any system metadata fields. The caller is
+    /// responsible for setting all metadata before returning Apply.
     Apply(StoredObject),
 
     /// Hard-delete the object from storage.
@@ -33,14 +38,19 @@ pub enum TransactionOp {
 }
 
 /// Pluggable object storage trait.
+///
+/// Implementations persist objects as-is without modifying system metadata
+/// (resource_version, generation, created_at, updated_at). The caller is
+/// responsible for setting all system metadata before calling create() or
+/// returning TransactionOp::Apply from a transaction callback.
 #[async_trait]
 pub trait ObjectStore: Send + Sync {
-    async fn create(
-        &self,
-        key: &ResourceKey,
-        meta: ObjectMeta,
-        spec: Value,
-    ) -> Result<StoredObject, AppError>;
+    /// Persist a complete StoredObject as-is.
+    ///
+    /// The implementation SHALL NOT modify any system metadata fields.
+    /// If an object with the same key/name already exists, returns
+    /// AppError::AlreadyExists.
+    async fn create(&self, object: StoredObject) -> Result<StoredObject, AppError>;
     async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
     /// Lists objects for a resource key with optional filtering and pagination.
     ///

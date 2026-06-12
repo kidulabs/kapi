@@ -270,14 +270,16 @@ mod tests {
         });
         registry
             .store
-            .create(
-                &schema_key,
-                crate::object::types::ObjectMeta {
+            .create(crate::object::types::StoredObject {
+                key: schema_key,
+                metadata: crate::object::types::ObjectMeta {
                     name: name.to_string(),
                     labels: std::collections::HashMap::new(),
                 },
-                schema_data,
-            )
+                system: crate::object::types::SystemMetadata::initial(),
+                spec: crate::object::types::SpecData { value: schema_data },
+                status: None,
+            })
             .await
             .expect("store create should succeed");
     }
@@ -397,14 +399,16 @@ mod tests {
         });
         registry
             .store
-            .create(
-                &schema_key,
-                crate::object::types::ObjectMeta {
+            .create(crate::object::types::StoredObject {
+                key: schema_key,
+                metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: std::collections::HashMap::new(),
                 },
-                invalid_schema,
-            )
+                system: crate::object::types::SystemMetadata::initial(),
+                spec: crate::object::types::SpecData { value: invalid_schema },
+                status: None,
+            })
             .await
             .expect("store create should succeed");
 
@@ -513,14 +517,16 @@ mod tests {
         });
         registry
             .store
-            .create(
-                &schema_key,
-                crate::object::types::ObjectMeta {
+            .create(crate::object::types::StoredObject {
+                key: schema_key,
+                metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: std::collections::HashMap::new(),
                 },
-                schema_data,
-            )
+                system: crate::object::types::SystemMetadata::initial(),
+                spec: crate::object::types::SpecData { value: schema_data },
+                status: None,
+            })
             .await
             .expect("store create should succeed");
 
@@ -548,14 +554,16 @@ mod tests {
         });
         registry
             .store
-            .create(
-                &schema_key,
-                crate::object::types::ObjectMeta {
+            .create(crate::object::types::StoredObject {
+                key: schema_key,
+                metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: std::collections::HashMap::new(),
                 },
-                schema_data,
-            )
+                system: crate::object::types::SystemMetadata::initial(),
+                spec: crate::object::types::SpecData { value: schema_data },
+                status: None,
+            })
             .await
             .expect("store create should succeed");
 
