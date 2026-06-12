@@ -6,19 +6,21 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use chrono::Utc;
+
 use regex::Regex;
 use serde_json::Value;
 
 use crate::error::AppError;
 use crate::event::EventPublisher;
 use crate::object::types::{
-    ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, WatchEvent, WatchEventType,
-    WatchFilter, SpecData,
+    ListOptions, ListResponse, ObjectMeta, SchemaData, SpecData, StoredObject, SystemMetadata,
+    WatchEvent, WatchEventType, WatchFilter,
 };
 use crate::schema::{SchemaRegistry, SchemaValidator, SCHEMA_KIND};
 #[cfg(test)]
 use crate::schema::schema_key;
-use crate::store::{ObjectStore, ResourceKey};
+use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 /// Validates a label key according to label validation rules.
 /// Keys must be non-empty, max 256 chars, matching `[a-zA-Z0-9][-_.a-zA-Z0-9]*`
@@ -224,8 +226,11 @@ impl ObjectService {
             // Schema path: check for existing objects before deletion
             self.delete_schema(key, name).await
         } else {
-            // Regular object path: delete and publish
-            let deleted = self.store.delete(&key, &name).await?;
+            // Regular object path: delete via transaction and publish
+            let deleted = self.store.transaction(
+                &key, &name,
+                Box::new(|_existing| TransactionOp::Delete),
+            )?;
             self.publish_event(&key, WatchEventType::Deleted, &deleted);
             Ok(deleted)
         }
@@ -259,8 +264,18 @@ impl ObjectService {
             return Err(AppError::SchemaValidation(errors));
         }
 
-        // Update status in store
-        let updated = self.store.update_status(&key, &name, status).await?;
+        // Update status in store via transaction
+        // No OCC check for status updates — they are unconditional per spec.
+        let updated = self.store.transaction(
+            &key, &name,
+            Box::new(move |existing| {
+                Self::apply_with_metadata(existing, |_existing| {
+                    let mut updated = existing.clone();
+                    updated.status = Some(SpecData { value: status });
+                    updated
+                })
+            }),
+        )?;
         self.publish_event(&key, WatchEventType::StatusModified, &updated);
         Ok(updated)
     }
@@ -297,6 +312,46 @@ impl ObjectService {
             .collect()
     }
 
+    /// Wraps a transaction callback to automatically manage system metadata.
+    ///
+    /// This is the single place where resource_version increment, generation
+    /// bumping (on spec change), timestamp updates, and created_at preservation
+    /// happen. Callbacks focus purely on domain changes (spec, metadata, status).
+    ///
+    /// This eliminates the "update_status landmine" — generation is automatically
+    /// preserved when the spec doesn't change, regardless of what the callback does.
+    ///
+    /// # Usage
+    ///
+    /// ```ignore
+    /// store.transaction(&key, &name, Box::new(|existing| {
+    ///     apply_with_metadata(existing, |existing| {
+    ///         let mut updated = existing.clone();
+    ///         // ... apply domain changes ...
+    ///         updated
+    ///     })
+    /// }))
+    /// ```
+    fn apply_with_metadata<F>(existing: &StoredObject, mutator: F) -> TransactionOp
+    where
+        F: FnOnce(&StoredObject) -> StoredObject,
+    {
+        let mut new_obj = mutator(existing);
+        // Bump resource_version on every mutation (enables CAS)
+        new_obj.system.resource_version = existing.system.resource_version + 1;
+        // Update the timestamp
+        new_obj.system.updated_at = Utc::now();
+        // Preserve the original creation timestamp
+        new_obj.system.created_at = existing.system.created_at;
+        // Bump generation only if spec changed, otherwise preserve it
+        if new_obj.spec.value != existing.spec.value {
+            new_obj.system.generation = existing.system.generation + 1;
+        } else {
+            new_obj.system.generation = existing.system.generation;
+        }
+        TransactionOp::Apply(new_obj)
+    }
+
     /// Publishes a watch event via the event bus.
     fn publish_event(&self, key: &ResourceKey, event_type: WatchEventType, object: &StoredObject) {
         self.event_bus.publish(
@@ -317,7 +372,16 @@ impl ObjectService {
         validate_labels(&meta.labels)?;
         let (_schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
-        let stored = self.store.create(&key, meta.clone(), spec).await?;
+        let stored = self
+            .store
+            .create(StoredObject {
+                key: key.clone(),
+                metadata: meta.clone(),
+                system: SystemMetadata::initial(),
+                spec: SpecData { value: spec },
+                status: None,
+            })
+            .await?;
         self.schema_registry.insert(&meta.name, compiled);
         if let Some(status_validator) = status_compiled {
             self.schema_registry
@@ -342,7 +406,16 @@ impl ObjectService {
             return Err(AppError::SchemaValidation(errors));
         }
 
-        let stored = self.store.create(&key, meta, spec).await?;
+        let stored = self
+            .store
+            .create(StoredObject {
+                key: key.clone(),
+                metadata: meta,
+                system: SystemMetadata::initial(),
+                spec: SpecData { value: spec },
+                status: None,
+            })
+            .await?;
         self.publish_event(&key, WatchEventType::Added, &stored);
         Ok(stored)
     }
@@ -356,7 +429,26 @@ impl ObjectService {
         validate_labels(&object.metadata.labels)?;
         let (_schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
-        let updated = self.store.update(object).await?;
+
+        let key = object.key.clone();
+        let name = object.metadata.name.clone();
+        let incoming_rv = object.system.resource_version;
+        let updated = self.store.transaction(&key, &name, Box::new(move |existing| {
+            // OCC check: reject if resource_version doesn't match
+            if incoming_rv != existing.system.resource_version {
+                return TransactionOp::Abort(AppError::Conflict {
+                    expected: existing.system.resource_version,
+                    actual: incoming_rv,
+                });
+            }
+            // Use centralized metadata wrapper
+            Self::apply_with_metadata(existing, |_existing| {
+                let mut updated = existing.clone();
+                updated.metadata = object.metadata.clone();
+                updated.spec = object.spec.clone();
+                updated
+            })
+        }))?;
         self.schema_registry
             .insert(&updated.metadata.name, compiled);
         if let Some(status_validator) = status_compiled {
@@ -381,7 +473,25 @@ impl ObjectService {
             return Err(AppError::SchemaValidation(errors));
         }
 
-        let updated = self.store.update(object).await?;
+        let key = object.key.clone();
+        let name = object.metadata.name.clone();
+        let incoming_rv = object.system.resource_version;
+        let updated = self.store.transaction(&key, &name, Box::new(move |existing| {
+            // OCC check: reject if resource_version doesn't match
+            if incoming_rv != existing.system.resource_version {
+                return TransactionOp::Abort(AppError::Conflict {
+                    expected: existing.system.resource_version,
+                    actual: incoming_rv,
+                });
+            }
+            // Use centralized metadata wrapper
+            Self::apply_with_metadata(existing, |_existing| {
+                let mut updated = existing.clone();
+                updated.metadata = object.metadata.clone();
+                updated.spec = object.spec.clone();
+                updated
+            })
+        }))?;
         self.publish_event(&updated.key, WatchEventType::Modified, &updated);
         Ok(updated)
     }
@@ -413,8 +523,11 @@ impl ObjectService {
             });
         }
 
-        // Step 4: Delete the schema
-        let deleted = self.store.delete(&key, &name).await?;
+        // Step 4: Delete the schema via transaction
+        let deleted = self.store.transaction(
+            &key, &name,
+            Box::new(|_existing| TransactionOp::Delete),
+        )?;
 
         // Step 5: Evict from cache
         self.schema_registry.evict(&name);
@@ -646,9 +759,9 @@ mod tests {
         assert!(result.unwrap().system.resource_version > v1);
     }
 
-    // T25: Update with wrong version → Conflict, no event published
+    // T25: Update with wrong version → Conflict
     #[tokio::test]
-    async fn update_wrong_version_returns_conflict() {
+    async fn update_with_wrong_version_returns_conflict() {
         let service = make_service();
         register_test_schema(&service).await;
 
@@ -673,6 +786,7 @@ mod tests {
         wrong_version_obj.spec.value = json!({ "color": "red" });
         wrong_version_obj.system.resource_version = 999;
 
+        // OCC check in service layer rejects stale versions
         let result = service.update(wrong_version_obj).await;
         assert!(matches!(result, Err(AppError::Conflict { .. })));
     }
@@ -1056,14 +1170,16 @@ mod tests {
             "specSchema": { "type": "not-a-real-type" }
         });
         store
-            .create(
-                &schema_key,
-                ObjectMeta {
+            .create(StoredObject {
+                key: schema_key.clone(),
+                metadata: ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                 },
-                invalid_schema,
-            )
+                system: SystemMetadata::initial(),
+                spec: SpecData { value: invalid_schema },
+                status: None,
+            })
             .await
             .expect("store create should succeed");
 
@@ -1429,5 +1545,259 @@ mod tests {
             .await
             .unwrap();
         assert!(created.status.is_none());
+    }
+
+    // --- apply_with_metadata tests ---
+
+    #[tokio::test]
+    async fn apply_with_metadata_increments_rv() {
+        let service = make_service();
+        register_test_schema(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "meta-test".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+
+        let mut update_obj = created;
+        update_obj.system.resource_version = v1;
+        let result = service.update(update_obj).await.unwrap();
+        assert_eq!(
+            result.system.resource_version,
+            v1 + 1,
+            "resource_version should increment by 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_with_metadata_preserves_created_at() {
+        let service = make_service();
+        register_test_schema(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "created-at-test".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await
+            .unwrap();
+        let created_at = created.system.created_at;
+
+        let rv = created.system.resource_version;
+        let mut update_obj = created;
+        update_obj.system.resource_version = rv;
+        let result = service.update(update_obj).await.unwrap();
+        assert_eq!(
+            result.system.created_at, created_at,
+            "created_at should be preserved"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_with_metadata_bumps_generation_on_spec_change() {
+        let service = make_service();
+        register_test_schema(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "gen-bump-test".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await
+            .unwrap();
+        assert_eq!(created.system.generation, 1);
+
+        let v1 = created.system.resource_version;
+        let mut update_obj = created;
+        update_obj.system.resource_version = v1;
+        update_obj.spec.value = json!({"color": "red", "size": 20});
+
+        let result = service.update(update_obj).await.unwrap();
+        assert_eq!(
+            result.system.generation,
+            2,
+            "generation should bump to 2 on spec change"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_with_metadata_preserves_generation_on_no_spec_change() {
+        let service = make_service();
+        register_test_schema(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "gen-preserve-test".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+        let gen1 = created.system.generation;
+
+        // Update with same spec, different labels
+        let mut update_obj = created;
+        update_obj.system.resource_version = v1;
+        update_obj.metadata.labels.insert("env".to_string(), "prod".to_string());
+
+        let result = service.update(update_obj).await.unwrap();
+        assert_eq!(
+            result.system.generation,
+            gen1,
+            "generation should not bump on metadata-only update"
+        );
+    }
+
+    // --- OCC tests ---
+
+    #[tokio::test]
+    async fn occ_check_passes_with_matching_version() {
+        let service = make_service();
+        register_test_schema(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "occ-pass".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 1}),
+            )
+            .await
+            .unwrap();
+
+        let rv = created.system.resource_version;
+        let mut update_obj = created;
+        update_obj.system.resource_version = rv;
+        update_obj.spec.value = json!({"color": "red", "size": 2});
+
+        let result = service.update(update_obj).await;
+        assert!(result.is_ok(), "update should succeed with matching rv");
+    }
+
+    #[tokio::test]
+    async fn occ_check_fails_with_mismatched_version() {
+        let service = make_service();
+        register_test_schema(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "occ-fail".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 1}),
+            )
+            .await
+            .unwrap();
+
+        let mut update_obj = created;
+        update_obj.spec.value = json!({"color": "red", "size": 2});
+        update_obj.system.resource_version = 999; // wrong version
+
+        let result = service.update(update_obj).await;
+        assert!(
+            matches!(result, Err(AppError::Conflict { .. })),
+            "expected Conflict error, got {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn update_status_does_not_require_occ() {
+        let service = make_service();
+        register_test_schema_with_status(&service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let created = service
+            .create(
+                widget_key.clone(),
+                ObjectMeta {
+                    name: "status-occ".to_string(),
+                    labels: HashMap::new(),
+                },
+                json!({"color": "blue", "size": 1}),
+            )
+            .await
+            .unwrap();
+        assert!(created.status.is_none());
+
+        // Status updates don't need OCC — they should always succeed
+        let result = service
+            .update_status(
+                widget_key.clone(),
+                "status-occ".to_string(),
+                json!({"phase": "Running"}),
+            )
+            .await;
+        assert!(result.is_ok(), "status update should succeed without OCC");
+        let updated = result.unwrap();
+        assert!(updated.status.is_some());
+        assert_eq!(
+            updated.system.resource_version,
+            created.system.resource_version + 1,
+            "resource_version should increment"
+        );
+        assert_eq!(
+            updated.system.generation,
+            created.system.generation,
+            "generation should NOT increment on status update"
+        );
     }
 }

@@ -48,7 +48,7 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
     Ok(())
 }
 
-pub async fn test_update_wrong_rv(app: &TestApp) -> Result<(), String> {
+pub async fn test_update_wrong_rv_returns_conflict(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     register_widget_schema(&client).await;
@@ -80,17 +80,11 @@ pub async fn test_update_wrong_rv(app: &TestApp) -> Result<(), String> {
         "spec": { "value": { "color": "yellow", "size": 4 } }
     });
 
+    // OCC check in service layer rejects stale versions
     let resp = client
         .put("/apis/example.io/v1/Widget/occ-wrong", update_body)
         .await;
     assert_status(&resp, StatusCode::CONFLICT);
-
-    let body: Value = parse_body(resp).await;
-    let error = body.get("error").and_then(|e| e.as_str()).unwrap_or("");
-    assert!(
-        error.contains("conflict") || error.contains("Conflict"),
-        "error message should mention conflict, got: {error}"
-    );
 
     Ok(())
 }

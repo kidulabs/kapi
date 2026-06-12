@@ -138,8 +138,9 @@ pub struct ObjectMeta {
 
 /// Server-maintained metadata for stored objects.
 ///
-/// - `resource_version`: Monotonic counter that bumps on every modification
-///   (spec, metadata, or status changes). Used for watch ordering and CAS.
+/// - `resource_version`: Per-object monotonic counter that starts at 1 on
+///   create and increments on every modification. Used for optimistic
+///   concurrency control (CAS), not for global watch ordering.
 /// - `generation`: Counter that bumps only when the `spec` changes. Enables
 ///   controllers to detect spec drift without reacting to metadata-only or
 ///   status-only updates. Starts at 1 on create.
@@ -151,6 +152,23 @@ pub struct SystemMetadata {
     pub generation: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+impl SystemMetadata {
+    /// Creates initial system metadata for a newly-created object.
+    ///
+    /// Sets `resource_version = 1`, `generation = 1`, and both timestamps
+    /// to the current time. The store persists this as-is — the service
+    /// layer is responsible for all metadata initialization.
+    pub fn initial() -> Self {
+        let now = Utc::now();
+        Self {
+            resource_version: 1,
+            generation: 1,
+            created_at: now,
+            updated_at: now,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -167,6 +185,27 @@ pub struct StoredObject {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::collections::HashMap;
+
+    /// Helper to construct a `StoredObject` with minimal boilerplate in tests.
+    /// System metadata is initialized via `SystemMetadata::initial()`.
+    #[allow(dead_code)]
+    pub(crate) fn test_stored_object(
+        key: ResourceKey,
+        name: &str,
+        spec: serde_json::Value,
+    ) -> StoredObject {
+        StoredObject {
+            key,
+            metadata: ObjectMeta {
+                name: name.to_string(),
+                labels: HashMap::new(),
+            },
+            system: SystemMetadata::initial(),
+            spec: SpecData { value: spec },
+            status: None,
+        }
+    }
 
     fn make_event(name: &str) -> WatchEvent {
         WatchEvent {

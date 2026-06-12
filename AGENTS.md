@@ -12,8 +12,12 @@ Request → TraceLayer → CorsLayer → Handler → ObjectService → Store
 ```
 
 - **Handlers** (`object/handler.rs`): pure translation, no business logic
-- **ObjectService** (`object/service.rs`): single orchestrator — validation, storage, event publishing
-- **Store** (`store/`): pluggable `ObjectStore` trait — `InMemoryStore` (DashMap) and `SQLiteStore` (rusqlite + spawn_blocking)
+- **ObjectService** (`object/service.rs`): single orchestrator — validation, storage, event publishing. All mutations use `transaction()` with callbacks.
+- **Store** (`store/`): pluggable `ObjectStore` trait — `InMemoryStore` (DashMap) and `SQLiteStore` (rusqlite + spawn_blocking). Single `transaction()` method replaces `update()`, `delete()`, `update_status()`.
+  - `TransactionOp::Apply` — persist with automatic `resource_version` bump
+  - `TransactionOp::Delete` — hard-delete from storage
+  - `TransactionOp::Abort` — reject with error, no changes
+  - The store is a dumb persistence layer — all business logic (generation bumping, finalizer checks) lives in service callbacks.
 - **EventBus** (`event/bus.rs`): per-kind `Vec<Watcher>` with `WatchFilter` + `mpsc::Sender` per watcher (predicate routing), `EventPublisher` trait
 - **Schema** (`schema/`): `SchemaValidator` trait + `SchemaRegistry` — manages validation, compilation, and caching of JSON schemas
 

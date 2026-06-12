@@ -1,5 +1,4 @@
 use std::path::Path;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
@@ -13,18 +12,18 @@ use std::collections::HashMap;
 use crate::error::AppError;
 use crate::object::types::{
     ContinueToken, FieldSelector, LabelRequirement, ListOptions, ListResponse, ObjectMeta,
-    StoredObject, SystemMetadata, SpecData,
+    SpecData, StoredObject, SystemMetadata,
 };
-use crate::store::{ObjectStore, ResourceKey};
+use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 /// SQLite-backed implementation of `ObjectStore`.
 ///
 /// Uses a single connection behind `Arc<Mutex>` with `spawn_blocking`
-/// to avoid blocking the async runtime. Version counter is restored
-/// from `MAX(resource_version)` on startup.
+/// to avoid blocking the async runtime. Does NOT maintain any global
+/// version counter — the store persists objects as-is, and the service
+/// layer is responsible for all system metadata.
 pub struct SQLiteStore {
     conn: Arc<Mutex<Connection>>,
-    next_version: Arc<AtomicU64>,
 }
 
 impl SQLiteStore {
@@ -40,10 +39,8 @@ impl SQLiteStore {
         let conn = Connection::open(path).map_err(|e| AppError::Internal(e.into()))?;
         let store = Self {
             conn: Arc::new(Mutex::new(conn)),
-            next_version: Arc::new(AtomicU64::new(1)),
         };
         store.init_schema()?;
-        store.init_version_counter()?;
         Ok(store)
     }
 
@@ -96,23 +93,6 @@ impl SQLiteStore {
             "CREATE INDEX IF NOT EXISTS idx_labels_gvkn ON labels(resource_group, api_version, resource_kind, name)",
             [],
         ).map_err(|e| AppError::Internal(e.into()))?;
-        Ok(())
-    }
-
-    /// Restores the version counter from the highest existing resource_version.
-    /// Ensures monotonicity across restarts.
-    fn init_version_counter(&self) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap();
-        let max_version: Option<u64> = conn
-            .query_row("SELECT MAX(resource_version) FROM objects", [], |row| {
-                row.get(0)
-            })
-            .optional()
-            .map_err(|e| AppError::Internal(e.into()))?
-            .flatten();
-        if let Some(max) = max_version {
-            self.next_version.store(max + 1, Ordering::Relaxed);
-        }
         Ok(())
     }
 
@@ -247,8 +227,137 @@ impl SQLiteStore {
         Ok(result)
     }
 
-    fn now() -> DateTime<Utc> {
-        Utc::now()
+    /// Fetch an object while holding the connection lock.
+    fn fetch_object_locked(
+        conn: &Connection,
+        key: &ResourceKey,
+        name: &str,
+    ) -> Result<StoredObject, AppError> {
+        let mut stmt = conn
+            .prepare(
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, \
+                 resource_version, generation, created_at, updated_at \
+                 FROM objects WHERE resource_group = ?1 AND api_version = ?2 \
+                 AND resource_kind = ?3 AND name = ?4",
+            )
+            .map_err(|e| AppError::Internal(e.into()))?;
+        let mut obj = stmt
+            .query_row(params![key.group, key.version, key.kind, name], row_to_object)
+            .optional()
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        match obj {
+            Some(ref mut obj) => {
+                obj.metadata.labels =
+                    Self::query_labels(conn, &key.group, &key.version, &key.kind, name)?;
+                Ok(obj.clone())
+            }
+            None => Err(AppError::NotFound {
+                what: "object".to_string(),
+                identifier: format!("{}/{}", key.kind, name),
+            }),
+        }
+    }
+
+    /// Persist an object while holding the connection lock.
+    /// Replaces the existing object and its labels.
+    fn persist_object_locked(
+        conn: &Connection,
+        object: &StoredObject,
+    ) -> Result<(), AppError> {
+        let spec_json =
+            serde_json::to_string(&object.spec.value).map_err(|e| AppError::Internal(e.into()))?;
+        let status_json = object
+            .status
+            .as_ref()
+            .map(|s| serde_json::to_string(&s.value))
+            .transpose()
+            .map_err(|e| AppError::Internal(e.into()))?;
+        let created_at = object.system.created_at.to_rfc3339();
+        let updated_at = object.system.updated_at.to_rfc3339();
+
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| AppError::Internal(e.into()))?;
+
+        tx.execute(
+            "INSERT OR REPLACE INTO objects \
+             (resource_group, api_version, resource_kind, name, spec, status, \
+              resource_version, generation, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                object.key.group,
+                object.key.version,
+                object.key.kind,
+                object.metadata.name,
+                spec_json,
+                status_json,
+                object.system.resource_version as i64,
+                object.system.generation as i64,
+                created_at,
+                updated_at,
+            ],
+        )
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        // Full label replacement: delete all existing, insert new
+        tx.execute(
+            "DELETE FROM labels WHERE resource_group = ?1 AND api_version = ?2 \
+             AND resource_kind = ?3 AND name = ?4",
+            params![
+                object.key.group,
+                object.key.version,
+                object.key.kind,
+                object.metadata.name,
+            ],
+        )
+        .map_err(|e| AppError::Internal(e.into()))?;
+
+        if !object.metadata.labels.is_empty() {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO labels (resource_group, api_version, resource_kind, \
+                     name, label_key, label_value) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                )
+                .map_err(|e| AppError::Internal(e.into()))?;
+            for (label_key, label_value) in &object.metadata.labels {
+                stmt.execute(params![
+                    object.key.group,
+                    object.key.version,
+                    object.key.kind,
+                    object.metadata.name,
+                    label_key,
+                    label_value,
+                ])
+                .map_err(|e| AppError::Internal(e.into()))?;
+            }
+        }
+
+        tx.commit().map_err(|e| AppError::Internal(e.into()))?;
+        Ok(())
+    }
+
+    /// Delete an object while holding the connection lock.
+    /// Labels are removed via ON DELETE CASCADE.
+    fn delete_object_locked(
+        conn: &Connection,
+        key: &ResourceKey,
+        name: &str,
+    ) -> Result<(), AppError> {
+        let rows = conn
+            .execute(
+                "DELETE FROM objects WHERE resource_group = ?1 AND api_version = ?2 \
+                 AND resource_kind = ?3 AND name = ?4",
+                params![key.group, key.version, key.kind, name],
+            )
+            .map_err(|e| AppError::Internal(e.into()))?;
+        if rows == 0 {
+            return Err(AppError::NotFound {
+                what: "object".to_string(),
+                identifier: format!("{}/{}", key.kind, name),
+            });
+        }
+        Ok(())
     }
 }
 
@@ -283,23 +392,21 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
 impl ObjectStore for SQLiteStore {
     /// Inserts a new object. Returns `Conflict` if the composite key already exists.
     /// Labels are inserted into the `labels` table within the same transaction.
-    async fn create(
-        &self,
-        key: &ResourceKey,
-        meta: ObjectMeta,
-        spec: Value,
-    ) -> Result<StoredObject, AppError> {
-        let key = key.clone();
+    /// Does NOT modify system metadata — persists the object as-is.
+    async fn create(&self, object: StoredObject) -> Result<StoredObject, AppError> {
         let conn = Arc::clone(&self.conn);
-        let next_version = Arc::clone(&self.next_version);
 
         tokio::task::spawn_blocking(move || {
-            let now = SQLiteStore::now();
-            let version = next_version.fetch_add(1, Ordering::Relaxed);
-
-            let spec_json = serde_json::to_string(&spec).map_err(|e| AppError::Internal(e.into()))?;
-            let created_at = now.to_rfc3339();
-            let updated_at = now.to_rfc3339();
+            let spec_json =
+                serde_json::to_string(&object.spec.value).map_err(|e| AppError::Internal(e.into()))?;
+            let status_json = object
+                .status
+                .as_ref()
+                .map(|s| serde_json::to_string(&s.value))
+                .transpose()
+                .map_err(|e| AppError::Internal(e.into()))?;
+            let created_at = object.system.created_at.to_rfc3339();
+            let updated_at = object.system.updated_at.to_rfc3339();
 
             let c = conn.lock().unwrap();
 
@@ -310,22 +417,24 @@ impl ObjectStore for SQLiteStore {
                 "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
                 params![
-                    key.group, key.version, key.kind, meta.name,
-                    spec_json, None::<String>, version as i64, 1i64, created_at, updated_at
+                    object.key.group, object.key.version, object.key.kind, object.metadata.name,
+                    spec_json, status_json,
+                    object.system.resource_version as i64, object.system.generation as i64,
+                    created_at, updated_at
                 ],
             );
 
             match result {
                 Ok(_) => {
                     // Insert labels if non-empty
-                    if !meta.labels.is_empty() {
+                    if !object.metadata.labels.is_empty() {
                         let mut stmt = tx.prepare(
                             "INSERT INTO labels (resource_group, api_version, resource_kind, name, label_key, label_value)
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
                         ).map_err(|e| AppError::Internal(e.into()))?;
-                        for (label_key, label_value) in &meta.labels {
+                        for (label_key, label_value) in &object.metadata.labels {
                             stmt.execute(params![
-                                key.group, key.version, key.kind, meta.name,
+                                object.key.group, object.key.version, object.key.kind, object.metadata.name,
                                 label_key, label_value
                             ]).map_err(|e| AppError::Internal(e.into()))?;
                         }
@@ -333,26 +442,15 @@ impl ObjectStore for SQLiteStore {
 
                     tx.commit().map_err(|e| AppError::Internal(e.into()))?;
 
-                    Ok(StoredObject {
-                        key,
-                        metadata: meta,
-                        system: SystemMetadata {
-                            resource_version: version,
-                            generation: 1,
-                            created_at: now,
-                            updated_at: now,
-                        },
-                        spec: SpecData { value: spec },
-                        status: None,
-                    })
+                    Ok(object)
                 }
                 Err(rusqlite::Error::SqliteFailure(err, _))
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
                     // Primary key conflict → duplicate
                     Err(AppError::AlreadyExists {
-                        kind: key.kind.clone(),
-                        name: meta.name.clone(),
+                        kind: object.key.kind.clone(),
+                        name: object.metadata.name.clone(),
                     })
                 }
                 Err(e) => Err(AppError::Internal(e.into())),
@@ -360,6 +458,48 @@ impl ObjectStore for SQLiteStore {
         })
         .await
         .map_err(|e| AppError::Internal(e.into()))?
+    }
+
+    /// Atomic read-modify-write transaction using connection-level locking.
+    ///
+    /// The callback MUST be fast and non-blocking — it runs while holding the
+    /// connection lock.
+    fn transaction(
+        &self,
+        key: &ResourceKey,
+        name: &str,
+        op: Box<dyn FnOnce(&StoredObject) -> TransactionOp + Send>,
+    ) -> Result<StoredObject, AppError> {
+        // Acquire exclusive lock on the connection.
+        // The lock is held for the entire transaction (read → callback → write).
+        let conn = self.conn.lock().unwrap();
+
+        // Read existing object (blocking SQLite call, but we hold the lock)
+        let existing = Self::fetch_object_locked(&conn, key, name)?;
+
+        // Execute callback (MUST be fast — no I/O allowed)
+        match op(&existing) {
+            TransactionOp::Apply(new_obj) => {
+                // Store persists the object as-is — no metadata modifications.
+                // The caller (service layer) is responsible for setting all
+                // system metadata before returning Apply.
+                Self::persist_object_locked(&conn, &new_obj)?;
+                Ok(new_obj)
+            }
+            TransactionOp::Delete => {
+                // Capture deleted object before removing
+                let deleted = existing.clone();
+
+                // Hard delete (blocking SQLite call)
+                Self::delete_object_locked(&conn, key, name)?;
+                Ok(deleted)
+            }
+            TransactionOp::Abort(err) => {
+                // Return error without modifying anything
+                Err(err)
+            }
+        }
+        // Lock is released here when `conn` goes out of scope
     }
 
     /// Fetches a single object by composite key. Returns `NotFound` if missing.
@@ -572,170 +712,6 @@ impl ObjectStore for SQLiteStore {
         .map_err(|e| AppError::Internal(e.into()))?
     }
 
-    /// Updates an object with optimistic concurrency control.
-    /// Returns `Conflict` if the resource_version doesn't match, `NotFound` if missing.
-    /// Labels are updated via diff-based strategy within the same transaction.
-    async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
-        let conn = Arc::clone(&self.conn);
-        let next_version = Arc::clone(&self.next_version);
-
-        tokio::task::spawn_blocking(move || {
-            let now = SQLiteStore::now();
-            let new_version = next_version.fetch_add(1, Ordering::Relaxed);
-
-            let spec_json = serde_json::to_string(&object.spec.value).map_err(|e| AppError::Internal(e.into()))?;
-            let updated_at = now.to_rfc3339();
-            let expected_version = object.system.resource_version as i64;
-
-            let c = conn.lock().unwrap();
-
-            // Use immediate transaction for atomicity of object update + label diff
-            let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
-
-            // Read existing spec and generation to determine if generation should bump
-            let existing: Option<(String, i64)> = tx.query_row(
-                "SELECT spec, generation FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
-                params![
-                    object.key.group,
-                    object.key.version,
-                    object.key.kind,
-                    object.metadata.name,
-                ],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            ).optional().map_err(|e| AppError::Internal(e.into()))?;
-
-            let (existing_spec_json, existing_generation) = match existing {
-                Some(v) => v,
-                None => {
-                    return Err(AppError::NotFound {
-                        what: "object".to_string(),
-                        identifier: format!("{}/{}", object.key.kind, object.metadata.name),
-                    });
-                }
-            };
-
-            let new_generation = if existing_spec_json != spec_json {
-                existing_generation + 1
-            } else {
-                existing_generation
-            };
-
-            let rows = tx.execute(
-                "UPDATE objects SET spec = ?1, resource_version = ?2, generation = ?3, updated_at = ?4
-                 WHERE resource_group = ?5 AND api_version = ?6 AND resource_kind = ?7 AND name = ?8
-                 AND resource_version = ?9",
-                params![
-                    spec_json,
-                    new_version as i64,
-                    new_generation,
-                    updated_at,
-                    object.key.group,
-                    object.key.version,
-                    object.key.kind,
-                    object.metadata.name,
-                    expected_version,
-                ],
-            ).map_err(|e| AppError::Internal(e.into()))?;
-
-            if rows == 0 {
-                // Version mismatch — read actual rv for Conflict error
-                let actual: u64 = tx.query_row(
-                    "SELECT resource_version FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
-                    params![
-                        object.key.group,
-                        object.key.version,
-                        object.key.kind,
-                        object.metadata.name,
-                    ],
-                    |row| row.get(0),
-                ).map_err(|e| AppError::Internal(e.into()))?;
-                return Err(AppError::Conflict {
-                    expected: expected_version as u64,
-                    actual,
-                });
-            }
-
-            // Diff-based label update: read existing, compute diff, apply
-            let existing_labels = SQLiteStore::query_labels(
-                &tx, &object.key.group, &object.key.version, &object.key.kind, &object.metadata.name
-            )?;
-            let new_labels = &object.metadata.labels;
-
-            // Keys to delete: in existing but not in new
-            let to_delete: Vec<&String> = existing_labels
-                .keys()
-                .filter(|k| !new_labels.contains_key(*k))
-                .collect();
-
-            // Keys to upsert: in new but value differs from existing, or not in existing
-            let to_upsert: Vec<(&String, &String)> = new_labels
-                .iter()
-                .filter(|(k, v)| existing_labels.get(*k) != Some(*v))
-                .collect();
-
-            // Apply deletes
-            if !to_delete.is_empty() {
-                let mut del_stmt = tx.prepare(
-                    "DELETE FROM labels WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4 AND label_key = ?5"
-                ).map_err(|e| AppError::Internal(e.into()))?;
-                for key in &to_delete {
-                    del_stmt.execute(params![
-                        object.key.group, object.key.version, object.key.kind,
-                        object.metadata.name, key
-                    ]).map_err(|e| AppError::Internal(e.into()))?;
-                }
-            }
-
-            // Apply upserts
-            if !to_upsert.is_empty() {
-                let mut upsert_stmt = tx.prepare(
-                    "INSERT OR REPLACE INTO labels (resource_group, api_version, resource_kind, name, label_key, label_value)
-                     VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
-                ).map_err(|e| AppError::Internal(e.into()))?;
-                for (key, value) in &to_upsert {
-                    upsert_stmt.execute(params![
-                        object.key.group, object.key.version, object.key.kind,
-                        object.metadata.name, key, value
-                    ]).map_err(|e| AppError::Internal(e.into()))?;
-                }
-            }
-
-            // Read existing status to preserve during spec update
-            let existing_status: Option<String> = tx.query_row(
-                "SELECT status FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
-                params![
-                    object.key.group,
-                    object.key.version,
-                    object.key.kind,
-                    object.metadata.name,
-                ],
-                |row| row.get(0),
-            ).optional().map_err(|e| AppError::Internal(e.into()))?
-            .flatten();
-
-            let status_value: Option<SpecData> = existing_status
-                .map(|s| serde_json::from_str(&s).map_err(|e| AppError::Internal(e.into())))
-                .transpose()?;
-
-            tx.commit().map_err(|e| AppError::Internal(e.into()))?;
-
-            Ok(StoredObject {
-                key: object.key,
-                metadata: object.metadata,
-                system: SystemMetadata {
-                    resource_version: new_version,
-                    generation: new_generation as u64,
-                    created_at: object.system.created_at,
-                    updated_at: now,
-                },
-                spec: object.spec,
-                status: status_value,
-            })
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-    }
-
     /// Checks whether any objects exist for the given resource key.
     async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError> {
         let key = key.clone();
@@ -753,124 +729,7 @@ impl ObjectStore for SQLiteStore {
         .map_err(|e| AppError::Internal(e.into()))?
     }
 
-    /// Deletes an object unconditionally (no version check). Returns the deleted object.
-    /// Labels are automatically removed via ON DELETE CASCADE.
-    async fn delete(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
-        let key = key.clone();
-        let name = name.to_string();
-        let conn = Arc::clone(&self.conn);
 
-        tokio::task::spawn_blocking(move || {
-            let c = conn.lock().unwrap();
-
-            // Fetch the object first so we can return it after deletion
-            let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at
-                 FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
-            ).map_err(|e| AppError::Internal(e.into()))?;
-            let mut obj = stmt
-                .query_row(
-                    params![key.group, key.version, key.kind, name],
-                    row_to_object,
-                )
-                .optional()
-                .map_err(|e| AppError::Internal(e.into()))?;
-
-            let obj = match obj {
-                Some(ref mut obj) => {
-                    // Query labels before deletion (CASCADE will remove them)
-                    obj.metadata.labels = SQLiteStore::query_labels(
-                        &c, &key.group, &key.version, &key.kind, &name
-                    )?;
-                    obj.clone()
-                }
-                None => {
-                    return Err(AppError::NotFound {
-                        what: "object".to_string(),
-                        identifier: format!("{}/{}", key.kind, name),
-                    });
-                }
-            };
-
-            c.execute(
-                "DELETE FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
-                params![key.group, key.version, key.kind, name],
-            ).map_err(|e| AppError::Internal(e.into()))?;
-
-            Ok(obj)
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-    }
-
-    async fn update_status(
-        &self,
-        key: &ResourceKey,
-        name: &str,
-        status: Value,
-    ) -> Result<StoredObject, AppError> {
-        let key = key.clone();
-        let name = name.to_string();
-        let conn = Arc::clone(&self.conn);
-        let next_version = Arc::clone(&self.next_version);
-
-        tokio::task::spawn_blocking(move || {
-            let now = SQLiteStore::now();
-            let new_version = next_version.fetch_add(1, Ordering::Relaxed);
-
-            let status_json = serde_json::to_string(&status).map_err(|e| AppError::Internal(e.into()))?;
-            let updated_at = now.to_rfc3339();
-
-            let c = conn.lock().unwrap();
-
-            let rows = c.execute(
-                "UPDATE objects SET status = ?1, resource_version = ?2, updated_at = ?3
-                 WHERE resource_group = ?4 AND api_version = ?5 AND resource_kind = ?6 AND name = ?7",
-                params![
-                    status_json,
-                    new_version as i64,
-                    updated_at,
-                    key.group,
-                    key.version,
-                    key.kind,
-                    name,
-                ],
-            ).map_err(|e| AppError::Internal(e.into()))?;
-
-            if rows == 0 {
-                return Err(AppError::NotFound {
-                    what: "object".to_string(),
-                    identifier: format!("{}/{}", key.kind, name),
-                });
-            }
-
-            // Fetch the updated object to return
-            let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at
-                 FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
-            ).map_err(|e| AppError::Internal(e.into()))?;
-            let obj = stmt
-                .query_row(
-                    params![key.group, key.version, key.kind, name],
-                    row_to_object,
-                )
-                .optional()
-                .map_err(|e| AppError::Internal(e.into()))?;
-
-            let mut obj = obj.ok_or_else(|| AppError::NotFound {
-                what: "object".to_string(),
-                identifier: format!("{}/{}", key.kind, name),
-            })?;
-
-            obj.metadata.labels = SQLiteStore::query_labels(
-                &c, &key.group, &key.version, &key.kind, &name
-            )?;
-
-            Ok(obj)
-        })
-        .await
-        .map_err(|e| AppError::Internal(e.into()))?
-    }
 }
 
 /// Decodes a base64-encoded continue token back to a name string.
@@ -893,6 +752,20 @@ mod tests {
     use super::*;
     use crate::object::types::LabelSelector;
     use serde_json::json;
+
+    /// Helper to construct a stored object with initial metadata for tests.
+    fn test_obj(key: ResourceKey, name: &str, spec: serde_json::Value) -> StoredObject {
+        StoredObject {
+            key,
+            metadata: ObjectMeta {
+                name: name.to_string(),
+                labels: HashMap::new(),
+            },
+            system: SystemMetadata::initial(),
+            spec: SpecData { value: spec },
+            status: None,
+        }
+    }
 
     fn test_key() -> ResourceKey {
         ResourceKey {
@@ -918,14 +791,7 @@ mod tests {
         let data = json!({"color": "blue", "size": 10});
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                data.clone(),
-            )
+            .create(test_obj(key.clone(), "my-widget", data.clone()))
             .await
             .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
@@ -948,26 +814,12 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
 
         let err = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 2}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 2})))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::AlreadyExists { .. }));
@@ -988,36 +840,15 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "c".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "c", json!({})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "a".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "a", json!({})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "b".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "b", json!({})))
             .await
             .unwrap();
 
@@ -1044,14 +875,7 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(
-                    &key,
-                    ObjectMeta {
-                        name: format!("item-{i}"),
-                        labels: HashMap::new(),
-                    },
-                    json!({}),
-                )
+                .create(test_obj(key.clone(), &format!("item-{i}"), json!({})))
                 .await
                 .unwrap();
         }
@@ -1080,14 +904,7 @@ mod tests {
 
         for i in 0..5 {
             store
-                .create(
-                    &key,
-                    ObjectMeta {
-                        name: format!("item-{i}"),
-                        labels: HashMap::new(),
-                    },
-                    json!({}),
-                )
+                .create(test_obj(key.clone(), &format!("item-{i}"), json!({})))
                 .await
                 .unwrap();
         }
@@ -1126,80 +943,24 @@ mod tests {
     async fn update_correct_version_succeeds() {
         let (store, _dir) = temp_store();
         let key = test_key();
-
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
         let v1 = created.system.resource_version;
 
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: ObjectMeta {
-                name: "my-widget".to_string(),
-                labels: HashMap::new(),
-            },
-            system: SystemMetadata {
-                resource_version: v1,
-                generation: 1,
-                created_at: created.system.created_at,
-                updated_at: created.system.updated_at,
-            },
-            spec: SpecData {
-                value: json!({"x": 2}),
-            },
-            status: None,
-        };
-
-        let updated = store.update(object).await.unwrap();
-        assert!(updated.system.resource_version > v1);
-        assert_eq!(updated.spec.value, json!({"x": 2}));
-    }
-
-    #[tokio::test]
-    async fn update_wrong_version_conflict() {
-        let (store, _dir) = temp_store();
-        let key = test_key();
-
-        let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
-            .await
+        let updated = store
+            .transaction(&key, "my-widget", Box::new(|existing| {
+                let mut updated = existing.clone();
+                updated.spec.value = json!({"x": 2});
+                // Caller bumps resource_version
+                updated.system.resource_version = existing.system.resource_version + 1;
+                TransactionOp::Apply(updated)
+            }))
             .unwrap();
 
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: ObjectMeta {
-                name: "my-widget".to_string(),
-                labels: HashMap::new(),
-            },
-            system: SystemMetadata {
-                resource_version: 99,
-                generation: 1,
-                created_at: created.system.created_at,
-                updated_at: created.system.updated_at,
-            },
-            spec: SpecData {
-                value: json!({"x": 2}),
-            },
-            status: None,
-        };
-
-        let err = store.update(object).await.unwrap_err();
-        assert!(matches!(err, AppError::Conflict { .. }));
+        assert_eq!(updated.system.resource_version, v1 + 1);
+        assert_eq!(updated.spec.value, json!({"x": 2}));
     }
 
     #[tokio::test]
@@ -1207,25 +968,9 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        let object = StoredObject {
-            key: key.clone(),
-            metadata: ObjectMeta {
-                name: "nonexistent".to_string(),
-                labels: HashMap::new(),
-            },
-            system: SystemMetadata {
-                resource_version: 1,
-                generation: 1,
-                created_at: chrono::Utc::now(),
-                updated_at: chrono::Utc::now(),
-            },
-            spec: SpecData {
-                value: json!({"x": 1}),
-            },
-            status: None,
-        };
-
-        let err = store.update(object).await.unwrap_err();
+        let err = store
+            .transaction(&key, "nonexistent", Box::new(|_| TransactionOp::Delete))
+            .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -1233,22 +978,15 @@ mod tests {
     async fn delete_returns_object_and_get_not_found() {
         let (store, _dir) = temp_store();
         let key = test_key();
-
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
 
-        let deleted = store.delete(&key, "my-widget").await.unwrap();
+        let deleted = store
+            .transaction(&key, "my-widget", Box::new(|_| TransactionOp::Delete))
+            .unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
-        assert_eq!(deleted.spec.value, created.spec.value);
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
@@ -1259,7 +997,9 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        let err = store.delete(&key, "nonexistent").await.unwrap_err();
+        let err = store
+            .transaction(&key, "nonexistent", Box::new(|_| TransactionOp::Delete))
+            .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -1293,14 +1033,7 @@ mod tests {
             let store = SQLiteStore::new(db_path.to_str().unwrap()).unwrap();
             let key = test_key();
             store
-                .create(
-                    &key,
-                    ObjectMeta {
-                        name: "persistent".to_string(),
-                        labels: HashMap::new(),
-                    },
-                    json!({"data": "hello"}),
-                )
+                .create(test_obj(key.clone(), "persistent", json!({"data": "hello"})))
                 .await
                 .unwrap();
         }
@@ -1321,36 +1054,15 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "foo".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "foo", json!({})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "bar".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "bar", json!({})))
             .await
             .unwrap();
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "baz".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "baz", json!({})))
             .await
             .unwrap();
 
@@ -1375,41 +1087,18 @@ mod tests {
 
         let mut labels_nginx = HashMap::new();
         labels_nginx.insert("app".to_string(), "nginx".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "web-1".to_string(),
-                    labels: labels_nginx,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "web-1", json!({}));
+        obj.metadata.labels = labels_nginx;
+        store.create(obj).await.unwrap();
 
         let mut labels_apache = HashMap::new();
         labels_apache.insert("app".to_string(), "apache".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "web-2".to_string(),
-                    labels: labels_apache,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "web-2", json!({}));
+        obj.metadata.labels = labels_apache;
+        store.create(obj).await.unwrap();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "web-3".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "web-3", json!({})))
             .await
             .unwrap();
 
@@ -1439,41 +1128,18 @@ mod tests {
 
         let mut labels = HashMap::new();
         labels.insert("env".to_string(), "prod".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "prod-app".to_string(),
-                    labels,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "prod-app", json!({}));
+        obj.metadata.labels = labels;
+        store.create(obj).await.unwrap();
 
         let mut labels2 = HashMap::new();
         labels2.insert("env".to_string(), "staging".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "staging-app".to_string(),
-                    labels: labels2,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "staging-app", json!({}));
+        obj.metadata.labels = labels2;
+        store.create(obj).await.unwrap();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "no-env-app".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "no-env-app", json!({})))
             .await
             .unwrap();
 
@@ -1503,27 +1169,12 @@ mod tests {
 
         let mut labels = HashMap::new();
         labels.insert("gpu".to_string(), "true".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "gpu-node".to_string(),
-                    labels,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "gpu-node", json!({}));
+        obj.metadata.labels = labels;
+        store.create(obj).await.unwrap();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "cpu-node".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "cpu-node", json!({})))
             .await
             .unwrap();
 
@@ -1552,27 +1203,12 @@ mod tests {
 
         let mut labels = HashMap::new();
         labels.insert("experimental".to_string(), "true".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "exp-app".to_string(),
-                    labels,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "exp-app", json!({}));
+        obj.metadata.labels = labels;
+        store.create(obj).await.unwrap();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "stable-app".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "stable-app", json!({})))
             .await
             .unwrap();
 
@@ -1601,41 +1237,18 @@ mod tests {
 
         let mut labels = HashMap::new();
         labels.insert("app".to_string(), "nginx".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "target".to_string(),
-                    labels,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "target", json!({}));
+        obj.metadata.labels = labels;
+        store.create(obj).await.unwrap();
 
         let mut labels2 = HashMap::new();
         labels2.insert("app".to_string(), "nginx".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "other".to_string(),
-                    labels: labels2,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "other", json!({}));
+        obj.metadata.labels = labels2;
+        store.create(obj).await.unwrap();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "target-nolabel".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "target-nolabel", json!({})))
             .await
             .unwrap();
 
@@ -1666,21 +1279,11 @@ mod tests {
 
         // Create 50 objects, only 3 match the filter
         for i in 0..50 {
-            let mut labels = HashMap::new();
+            let mut obj = test_obj(key.clone(), &format!("obj-{i:02}"), json!({}));
             if i < 3 {
-                labels.insert("app".to_string(), "nginx".to_string());
+                obj.metadata.labels.insert("app".to_string(), "nginx".to_string());
             }
-            store
-                .create(
-                    &key,
-                    ObjectMeta {
-                        name: format!("obj-{i:02}"),
-                        labels,
-                    },
-                    json!({}),
-                )
-                .await
-                .unwrap();
+            store.create(obj).await.unwrap();
         }
 
         // Filter to 3, limit 10 → should return 3
@@ -1710,14 +1313,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "foo".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "foo", json!({})))
             .await
             .unwrap();
 
@@ -1743,32 +1339,16 @@ mod tests {
         let mut labels = HashMap::new();
         labels.insert("app".to_string(), "nginx".to_string());
         labels.insert("env".to_string(), "prod".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "matching".to_string(),
-                    labels,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "matching", json!({}));
+        obj.metadata.labels = labels;
+        store.create(obj).await.unwrap();
 
         let mut labels2 = HashMap::new();
         labels2.insert("app".to_string(), "nginx".to_string());
         labels2.insert("env".to_string(), "staging".to_string());
-        store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "wrong-env".to_string(),
-                    labels: labels2,
-                },
-                json!({}),
-            )
-            .await
-            .unwrap();
+        let mut obj = test_obj(key.clone(), "wrong-env", json!({}));
+        obj.metadata.labels = labels2;
+        store.create(obj).await.unwrap();
 
         let res = store
             .list(
@@ -1803,14 +1383,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "exists-test".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"x": 1}),
-            )
+            .create(test_obj(key.clone(), "exists-test", json!({"x": 1})))
             .await
             .unwrap();
 
@@ -1831,14 +1404,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "test".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "test", json!({})))
             .await
             .unwrap();
 
@@ -1850,34 +1416,32 @@ mod tests {
         assert!(!store.exists(&other_key).await.unwrap());
     }
 
-    // --- update_status tests ---
+    // --- update_status tests (rewritten using transaction) ---
 
     #[tokio::test]
     async fn update_status_success() {
         let (store, _dir) = temp_store();
         let key = test_key();
-
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"color": "blue"}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue"})))
             .await
             .unwrap();
-        let v1 = created.system.resource_version;
         assert!(created.status.is_none());
+        let v1 = created.system.resource_version;
 
         let updated = store
-            .update_status(&key, "my-widget", json!({"phase": "Running"}))
-            .await
+            .transaction(&key, "my-widget", Box::new(|existing| {
+                let mut updated = existing.clone();
+                updated.status = Some(SpecData { value: json!({"phase": "Running"}) });
+                // Caller bumps resource_version
+                updated.system.resource_version = existing.system.resource_version + 1;
+                TransactionOp::Apply(updated)
+            }))
             .unwrap();
+
         assert!(updated.status.is_some());
         assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
-        assert!(updated.system.resource_version > v1);
+        assert_eq!(updated.system.resource_version, v1 + 1);
         assert_eq!(updated.spec.value, json!({"color": "blue"}));
     }
 
@@ -1887,8 +1451,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .update_status(&key, "nonexistent", json!({"phase": "Running"}))
-            .await
+            .transaction(&key, "nonexistent", Box::new(|_| TransactionOp::Delete))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -1899,25 +1462,24 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"color": "blue"}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue"})))
             .await
             .unwrap();
 
         store
-            .update_status(&key, "my-widget", json!({"phase": "Pending"}))
-            .await
+            .transaction(&key, "my-widget", Box::new(|existing| {
+                let mut updated = existing.clone();
+                updated.status = Some(SpecData { value: json!({"phase": "Pending"}) });
+                TransactionOp::Apply(updated)
+            }))
             .unwrap();
 
         let updated = store
-            .update_status(&key, "my-widget", json!({"phase": "Running"}))
-            .await
+            .transaction(&key, "my-widget", Box::new(|existing| {
+                let mut updated = existing.clone();
+                updated.status = Some(SpecData { value: json!({"phase": "Running"}) });
+                TransactionOp::Apply(updated)
+            }))
             .unwrap();
         assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
     }
@@ -1928,23 +1490,21 @@ mod tests {
         let key = test_key();
 
         let created = store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
             .await
             .unwrap();
         let v1 = created.system.resource_version;
 
         let updated = store
-            .update_status(&key, "my-widget", json!({"phase": "Running"}))
-            .await
+            .transaction(&key, "my-widget", Box::new(|existing| {
+                let mut updated = existing.clone();
+                updated.status = Some(SpecData { value: json!({"phase": "Running"}) });
+                // Caller bumps resource_version
+                updated.system.resource_version = existing.system.resource_version + 1;
+                TransactionOp::Apply(updated)
+            }))
             .unwrap();
-        assert!(updated.system.resource_version > v1);
+        assert_eq!(updated.system.resource_version, v1 + 1);
     }
 
     #[tokio::test]
@@ -1953,21 +1513,85 @@ mod tests {
         let key = test_key();
 
         store
-            .create(
-                &key,
-                ObjectMeta {
-                    name: "my-widget".to_string(),
-                    labels: HashMap::new(),
-                },
-                json!({"color": "blue", "size": 10}),
-            )
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue", "size": 10})))
             .await
             .unwrap();
 
         let updated = store
-            .update_status(&key, "my-widget", json!({"phase": "Running"}))
-            .await
+            .transaction(&key, "my-widget", Box::new(|existing| {
+                let mut updated = existing.clone();
+                updated.status = Some(SpecData { value: json!({"phase": "Running"}) });
+                TransactionOp::Apply(updated)
+            }))
             .unwrap();
         assert_eq!(updated.spec.value, json!({"color": "blue", "size": 10}));
+    }
+
+    // --- New transaction-based tests ---
+
+    #[tokio::test]
+    async fn transaction_apply_succeeds() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+        let created = store
+            .create(test_obj(key.clone(), "test", json!({"x": 1})))
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+
+        let result = store
+            .transaction(&key, "test", Box::new(|existing| {
+                let mut updated = existing.clone();
+                updated.spec.value = json!({"x": 2});
+                // Caller bumps resource_version
+                updated.system.resource_version = existing.system.resource_version + 1;
+                TransactionOp::Apply(updated)
+            }))
+            .unwrap();
+
+        assert_eq!(result.system.resource_version, v1 + 1);
+        assert_eq!(result.spec.value, json!({"x": 2}));
+    }
+
+    #[tokio::test]
+    async fn transaction_abort_does_not_modify() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+        let created = store
+            .create(test_obj(key.clone(), "test", json!({"x": 1})))
+            .await
+            .unwrap();
+        let v1 = created.system.resource_version;
+
+        let err = store
+            .transaction(
+                &key,
+                "test",
+                Box::new(|_| TransactionOp::Abort(AppError::Internal(anyhow::anyhow!("aborted")))),
+            )
+            .unwrap_err();
+        assert!(matches!(err, AppError::Internal { .. }));
+
+        // Verify object is unmodified
+        let retrieved = store.get(&key, "test").await.unwrap();
+        assert_eq!(retrieved.system.resource_version, v1);
+        assert_eq!(retrieved.spec.value, json!({"x": 1}));
+    }
+
+    #[tokio::test]
+    async fn transaction_delete_removes_object() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+        store
+            .create(test_obj(key.clone(), "test", json!({"x": 1})))
+            .await
+            .unwrap();
+
+        store
+            .transaction(&key, "test", Box::new(|_| TransactionOp::Delete))
+            .unwrap();
+
+        let err = store.get(&key, "test").await.unwrap_err();
+        assert!(matches!(err, AppError::NotFound { .. }));
     }
 }

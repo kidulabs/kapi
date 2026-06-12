@@ -292,7 +292,7 @@ pub async fn test_watch_by_name_and_watch_all_simultaneously(app: &TestApp) -> R
 
 pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<(), String> {
     use kapi::event::EventPublisher;
-    use kapi::object::types::{ObjectMeta, WatchEvent, WatchFilter};
+    use kapi::object::types::{ObjectMeta, SpecData, StoredObject, SystemMetadata, WatchEvent, WatchFilter};
     use kapi::store::ResourceKey;
 
     let key = ResourceKey {
@@ -321,14 +321,16 @@ pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<
     // SystemMetadata (the store populates it).
     let stored = app
         .store
-        .create(
-            &key,
-            ObjectMeta {
+        .create(StoredObject {
+            key: key.clone(),
+            metadata: ObjectMeta {
                 name: "cleanup-test".to_string(),
                 labels: std::collections::HashMap::new(),
             },
-            serde_json::json!({}),
-        )
+            system: SystemMetadata::initial(),
+            spec: SpecData { value: serde_json::json!({}) },
+            status: None,
+        })
         .await
         .map_err(|e| format!("store create failed: {e}"))?;
 
