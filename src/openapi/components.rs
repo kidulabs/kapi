@@ -85,17 +85,6 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                 "required": ["resourceVersion", "createdAt", "updatedAt"]
             }),
         ),
-        // SpecData: envelope holding arbitrary JSON spec data
-        (
-            "SpecData".to_string(),
-            json!({
-                "type": "object",
-                "properties": {
-                    "value": {}
-                },
-                "required": ["value"]
-            }),
-        ),
         // StoredObject: generic envelope wrapping a stored resource
         (
             "StoredObject".to_string(),
@@ -105,9 +94,8 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "key": { "$ref": "#/components/schemas/ResourceKey" },
                     "metadata": { "$ref": "#/components/schemas/ObjectMeta" },
                     "system": { "$ref": "#/components/schemas/SystemMetadata" },
-                    "spec": { "$ref": "#/components/schemas/SpecData" },
+                    "spec": { "description": "User-defined spec payload, validated against the kind's registered jsonSchema" },
                     "status": {
-                        "$ref": "#/components/schemas/SpecData",
                         "nullable": true,
                         "description": "Status subresource, managed via /status endpoint. Null for kinds without statusSchema."
                     }
@@ -219,19 +207,14 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
 
 /// Builds the spec component schema for a registered kind.
 ///
-/// Wraps the user's `specSchema` as an OpenAPI Schema Object.
+/// Returns the user's `specSchema` directly as an OpenAPI Schema Object,
+/// with no `value` wrapper. The kind-specific component (e.g. `WidgetExampleIo`)
+/// is the user's specSchema verbatim.
 pub(crate) fn build_kind_spec_component(
     schema_data: &SchemaData,
     comp_name: &str,
 ) -> (String, Value) {
-    let schema = json!({
-        "type": "object",
-        "properties": {
-            "value": schema_data.spec_schema
-        },
-        "required": ["value"]
-    });
-    (comp_name.to_string(), schema)
+    (comp_name.to_string(), schema_data.spec_schema.clone())
 }
 
 /// Builds the StoredObject envelope component for a registered kind.

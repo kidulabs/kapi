@@ -10,7 +10,7 @@ The system SHALL define a `ResourceKey` struct with `group`, `version`, and `kin
 - **THEN** they SHALL be equal and produce the same hash
 
 ### Requirement: StoredObject represents a persisted custom object
-The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `metadata: ObjectMeta`, `system: SystemMetadata`, `spec: SpecData`, and `status: Option<SpecData>`. The `status` field SHALL be `None` for kinds without a `statusSchema` and `Some(SpecData)` for kinds with one. The `ObjectMeta` struct SHALL contain `name: String` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. The `SystemMetadata` struct SHALL contain `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `StoredObject` SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize`.
+The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `metadata: ObjectMeta`, `system: SystemMetadata`, `spec: serde_json::Value`, and `status: Option<serde_json::Value>`. The `status` field SHALL be `None` for kinds without a `statusSchema` and `Some(Value)` for kinds with one. The `ObjectMeta` struct SHALL contain `name: String` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. The `SystemMetadata` struct SHALL contain `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `StoredObject` SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize`. The `spec` and `status` fields SHALL be the user-supplied JSON directly, with no wrapper envelope.
 
 #### Scenario: Object carries versioning timestamps
 - **WHEN** an object is created or updated
@@ -27,11 +27,13 @@ The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `
 - **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, `spec`, and `status`
 - **AND** `metadata` contains `name`
 - **AND** `system` contains `resourceVersion`, `createdAt`, `updatedAt`
+- **AND** `spec` contains the user-supplied spec JSON directly (no `value` wrapper)
+- **AND** `status` contains the user-supplied status JSON directly (no `value` wrapper) or `null`
 
 #### Scenario: StoredObject serializes with status field
-- **WHEN** a `StoredObject` with `status: Some(SpecData { value: {"phase": "Running"} })` is serialized to JSON
+- **WHEN** a `StoredObject` with `status: Some(Value::Object({"phase": "Running"}))` is serialized to JSON
 - **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, `spec`, and `status`
-- **AND** `status` contains `{"value": {"phase": "Running"}}`
+- **AND** `status` contains `{"phase": "Running"}` (the inner value directly, no wrapper)
 
 #### Scenario: StoredObject serializes with null status
 - **WHEN** a `StoredObject` with `status: None` is serialized to JSON
@@ -41,10 +43,11 @@ The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `
 #### Scenario: StoredObject deserializes from JSON
 - **WHEN** JSON with keys `key`, `metadata`, `system`, and `spec` is deserialized
 - **THEN** the resulting `StoredObject` has `metadata.name`, `system.resource_version`, `system.created_at`, and `system.updated_at` populated
+- **AND** `spec` is the JSON value at the `spec` key directly (no `value` wrapper expected or required)
 
 #### Scenario: StoredObject deserializes with status
 - **WHEN** JSON with keys `key`, `metadata`, `system`, `spec`, and `status` is deserialized
-- **THEN** the resulting `StoredObject` has `status` populated as `Some(SpecData)`
+- **THEN** the resulting `StoredObject` has `status` populated as `Some(Value)` containing the JSON at the `status` key directly
 
 #### Scenario: StoredObject deserializes with null status
 - **WHEN** JSON with `status: null` is deserialized
@@ -79,13 +82,6 @@ The system SHALL define a `SystemMetadata` struct containing `resource_version: 
 #### Scenario: SystemMetadata serializes with camelCase
 - **WHEN** a `SystemMetadata` is serialized
 - **THEN** the JSON field names are `resourceVersion`, `createdAt`, `updatedAt`
-
-### Requirement: SpecData wraps raw JSON for extensibility
-The system SHALL define a `SpecData` named struct containing a single `value: serde_json::Value` field. This replaces the previous `UserData` type.
-
-#### Scenario: Handler receives user JSON
-- **WHEN** a handler deserializes a request body
-- **THEN** the payload SHALL be wrapped in `SpecData { value: ... }` before passing to the service layer
 
 ### Requirement: SchemaData includes optional statusSchema
 The system SHALL define `SchemaData` with fields `target_group: String`, `target_version: String`, `target_kind: String`, `json_schema: serde_json::Value`, and `status_schema: Option<serde_json::Value>`. The `status_schema` field SHALL use `#[serde(rename_all = "camelCase")]` serialization, producing `statusSchema` in JSON.

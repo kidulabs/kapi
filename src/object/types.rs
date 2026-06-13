@@ -111,11 +111,6 @@ pub struct WatchEvent {
     pub object: StoredObject,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct SpecData {
-    pub value: serde_json::Value,
-}
-
 // Schema data struct for type-safe access to Schema registration payloads
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -176,9 +171,9 @@ pub struct StoredObject {
     pub key: ResourceKey,
     pub metadata: ObjectMeta,
     pub system: SystemMetadata,
-    pub spec: SpecData,
+    pub spec: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub status: Option<SpecData>,
+    pub status: Option<serde_json::Value>,
 }
 
 #[cfg(test)]
@@ -202,7 +197,7 @@ mod tests {
                 labels: HashMap::new(),
             },
             system: SystemMetadata::initial(),
-            spec: SpecData { value: spec },
+            spec,
             status: None,
         }
     }
@@ -226,9 +221,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                spec: SpecData {
-                    value: serde_json::json!({}),
-                },
+                spec: serde_json::json!({}),
                 status: None,
             },
         }
@@ -457,9 +450,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                spec: SpecData {
-                    value: serde_json::json!({}),
-                },
+                spec: serde_json::json!({}),
                 status: None,
             },
         };
@@ -495,9 +486,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                spec: SpecData {
-                    value: serde_json::json!({}),
-                },
+                spec: serde_json::json!({}),
                 status: None,
             },
         };
@@ -536,9 +525,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                spec: SpecData {
-                    value: serde_json::json!({}),
-                },
+                spec: serde_json::json!({}),
                 status: None,
             },
         };
@@ -589,9 +576,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                spec: SpecData {
-                    value: serde_json::json!({}),
-                },
+                spec: serde_json::json!({}),
                 status: None,
             },
         };
@@ -637,9 +622,7 @@ mod tests {
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
                 },
-                spec: SpecData {
-                    value: serde_json::json!({}),
-                },
+                spec: serde_json::json!({}),
                 status: None,
             },
         };
@@ -666,12 +649,8 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            spec: SpecData {
-                value: json!({"color": "blue"}),
-            },
-            status: Some(SpecData {
-                value: json!({"phase": "Running"}),
-            }),
+            spec: json!({"color": "blue"}),
+            status: Some(json!({"phase": "Running"})),
         };
         let serialized = serde_json::to_string(&obj).unwrap();
         assert!(serialized.contains("\"status\""));
@@ -697,9 +676,7 @@ mod tests {
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
             },
-            spec: SpecData {
-                value: json!({"color": "blue"}),
-            },
+            spec: json!({"color": "blue"}),
             status: None,
         };
         let serialized = serde_json::to_string(&obj).unwrap();
@@ -713,12 +690,12 @@ mod tests {
             "key": {"group": "example.io", "version": "v1", "kind": "Widget"},
             "metadata": {"name": "test", "labels": {}},
             "system": {"resourceVersion": 1, "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z"},
-            "spec": {"value": {"color": "blue"}},
-            "status": {"value": {"phase": "Running"}}
+            "spec": {"color": "blue"},
+            "status": {"phase": "Running"}
         });
         let obj: StoredObject = serde_json::from_value(json).unwrap();
         assert!(obj.status.is_some());
-        assert_eq!(obj.status.unwrap().value, json!({"phase": "Running"}));
+        assert_eq!(obj.status.unwrap(), json!({"phase": "Running"}));
     }
 
     #[test]
@@ -727,7 +704,7 @@ mod tests {
             "key": {"group": "example.io", "version": "v1", "kind": "Widget"},
             "metadata": {"name": "test", "labels": {}},
             "system": {"resourceVersion": 1, "createdAt": "2024-01-01T00:00:00Z", "updatedAt": "2024-01-01T00:00:00Z"},
-            "spec": {"value": {"color": "blue"}}
+            "spec": {"color": "blue"}
         });
         let obj: StoredObject = serde_json::from_value(json).unwrap();
         assert!(obj.status.is_none());

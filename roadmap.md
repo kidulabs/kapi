@@ -1,22 +1,5 @@
 # kapi — Roadmap
 
-## Completed
-
-- [x] **Persistent storage** — SQLite-backed `ObjectStore` implementation via `rusqlite` with `spawn_blocking`
-- [x] **Predicate routing event bus** — Replaced `tokio::broadcast` with per-watcher `mpsc` channels + `WatchFilter` for filtered event delivery
-- [x] **Field selector watch filtering** — `?fieldSelector=metadata.name=<name>` query parameter on watch requests with strict validation (400 for unsupported fields, malformed syntax)
-- [x] **OpenAPI spec for field selectors** — `fieldSelector` parameter and `400` response documented in generated OpenAPI 3.0.3 spec
-- [x] **Label selector watch filtering** — `?labelSelector=<selector>` query parameter on watch requests with moderate K8s syntax (equality, inequality, existence, non-existence, AND combinator)
-- [x] **OpenAPI spec for label selectors** — `labelSelector` parameter and `400` response documented in generated OpenAPI 3.0.3 spec
-- [x] **Label filtering (watch)** — `labels` field on `ObjectMeta` with validation; `labelSelector` query param for watch with moderate K8s syntax (equality, inequality, existence, non-existence, AND)
-- [x] **Label filtering (list)** — `labelSelector` on non-watch list requests with store-level filtering in both InMemoryStore and SQLiteStore
-- [x] **Watch filtering on list requests** — `fieldSelector`/`labelSelector` on non-watch list requests with store-level filtering before pagination
-- [x] **Watch filter combinators** — `WatchFilter::And(Box<WatchFilter>, Box<WatchFilter>)` for composing field and label selectors on watch
-- [x] **Rename data to spec** — Rename `StoredObject.data` → `.spec` and `UserData` → `SpecData` across all layers (`openspec/changes/rename-data-to-spec`)
-- [x] **Add status subresource** — `StoredObject.status: Option<SpecData>`, `PUT/GET /status` endpoint, `StatusModified` event, `update_status()` on store, `statusSchema` in meta-schema (`openspec/changes/add-status-subresource`)
-- [x] **Extract SchemaRegistry** — Extract schema compilation, caching, and lookup from `ObjectService` into a `SchemaRegistry` collaborator (`openspec/changes/extract-schema-registry`)
-- [x] **Generation field** — `SystemMetadata.generation: u64` bumped only on spec changes, not status changes; enables controllers to detect spec drift
-
 ## Pending
 
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
@@ -25,10 +8,6 @@
 - [ ] **Field selector variants** — `FieldSelector::NameNotEquals`, `FieldSelector::NameIn` for more expressive field-based filtering
 - [ ] **Zombie watcher cleanup** — Dead watchers (client disconnected) are only cleaned up lazily on next `publish()` for that `ResourceKey`. If no objects of a kind ever exist, watchers accumulate unbounded. Preferred: periodic background cleanup task. Secondary: `Drop` impl on `EventBus` entries.
 - [ ] **Add Finalizer Support** — add finalizer support
-- [x] **Make the store dumb** — Store implementations are pure persistence layers with no metadata logic. `ObjectStore::create()` accepts a complete `StoredObject`. Service owns all system metadata (rv, generation, timestamps) via `apply_with_metadata()` wrapper. OCC check moved to service. `next_version` counters removed. (`openspec/changes/make-datastore-dumb`)
-- [ ] Should we rename the struct SpecData to UserData?
-
-
 
 ## Deferred Improvements
 
@@ -36,7 +15,6 @@
 
 ## Future Work
 
-- [ ] **OR combinators for label selectors** — Support OR logic between label requirements (Kubernetes doesn't support this natively, but may be useful)
 - [ ] **Query optimization for high-cardinality labels** — Improve SQLite EXISTS subquery performance for large label sets
 - [ ] **Full label selector syntax parity** — Add set-based operators (`in`, `notin`) to `labelSelector` query parameter for full Kubernetes label selector support
 - [ ] **Label indexing** — Index label key-value pairs for efficient high-cardinality label queries at scale
