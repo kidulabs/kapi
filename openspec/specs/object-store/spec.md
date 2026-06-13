@@ -99,7 +99,7 @@ The `list` method SHALL return all `StoredObject` instances matching the given `
 - **THEN** the filter SHALL be applied, then the cursor skip, then truncation
 
 ### Requirement: InMemoryStore uses DashMap for concurrent access
-The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore` using `DashMap<(ResourceKey, String), StoredObject>` as its backing store, and `SQLiteStore` using a SQLite database file with `rusqlite` as its backing store. Both SHALL implement the `ObjectStore` trait and produce identical behavior for all trait methods. Neither implementation SHALL maintain global state for metadata generation.
+The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore` using `DashMap<(ResourceKey, String), StoredObject>` as its backing store, and `SQLiteStore` using a SQLite database file with `rusqlite` as its backing store. Both SHALL implement the `ObjectStore` trait and produce identical behavior for all trait methods. Neither implementation SHALL maintain global state for metadata generation. Both SHALL persist `StoredObject.spec` and `StoredObject.status` as `serde_json::Value` directly, with no envelope wrapper.
 
 `InMemoryStore::list()` SHALL apply field and label filters in Rust after collecting objects but before sorting and pagination (order: collect → filter → sort → skip → truncate).
 
@@ -116,6 +116,11 @@ The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore`
 #### Scenario: Both implementations satisfy the same trait
 - **WHEN** either `InMemoryStore` or `SQLiteStore` is used as `Arc<dyn ObjectStore>`
 - **THEN** all trait methods behave identically for the same inputs
+
+#### Scenario: Stores persist spec and status as inline JSON values
+- **WHEN** `create` is called with a `StoredObject` whose `spec` and `status` are `serde_json::Value`
+- **THEN** the stores SHALL persist the values as-is, with no wrapper or envelope
+- **AND** `get` SHALL return `StoredObject` with `spec` and `status` as the same `serde_json::Value` instances (or semantically equivalent parsed values)
 
 ### Requirement: InMemoryStore visibility restricted to crate
 The `InMemoryStore` module SHALL be declared `pub(crate)` in `src/store/mod.rs` so it is visible only within the `kapi` crate, not to external consumers.

@@ -8,7 +8,7 @@ The system SHALL define an `ObjectService` struct containing:
 - `event_bus: Arc<dyn EventPublisher>` — the per-kind event bus for watch notifications
 - `schema_registry: SchemaRegistry` — schema compilation, caching, and lookup collaborator
 
-The service SHALL be the single owner of system metadata manipulation (resource_version, generation, timestamps). The store SHALL NOT modify these fields.
+The service SHALL be the single owner of system metadata manipulation (resource_version, generation, timestamps). The store SHALL NOT modify these fields. The service SHALL operate on `spec` and `status` as `serde_json::Value` directly, with no `SpecData` envelope construction or unwrapping.
 
 #### Scenario: Service construction with SchemaRegistry
 - **WHEN** `ObjectService::new(store, event_bus, meta_validator)` is called
@@ -24,11 +24,13 @@ The `create(key, meta, spec)` method SHALL:
 
 The service SHALL construct the complete `StoredObject` with all system metadata before calling `store.create()`. The store SHALL persist the object as-is.
 
+The service SHALL set `StoredObject.spec` to the `serde_json::Value` directly. There SHALL be no `SpecData { value: ... }` construction anywhere in the service.
+
 Label validation SHALL occur after schema validation of the spec payload but before store persistence. If label validation fails, an `AppError::InvalidLabel` error SHALL be returned with a descriptive message.
 
 #### Scenario: Create valid Schema
 - **WHEN** a Schema registration passed meta-schema validation and its jsonSchema compiles
-- **THEN** the service SHALL construct a `StoredObject` with `resource_version = 1`, `generation = 1`, and current timestamps
+- **THEN** the service SHALL construct a `StoredObject` with `resource_version = 1`, `generation = 1`, and current timestamps, with `spec` set to the validated `Value` directly
 - **AND** the schema is stored with the generated name, the compiled validator is cached under that name, and an `Added` event is published
 
 #### Scenario: Create Schema with invalid meta-schema
@@ -41,7 +43,7 @@ Label validation SHALL occur after schema validation of the spec payload but bef
 
 #### Scenario: Create object with initial metadata
 - **WHEN** creating a regular object
-- **THEN** the service SHALL set `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`
+- **THEN** the service SHALL set `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`, with `spec` set to the validated `Value` directly
 - **AND** the store SHALL persist the object with those exact metadata values
 
 #### Scenario: Create object for unregistered kind
@@ -107,7 +109,7 @@ The `update(object)` method SHALL:
 
 The service SHALL use a centralized metadata wrapper that automatically handles:
 - `resource_version = existing.resource_version + 1`
-- `generation = existing.generation + 1` if `spec.value` changed, else `existing.generation`
+- `generation = existing.generation + 1` if `existing.spec != new_obj.spec` (direct `Value` equality), else `existing.generation`
 - `updated_at = Utc::now()`
 - `created_at = existing.created_at` (preserved)
 
@@ -128,11 +130,11 @@ Label validation SHALL occur after schema validation but before store persistenc
 - **THEN** the transaction callback SHALL return `TransactionOp::Abort(AppError::Conflict)` and no event is published
 
 #### Scenario: Update with same spec does not bump generation
-- **WHEN** `update` is called with the same `spec.value` but different `metadata.labels`
+- **WHEN** `update` is called with the same `spec` (direct `Value` equality) but different `metadata.labels`
 - **THEN** the centralized metadata wrapper SHALL preserve `generation` (not increment it)
 
 #### Scenario: Update with different spec bumps generation
-- **WHEN** `update` is called with a different `spec.value`
+- **WHEN** `update` is called with a different `spec` `Value`
 - **THEN** the centralized metadata wrapper SHALL increment `generation` by 1
 
 #### Scenario: Update with valid labels
@@ -217,20 +219,24 @@ The `create` method SHALL ignore any `status` field present in the request body.
 - **THEN** the `status` field SHALL be removed from the body before storage
 - **AND** the created object SHALL have `status: None`
 
-### Requirement: ObjectService get_status method
-The `ObjectService` SHALL provide a `get_status(key: ResourceKey, name: String)` method that:
-1. Fetches the object from the store
-2. Looks up the Schema for the given kind to check if `statusSchema` is defined
-3. If no `statusSchema` exists, returns `AppError::StatusSubresourceNotEnabled { kind }`
-4. Returns the `status` field of the object (may be `None`/`null`)
+### Requirement: ObjectService get_status method returns Value directly
+The `ObjectService` SHALL provide a `get_status(key: ResourceKey, name: String) -> Result<Option<Value>, AppError>` method that:
+1. Looks up the Schema for the given kind to check if `statusSchema` is defined
+2. If no `statusSchema` exists, returns `AppError::StatusSubresourceNotEnabled { kind }`
+3. Fetches the object from the store
+4. Returns the `status` field as `Option<serde_json::Value>` directly (no envelope)
 
-#### Scenario: Get status for kind with statusSchema
-- **WHEN** `get_status` is called for a kind with `statusSchema`
-- **THEN** the `status` field of the object is returned
+#### Scenario: Get status for object with status set
+- **WHEN** `get_status` is called for an object whose `status` is `Some(Value::Object({"phase": "Running"}))`
+- **THEN** the method SHALL return `Ok(Some(Value::Object({"phase": "Running"})))`
+
+#### Scenario: Get status for object without status set
+- **WHEN** `get_status` is called for an object whose `status` is `None`
+- **THEN** the method SHALL return `Ok(None)`
 
 #### Scenario: Get status for kind without statusSchema
-- **WHEN** `get_status` is called for a kind without `statusSchema`
-- **THEN** the error is `AppError::StatusSubresourceNotEnabled { kind }`
+- **WHEN** `get_status` is called for a kind whose Schema has no `statusSchema`
+- **THEN** the method SHALL return `Err(AppError::StatusSubresourceNotEnabled { kind })`
 
 ### Requirement: ObjectService update_status method uses centralized metadata
 The `ObjectService` SHALL provide an `update_status(key: ResourceKey, name: String, status: Value)` method that:
@@ -242,7 +248,7 @@ The `ObjectService` SHALL provide an `update_status(key: ResourceKey, name: Stri
 6. Publishes a `WatchEvent` with `event_type: StatusModified` containing the updated `StoredObject`
 7. Returns the updated `StoredObject`
 
-The centralized metadata wrapper SHALL automatically preserve `generation` because the `spec.value` is not changed by the callback.
+The centralized metadata wrapper SHALL automatically preserve `generation` because the `spec` `Value` is not changed by the callback. The service SHALL set `updated.status = Some(status)` directly (no `SpecData { value: status }` construction).
 
 #### Scenario: Update status for kind with statusSchema
 - **WHEN** `update_status` is called for a kind with `statusSchema` defined
@@ -271,7 +277,7 @@ The service SHALL provide a helper function `apply_with_metadata` that wraps tra
 - Automatically set `resource_version = existing.resource_version + 1`
 - Automatically set `updated_at = Utc::now()`
 - Automatically preserve `created_at = existing.created_at`
-- Automatically bump `generation` if `spec.value` changed, else preserve it
+- Automatically bump `generation` if `new_obj.spec != existing.spec` (direct `Value` equality via `serde_json::Value`'s `PartialEq`), else preserve it
 - Return `TransactionOp::Apply` with the updated object
 
 #### Scenario: Wrapper increments resource_version
@@ -287,11 +293,11 @@ The service SHALL provide a helper function `apply_with_metadata` that wraps tra
 - **THEN** the returned object SHALL have `created_at = T` (unchanged)
 
 #### Scenario: Wrapper bumps generation on spec change
-- **WHEN** the wrapper is called and the callback changes `spec.value`
+- **WHEN** the wrapper is called and the callback changes `spec`
 - **THEN** the returned object SHALL have `generation = existing.generation + 1`
 
 #### Scenario: Wrapper preserves generation on no spec change
-- **WHEN** the wrapper is called and the callback does not change `spec.value`
+- **WHEN** the wrapper is called and the callback does not change `spec`
 - **THEN** the returned object SHALL have `generation = existing.generation` (unchanged)
 
 ### Requirement: Service performs OCC check in transaction callback
