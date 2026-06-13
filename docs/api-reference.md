@@ -127,12 +127,14 @@ POST /apis/{group}/{version}/{kind}
             "tier": "frontend"
         }
     },
-    "color": "blue",
-    "size": 10
+    "spec": {
+        "color": "blue",
+        "size": 10
+    }
 }
 ```
 
-The `metadata.name` field is extracted by the handler. The optional `metadata.labels` field is extracted and validated (see [Label Validation](#label-validation)). All other fields are validated against the registered JSON Schema.
+The `metadata.name` field is extracted by the handler. The optional `metadata.labels` field is extracted and validated (see [Label Validation](#label-validation)). The `spec` field contains the domain data, validated against the registered JSON Schema. Only `metadata` and `spec` are allowed as top-level fields; unknown fields are rejected with 400 Bad Request.
 
 **Response:** `201 Created`
 
@@ -504,6 +506,7 @@ All errors follow this format:
 | 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field or malformed syntax) |
 | 400 | `InvalidLabelSelector` | Invalid labelSelector query parameter (malformed syntax, empty value) |
 | 400 | `InvalidLabel` | Label key or value violates format or length rules |
+| 400 | `InvalidRequestBody` | Request body validation failed (missing spec, unknown fields, empty spec) |
 | 422 | `SchemaValidation` | Object data doesn't match schema |
 | 422 | `InvalidSchema` | Schema registration failed validation |
 | 500 | `Internal` | Unexpected server error |

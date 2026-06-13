@@ -106,6 +106,7 @@ pub enum WatchEventType {
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct WatchEvent {
     pub event_type: WatchEventType,
     pub object: StoredObject,

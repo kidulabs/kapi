@@ -568,11 +568,11 @@ pub(crate) fn build_kind_paths(
 
 /// Builds the request body schema for creating an object of a registered kind.
 ///
-/// The actual wire format is: `{ metadata: { name }, ...userDataProperties }`.
-/// The handler extracts `metadata.name` and passes the remaining properties
-/// as the data payload for validation against the registered schema.
+/// The wire format is: `{ metadata: { name, labels? }, spec: { ...userSchema } }`.
+/// The handler extracts `metadata.name` and `metadata.labels`, validates that `spec`
+/// is present, is a JSON object, and is non-empty. Unknown top-level fields are rejected.
 fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -> Value {
-    let metadata_part = json!({
+    json!({
         "type": "object",
         "properties": {
             "metadata": {
@@ -586,16 +586,11 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
                     }
                 },
                 "required": ["name"]
-            }
+            },
+            "spec": schema_data.spec_schema
         },
-        "required": ["metadata"]
-    });
-
-    json!({
-        "allOf": [
-            metadata_part,
-            schema_data.spec_schema
-        ]
+        "required": ["metadata", "spec"],
+        "additionalProperties": false
     })
 }
 

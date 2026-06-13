@@ -100,45 +100,76 @@ fn extract_labels(body: &Value) -> Result<HashMap<String, String>, AppError> {
 /// and calls ObjectService::create. Returns 201 Created with the StoredObject.
 ///
 /// For Schema objects (`kind == SCHEMA_KIND`), the name is generated from
-/// `targetKind` and `targetGroup` in the body as `{targetKind}.{targetGroup}`.
-/// For non-Schema objects, the name is extracted from `metadata.name`.
+/// `targetKind` and `targetGroup` in the body as `{targetKind}.{targetGroup}`,
+/// and the full body is passed as the spec data.
+///
+/// For non-Schema objects:
+/// - The name is extracted from `metadata.name`.
+/// - The `spec` field is extracted from the body and validated (required, must be
+///   a non-empty JSON object).
+/// - Only `metadata` and `spec` are allowed as top-level fields; any other fields
+///   result in a 400 Bad Request.
+/// - The extracted `spec` value is passed to the service as the data to store.
 pub async fn create(
     State(state): State<AppState>,
     Path(path): Path<ObjectPath>,
-    Json(mut body): Json<Value>,
+    Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<StoredObject>), AppError> {
     // Extract labels from metadata.labels (shared across both paths)
     let labels = extract_labels(&body)?;
 
     // Branch on kind: Schema objects generate their name from payload fields,
-    // while regular objects require a client-supplied metadata.name
-    let meta = if path.kind == SCHEMA_KIND {
+    // while regular objects require a client-supplied metadata.name and a spec field
+    let (meta, data) = if path.kind == SCHEMA_KIND {
         // Schema registration: generate name from targetKind.targetGroup
         let name = extract_schema_name(&body).ok_or_else(|| {
             AppError::InvalidSchema(
                 "Schema registration requires targetKind and targetGroup fields".to_string(),
             )
         })?;
-        ObjectMeta { name, labels }
+        // Strip metadata from body before passing as spec data
+        let mut data = body;
+        if let Some(obj) = data.as_object_mut() {
+            obj.remove("metadata");
+        }
+        (ObjectMeta { name, labels }, data)
     } else {
+        // Validate: only "metadata" and "spec" allowed as top-level fields
+        if let Some(obj) = body.as_object() {
+            let unknown: Vec<&String> = obj.keys()
+                .filter(|k| *k != "metadata" && *k != "spec")
+                .collect();
+            if !unknown.is_empty() {
+                let fields = unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+                return Err(AppError::InvalidRequestBody(format!("unknown field(s): {fields}")));
+            }
+        }
+
         // Regular object: extract name from metadata.name
         let name = body
             .get("metadata")
             .and_then(|m| m.get("name"))
             .and_then(|n| n.as_str())
             .ok_or_else(|| {
-                AppError::Internal(anyhow::anyhow!("missing metadata.name in request body"))
+                AppError::InvalidRequestBody("'metadata.name' is required".to_string())
             })?
             .to_string();
-        ObjectMeta { name, labels }
-    };
 
-    // Remove metadata and status from body before passing to service
-    // (metadata is a kapi-level concern, status is managed via the /status subresource)
-    if let Some(obj) = body.as_object_mut() {
-        obj.remove("metadata");
-        obj.remove("status");
-    }
+        // Extract and validate spec
+        let spec = body.get("spec").ok_or_else(|| {
+            AppError::InvalidRequestBody("'spec' field is required".to_string())
+        })?;
+
+        if !spec.is_object() {
+            return Err(AppError::InvalidRequestBody("'spec' must be a JSON object".to_string()));
+        }
+
+        if spec.as_object().is_some_and(|o| o.is_empty()) {
+            return Err(AppError::InvalidRequestBody("'spec' must not be empty".to_string()));
+        }
+
+        (ObjectMeta { name, labels }, spec.clone())
+    };
 
     let key = ResourceKey {
         group: path.group,
@@ -146,7 +177,7 @@ pub async fn create(
         kind: path.kind,
     };
 
-    let stored = state.object_service().create(key, meta, body).await?;
+    let stored = state.object_service().create(key, meta, data).await?;
     Ok((StatusCode::CREATED, Json(stored)))
 }
 

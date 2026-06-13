@@ -236,3 +236,122 @@ pub async fn test_list_exhausted(app: &TestApp) -> Result<(), String> {
 
     Ok(())
 }
+
+/// Create with missing `spec` field returns 400 InvalidRequestBody
+pub async fn test_create_missing_spec(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            serde_json::json!({
+                "metadata": { "name": "no-spec-widget" }
+            }),
+        )
+        .await;
+    assert_status(&resp, StatusCode::BAD_REQUEST);
+    let err: Value = parse_body(resp).await;
+    assert_eq!(
+        err["code"], "InvalidRequestBody",
+        "expected InvalidRequestBody, got: {}",
+        err["code"]
+    );
+
+    Ok(())
+}
+
+/// Create with empty `spec: {}` returns 400 InvalidRequestBody
+pub async fn test_create_empty_spec(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            serde_json::json!({
+                "metadata": { "name": "empty-spec-widget" },
+                "spec": {}
+            }),
+        )
+        .await;
+    assert_status(&resp, StatusCode::BAD_REQUEST);
+    let err: Value = parse_body(resp).await;
+    assert_eq!(
+        err["code"], "InvalidRequestBody",
+        "expected InvalidRequestBody, got: {}",
+        err["code"]
+    );
+
+    Ok(())
+}
+
+/// Create with non-object `spec` (array, string) returns 400 InvalidRequestBody
+pub async fn test_create_non_object_spec(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    // spec as array
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            serde_json::json!({
+                "metadata": { "name": "array-spec-widget" },
+                "spec": [1, 2, 3]
+            }),
+        )
+        .await;
+    assert_status(&resp, StatusCode::BAD_REQUEST);
+    let err: Value = parse_body(resp).await;
+    assert_eq!(
+        err["code"], "InvalidRequestBody",
+        "expected InvalidRequestBody for array spec, got: {}",
+        err["code"]
+    );
+
+    // spec as string
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            serde_json::json!({
+                "metadata": { "name": "string-spec-widget" },
+                "spec": "not an object"
+            }),
+        )
+        .await;
+    assert_status(&resp, StatusCode::BAD_REQUEST);
+    let err: Value = parse_body(resp).await;
+    assert_eq!(
+        err["code"], "InvalidRequestBody",
+        "expected InvalidRequestBody for string spec, got: {}",
+        err["code"]
+    );
+
+    Ok(())
+}
+
+/// Create with unknown top-level field returns 400 InvalidRequestBody
+pub async fn test_create_unknown_top_level_field(app: &TestApp) -> Result<(), String> {
+    let client = app.client();
+    register_widget_schema(&client).await;
+
+    let resp = client
+        .post(
+            "/apis/example.io/v1/Widget",
+            serde_json::json!({
+                "metadata": { "name": "unknown-field-widget" },
+                "spec": { "color": "blue", "size": 10 },
+                "extra": "not allowed"
+            }),
+        )
+        .await;
+    assert_status(&resp, StatusCode::BAD_REQUEST);
+    let err: Value = parse_body(resp).await;
+    assert_eq!(
+        err["code"], "InvalidRequestBody",
+        "expected InvalidRequestBody, got: {}",
+        err["code"]
+    );
+
+    Ok(())
+}

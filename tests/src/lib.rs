@@ -164,16 +164,20 @@ pub fn widget_schema() -> Value {
 pub fn widget(name: &str, color: &str, size: i64) -> Value {
     serde_json::json!({
         "metadata": { "name": name },
-        "color": color,
-        "size": size
+        "spec": {
+            "color": color,
+            "size": size
+        }
     })
 }
 
 pub fn widget_with_labels(name: &str, color: &str, size: i64, labels: Value) -> Value {
     serde_json::json!({
         "metadata": { "name": name, "labels": labels },
-        "color": color,
-        "size": size
+        "spec": {
+            "color": color,
+            "size": size
+        }
     })
 }
 

@@ -44,8 +44,10 @@ pub async fn test_status_subresource_update(app: &TestApp) -> Result<(), String>
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -98,8 +100,10 @@ pub async fn test_status_subresource_not_enabled(app: &TestApp) -> Result<(), St
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -141,8 +145,10 @@ pub async fn test_status_subresource_invalid_data(app: &TestApp) -> Result<(), S
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -178,8 +184,10 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -222,8 +230,8 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
     Ok(())
 }
 
-/// 8.5: Create object with status in body, verify status is null (ignored)
-pub async fn test_create_ignores_status_in_body(app: &TestApp) -> Result<(), String> {
+/// 8.5: Create object with unknown top-level field (status), verify rejected with 400
+pub async fn test_create_rejects_unknown_top_level_fields(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     // Register schema with statusSchema
@@ -232,24 +240,26 @@ pub async fn test_create_ignores_status_in_body(app: &TestApp) -> Result<(), Str
         .await;
     assert_status(&resp, StatusCode::CREATED);
 
-    // Create object with status in body — should be ignored
+    // Create object with "status" as unknown top-level field — should be rejected
     let resp = client
         .post(
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
-                "color": "blue",
-                "size": 10,
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                },
                 "status": { "phase": "Pre-set" }
             }),
         )
         .await;
-    assert_status(&resp, StatusCode::CREATED);
-    let created: Value = parse_body(resp).await;
-    assert!(
-        created.get("status").is_none() || created["status"].is_null(),
-        "status should be null/absent when creating object, but got: {}",
-        created["status"]
+    assert_status(&resp, StatusCode::BAD_REQUEST);
+    let err: Value = parse_body(resp).await;
+    assert_eq!(
+        err["code"], "InvalidRequestBody",
+        "expected InvalidRequestBody error code, got: {}",
+        err["code"]
     );
 
     Ok(())
@@ -299,8 +309,10 @@ pub async fn test_status_update_publishes_status_modified_event(app: &TestApp) -
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "event-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -361,8 +373,10 @@ pub async fn test_status_update_preserves_spec(app: &TestApp) -> Result<(), Stri
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "spec-preserve-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -409,8 +423,10 @@ pub async fn test_status_update_bumps_resource_version(app: &TestApp) -> Result<
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "rv-bump-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -490,8 +506,10 @@ pub async fn test_get_status_returns_null_when_not_set(app: &TestApp) -> Result<
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "null-status-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -575,8 +593,10 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "replace-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;
@@ -640,8 +660,10 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(app: &TestA
             "/apis/example.io/v1/Widget",
             serde_json::json!({
                 "metadata": { "name": "spec-event-widget" },
-                "color": "blue",
-                "size": 10
+                "spec": {
+                    "color": "blue",
+                    "size": 10
+                }
             }),
         )
         .await;

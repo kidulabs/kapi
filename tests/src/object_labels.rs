@@ -13,8 +13,10 @@ pub async fn test_create_object_with_labels(app: &TestApp) -> Result<(), String>
             "name": "labeled-widget",
             "labels": { "app": "nginx", "env": "prod" }
         },
-        "color": "blue",
-        "size": 10
+        "spec": {
+            "color": "blue",
+            "size": 10
+        }
     });
 
     let resp = client.post("/apis/example.io/v1/Widget", body).await;
@@ -86,8 +88,10 @@ pub async fn test_update_object_labels(app: &TestApp) -> Result<(), String> {
             "name": "update-labels",
             "labels": { "app": "nginx" }
         },
-        "color": "blue",
-        "size": 10
+        "spec": {
+            "color": "blue",
+            "size": 10
+        }
     });
 
     let resp = client.post("/apis/example.io/v1/Widget", create_body).await;
@@ -182,8 +186,10 @@ pub async fn test_invalid_label_key_format(app: &TestApp) -> Result<(), String> 
             "name": "bad-key",
             "labels": { "invalid key!": "value" }
         },
-        "color": "blue",
-        "size": 10
+        "spec": {
+            "color": "blue",
+            "size": 10
+        }
     });
 
     let resp = client.post("/apis/example.io/v1/Widget", body).await;
@@ -205,8 +211,10 @@ pub async fn test_invalid_label_value_format(app: &TestApp) -> Result<(), String
             "name": "bad-value",
             "labels": { "key": "invalid value!" }
         },
-        "color": "blue",
-        "size": 10
+        "spec": {
+            "color": "blue",
+            "size": 10
+        }
     });
 
     let resp = client.post("/apis/example.io/v1/Widget", body).await;
@@ -229,8 +237,10 @@ pub async fn test_label_key_exceeds_length(app: &TestApp) -> Result<(), String> 
             "name": "long-key-label",
             "labels": { long_key: "value" }
         },
-        "color": "blue",
-        "size": 10
+        "spec": {
+            "color": "blue",
+            "size": 10
+        }
     });
 
     let resp = client.post("/apis/example.io/v1/Widget", body).await;
@@ -253,8 +263,10 @@ pub async fn test_label_value_exceeds_length(app: &TestApp) -> Result<(), String
             "name": "long-value-label",
             "labels": { "key": long_value }
         },
-        "color": "blue",
-        "size": 10
+        "spec": {
+            "color": "blue",
+            "size": 10
+        }
     });
 
     let resp = client.post("/apis/example.io/v1/Widget", body).await;

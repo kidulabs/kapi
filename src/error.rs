@@ -34,6 +34,11 @@ pub enum AppError {
     #[error("invalid label selector: {0}")]
     InvalidLabelSelector(String),
 
+    // Request body validation failure (missing spec, unknown fields, etc.)
+    // Maps to HTTP 400 Bad Request in into_response
+    #[error("invalid request body: {0}")]
+    InvalidRequestBody(String),
+
     // The schema itself is broken (meta-schema validation or compilation failure)
     #[error("invalid schema: {0}")]
     InvalidSchema(String),
@@ -99,6 +104,13 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "InvalidLabelSelector",
                 format!("invalid label selector: {msg}"),
+                json!({ "message": msg }),
+            ),
+            // InvalidRequestBody maps to HTTP 400 with the error message
+            AppError::InvalidRequestBody(msg) => (
+                StatusCode::BAD_REQUEST,
+                "InvalidRequestBody",
+                format!("invalid request body: {msg}"),
                 json!({ "message": msg }),
             ),
             // InvalidSchema maps to HTTP 422 Unprocessable Entity

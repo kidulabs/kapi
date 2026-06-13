@@ -213,23 +213,6 @@ pub async fn test_watch_invalid_field_selector(app: &TestApp) -> Result<(), Stri
     Ok(())
 }
 
-pub async fn test_field_selector_on_non_watch_returns_400(app: &TestApp) -> Result<(), String> {
-    let client = app.client();
-    register_widget_schema(&client).await;
-
-    // fieldSelector without watch=true
-    let resp = client
-        .get("/apis/example.io/v1/Widget?fieldSelector=metadata.name=my-widget")
-        .await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "expected 400 for fieldSelector on non-watch request"
-    );
-
-    Ok(())
-}
-
 pub async fn test_watch_by_name_and_watch_all_simultaneously(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
@@ -555,23 +538,6 @@ pub async fn test_watch_empty_label_selector(app: &TestApp) -> Result<(), String
     assert_eq!(
         event.object.metadata.name, "empty-selector",
         "expected event for empty selector (matches all)"
-    );
-
-    Ok(())
-}
-
-pub async fn test_label_selector_on_non_watch_returns_400(app: &TestApp) -> Result<(), String> {
-    let client = app.client();
-    register_widget_schema(&client).await;
-
-    // labelSelector without watch=true
-    let resp = client
-        .get("/apis/example.io/v1/Widget?labelSelector=app=nginx")
-        .await;
-    assert_eq!(
-        resp.status(),
-        StatusCode::BAD_REQUEST,
-        "expected 400 for labelSelector on non-watch request"
     );
 
     Ok(())

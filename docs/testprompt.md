@@ -71,14 +71,14 @@ if ! kill -0 $WATCH_PID 2>/dev/null; then echo "ERROR: watch died before events"
 # 3. Create a NON-target widget (should NOT be delivered to the watch)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"other-widget-$TEST_RUN\"},\"color\":\"blue\",\"size\":1}"
+  -d "{\"metadata\":{\"name\":\"other-widget-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":1}}"
 
 sleep 1
 
 # 4. Create the TARGET widget (should be delivered)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"target-widget-$TEST_RUN\"},\"color\":\"red\",\"size\":2}"
+  -d "{\"metadata\":{\"name\":\"target-widget-$TEST_RUN\"},\"spec\":{\"color\":\"red\",\"size\":2}}"
 
 sleep 2
 
@@ -118,7 +118,7 @@ sleep 1
 # 2. Create a widget (expect Added)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"lifecycle-$TEST_RUN\"},\"color\":\"green\",\"size\":5}"
+  -d "{\"metadata\":{\"name\":\"lifecycle-$TEST_RUN\"},\"spec\":{\"color\":\"green\",\"size\":5}}"
 
 sleep 1
 
@@ -151,14 +151,14 @@ sleep 2
 kill $WATCH_PID 2>/dev/null
 
 # 6. Verify client received all three event types
-# NOTE: The SSE JSON uses "event_type" (not "type") as the discriminator field.
+# NOTE: The SSE JSON uses "eventType" (camelCase) as the discriminator field.
 echo "=== Client received ==="
 cat /tmp/watch-all.log
 
 echo "=== Event counts ==="
-grep -c '"event_type":"Added"' /tmp/watch-all.log && echo " Added events"
-grep -c '"event_type":"Modified"' /tmp/watch-all.log && echo " Modified events"
-grep -c '"event_type":"Deleted"' /tmp/watch-all.log && echo " Deleted events"
+grep -c '"eventType":"Added"' /tmp/watch-all.log && echo " Added events"
+grep -c '"eventType":"Modified"' /tmp/watch-all.log && echo " Modified events"
+grep -c '"eventType":"Deleted"' /tmp/watch-all.log && echo " Deleted events"
 
 # 7. Verify trace logs
 echo "=== Server trace logs ==="
@@ -166,7 +166,7 @@ grep -E "(watcher subscribed|event delivered|watch stream)" /tmp/kapi-server.log
 ```
 
 **Expected results:**
-- Client output contains three SSE events: `"event_type":"Added"`, `"event_type":"Modified"`, `"event_type":"Deleted"`
+- Client output contains three SSE events: `"eventType":"Added"`, `"eventType":"Modified"`, `"eventType":"Deleted"`
 - All three events reference the same `lifecycle-$TEST_RUN` object
 - Server logs show three `event delivered to watcher name=lifecycle-$TEST_RUN` entries
 
@@ -191,7 +191,7 @@ sleep 1
 # 3. Trigger a publish — this should detect and clean up the dead watcher
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"cleanup-trigger-$TEST_RUN\"},\"color\":\"black\",\"size\":99}"
+  -d "{\"metadata\":{\"name\":\"cleanup-trigger-$TEST_RUN\"},\"spec\":{\"color\":\"black\",\"size\":99}}"
 
 sleep 2
 
@@ -226,14 +226,14 @@ sleep 1
 # 3. Create "named-$TEST_RUN" — both watchers should receive it
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"named-$TEST_RUN\"},\"color\":\"green\",\"size\":3}"
+  -d "{\"metadata\":{\"name\":\"named-$TEST_RUN\"},\"spec\":{\"color\":\"green\",\"size\":3}}"
 
 sleep 1
 
 # 4. Create "other-$TEST_RUN" — only watch-all should receive it
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"other-$TEST_RUN\"},\"color\":\"yellow\",\"size\":4}"
+  -d "{\"metadata\":{\"name\":\"other-$TEST_RUN\"},\"spec\":{\"color\":\"yellow\",\"size\":4}}"
 
 sleep 2
 
@@ -285,8 +285,10 @@ curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
       \"name\": \"labeled-widget-$TEST_RUN\",
       \"labels\": { \"app\": \"nginx\", \"env\": \"prod\", \"app.kubernetes.io/version\": \"v1.2.3\" }
     },
-    \"color\": \"blue\",
-    \"size\": 10
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 10
+    }
   }" | python3 -m json.tool
 
 # 3. GET the widget and verify labels
@@ -310,7 +312,7 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$TEST_RU
 echo "=== Create without labels ==="
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"no-labels-widget-$TEST_RUN\"},\"color\":\"red\",\"size\":5}" | python3 -m json.tool
+  -d "{\"metadata\":{\"name\":\"no-labels-widget-$TEST_RUN\"},\"spec\":{\"color\":\"red\",\"size\":5}}" | python3 -m json.tool
 
 # 2. GET and verify empty labels
 echo "=== GET no-labels widget ==="
@@ -323,7 +325,7 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget/no-labels-widget-$TEST_
 
 ---
 
-## Test 7: Labels — update with changed labels (diff-based)
+## Test 7: Labels — update with changed labels (replace semantics)
 
 **Goal:** Verify that updating labels applies diff-based changes (add, modify, remove).
 
@@ -415,8 +417,10 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
       \"name\": \"bad-key-widget-$TEST_RUN\",
       \"labels\": { \"invalid key!\": \"value\" }
     },
-    \"color\": \"blue\",
-    \"size\": 1
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 1
+    }
   }"
 ```
 
@@ -441,8 +445,10 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
       \"name\": \"bad-value-widget-$TEST_RUN\",
       \"labels\": { \"app\": \"invalid value!\" }
     },
-    \"color\": \"blue\",
-    \"size\": 1
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 1
+    }
   }"
 ```
 
@@ -469,8 +475,10 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
       \"name\": \"long-key-widget-$TEST_RUN\",
       \"labels\": { \"$LONG_KEY\": \"value\" }
     },
-    \"color\": \"blue\",
-    \"size\": 1
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 1
+    }
   }"
 ```
 
@@ -497,8 +505,10 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
       \"name\": \"long-value-widget-$TEST_RUN\",
       \"labels\": { \"app\": \"$LONG_VALUE\" }
     },
-    \"color\": \"blue\",
-    \"size\": 1
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 1
+    }
   }"
 ```
 
@@ -568,8 +578,10 @@ curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
       \"name\": \"$PERSIST_NAME\",
       \"labels\": { \"app\": \"nginx\", \"env\": \"prod\", \"app.kubernetes.io/version\": \"v1.2.3\" }
     },
-    \"color\": \"blue\",
-    \"size\": 10
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 10
+    }
   }" > /dev/null
 
 # Update labels (remove env, change app, add tier)
@@ -595,7 +607,11 @@ echo "=== Before restart ==="
 curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" | python3 -c "
 import sys, json
 obj = json.load(sys.stdin)
-print(f\"Labels: {obj['metadata']['labels']}\")
+labels = obj['metadata']['labels']
+print(f'Labels: {labels}')
+# Write labels to a temp file for later comparison
+with open('/tmp/kapi-labels-before.json', 'w') as f:
+    json.dump(labels, f, sort_keys=True)
 "
 
 # 5. Stop the server
@@ -611,14 +627,31 @@ echo "=== After restart ==="
 curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" | python3 -c "
 import sys, json
 obj = json.load(sys.stdin)
-print(f\"Labels: {obj['metadata']['labels']}\")
+labels = obj['metadata']['labels']
+print(f'Labels: {labels}')
+with open('/tmp/kapi-labels-after.json', 'w') as f:
+    json.dump(labels, f, sort_keys=True)
+"
+
+# 8. Compare labels semantically (order-independent)
+echo "=== Comparison ==="
+python3 -c "
+import json
+with open('/tmp/kapi-labels-before.json') as f:
+    before = json.load(f)
+with open('/tmp/kapi-labels-after.json') as f:
+    after = json.load(f)
+print(f'Before: {before}')
+print(f'After:  {after}')
+assert before == after, f'Labels differ: {before} vs {after}'
+print('PASS: Labels survived restart')
 "
 ```
 
 **Expected results:**
-- Labels are identical before and after restart
-- `app: httpd`, `tier: frontend`, `app.kubernetes.io/version: v1.2.3` all present
-- `env` label still absent (was removed in update)
+- Step 4 (`=== Before restart ===`) shows labels: `app: httpd`, `tier: frontend`, `app.kubernetes.io/version: v1.2.3`
+- Step 7 (`=== After restart ===`) shows the same labels
+- Step 8 (`=== Comparison ===`) prints `PASS: Labels survived restart`
 
 ---
 
@@ -656,14 +689,14 @@ if ! kill -0 $WATCH_PID 2>/dev/null; then echo "ERROR: watch died before events"
 # 3. Create a widget with NON-matching labels (should NOT be delivered)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"other-labels-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"color\":\"blue\",\"size\":1}"
+  -d "{\"metadata\":{\"name\":\"other-labels-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"spec\":{\"color\":\"blue\",\"size\":1}}"
 
 sleep 1
 
 # 4. Create a widget with MATCHING labels (should be delivered)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"matching-labels-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"red\",\"size\":2}"
+  -d "{\"metadata\":{\"name\":\"matching-labels-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"red\",\"size\":2}}"
 
 sleep 2
 
@@ -699,21 +732,21 @@ sleep 2
 # 2. Create widget with only app=nginx (should NOT be delivered — missing env)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"partial-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":1}"
+  -d "{\"metadata\":{\"name\":\"partial-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"blue\",\"size\":1}}"
 
 sleep 1
 
 # 3. Create widget with only env=prod (should NOT be delivered — missing app)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"partial-match2-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},\"color\":\"green\",\"size\":2}"
+  -d "{\"metadata\":{\"name\":\"partial-match2-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},\"spec\":{\"color\":\"green\",\"size\":2}}"
 
 sleep 1
 
 # 4. Create widget with BOTH labels (should be delivered)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"full-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"env\":\"prod\"}},\"color\":\"red\",\"size\":3}"
+  -d "{\"metadata\":{\"name\":\"full-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"env\":\"prod\"}},\"spec\":{\"color\":\"red\",\"size\":3}}"
 
 sleep 2
 
@@ -747,14 +780,14 @@ sleep 2
 # 2. Create widget WITH experimental label (should NOT be delivered)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"has-experimental-$TEST_RUN\",\"labels\":{\"experimental\":\"true\"}},\"color\":\"blue\",\"size\":1}"
+  -d "{\"metadata\":{\"name\":\"has-experimental-$TEST_RUN\",\"labels\":{\"experimental\":\"true\"}},\"spec\":{\"color\":\"blue\",\"size\":1}}"
 
 sleep 1
 
 # 3. Create widget WITHOUT experimental label (should be delivered)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"no-experimental-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"red\",\"size\":2}"
+  -d "{\"metadata\":{\"name\":\"no-experimental-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"red\",\"size\":2}}"
 
 sleep 2
 
@@ -788,21 +821,21 @@ sleep 2
 # 2. Create widget with env=prod (should NOT be delivered)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"is-prod-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},\"color\":\"blue\",\"size\":1}"
+  -d "{\"metadata\":{\"name\":\"is-prod-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},\"spec\":{\"color\":\"blue\",\"size\":1}}"
 
 sleep 1
 
 # 3. Create widget with env=staging (should be delivered — different value)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"is-staging-$TEST_RUN\",\"labels\":{\"env\":\"staging\"}},\"color\":\"green\",\"size\":2}"
+  -d "{\"metadata\":{\"name\":\"is-staging-$TEST_RUN\",\"labels\":{\"env\":\"staging\"}},\"spec\":{\"color\":\"green\",\"size\":2}}"
 
 sleep 1
 
 # 4. Create widget without env label (should be delivered — absence satisfies inequality)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"no-env-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"red\",\"size\":3}"
+  -d "{\"metadata\":{\"name\":\"no-env-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"red\",\"size\":3}}"
 
 sleep 2
 
@@ -861,13 +894,13 @@ sleep 2
 # 2. Create widgets with various labels — all should be delivered
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"empty-sel-1-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":1}"
+  -d "{\"metadata\":{\"name\":\"empty-sel-1-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"blue\",\"size\":1}}"
 
 sleep 0.5
 
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"empty-sel-2-$TEST_RUN\",\"labels\":{}},\"color\":\"red\",\"size\":2}"
+  -d "{\"metadata\":{\"name\":\"empty-sel-2-$TEST_RUN\",\"labels\":{}},\"spec\":{\"color\":\"red\",\"size\":2}}"
 
 sleep 2
 
@@ -878,7 +911,7 @@ kill $WATCH_PID 2>/dev/null
 echo "=== Client received ==="
 cat /tmp/watch-label-empty.log
 echo "=== Event count ==="
-grep -c '"event_type":"Added"' /tmp/watch-label-empty.log
+grep -c '"eventType":"Added"' /tmp/watch-label-empty.log
 ```
 
 **Expected results:**
@@ -901,21 +934,21 @@ sleep 2
 # 2. Create widget that matches all three requirements
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"mixed-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"gpu\":\"true\"}},\"color\":\"blue\",\"size\":1}"
+  -d "{\"metadata\":{\"name\":\"mixed-match-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"gpu\":\"true\"}},\"spec\":{\"color\":\"blue\",\"size\":1}}"
 
 sleep 1
 
 # 3. Create widget that fails !experimental (has experimental=true)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"mixed-fail-exp-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"gpu\":\"true\",\"experimental\":\"true\"}},\"color\":\"red\",\"size\":2}"
+  -d "{\"metadata\":{\"name\":\"mixed-fail-exp-$TEST_RUN\",\"labels\":{\"app\":\"nginx\",\"gpu\":\"true\",\"experimental\":\"true\"}},\"spec\":{\"color\":\"red\",\"size\":2}}"
 
 sleep 1
 
 # 4. Create widget that fails gpu existence (no gpu label)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"mixed-fail-gpu-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"green\",\"size\":3}"
+  -d "{\"metadata\":{\"name\":\"mixed-fail-gpu-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"green\",\"size\":3}}"
 
 sleep 2
 
@@ -961,7 +994,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
 for name in "list-field-foo" "list-field-bar" "list-field-baz"; do
   curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
     -H "Content-Type: application/json" \
-    -d "{\"metadata\":{\"name\":\"$name-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}" > /dev/null
+    -d "{\"metadata\":{\"name\":\"$name-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":10}}" > /dev/null
 done
 
 # 3. List with fieldSelector=metadata.name=list-field-foo
@@ -987,15 +1020,15 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget?fieldSelector=metadata.
 # 1. Create widgets with different labels
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"list-label-nginx-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":10}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"list-label-nginx-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"blue\",\"size\":10}}" > /dev/null
 
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"list-label-apache-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"color\":\"red\",\"size\":20}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"list-label-apache-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"spec\":{\"color\":\"red\",\"size\":20}}" > /dev/null
 
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"list-label-none-$TEST_RUN\"},\"color\":\"green\",\"size\":30}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"list-label-none-$TEST_RUN\"},\"spec\":{\"color\":\"green\",\"size\":30}}" > /dev/null
 
 # 2. List with labelSelector=app=nginx
 echo "=== List with labelSelector ==="
@@ -1020,15 +1053,15 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app=nginx
 # 1. Create widgets
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"list-both-target-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":10}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"list-both-target-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"blue\",\"size\":10}}" > /dev/null
 
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"list-both-other-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"red\",\"size\":20}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"list-both-other-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"red\",\"size\":20}}" > /dev/null
 
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"list-both-target-$TEST_RUN-nolabel\"},\"color\":\"green\",\"size\":30}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"list-both-target-$TEST_RUN-nolabel\"},\"spec\":{\"color\":\"green\",\"size\":30}}" > /dev/null
 
 # 2. List with both selectors
 echo "=== List with both selectors ==="
@@ -1059,7 +1092,7 @@ for i in $(seq 1 10); do
   fi
   curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
     -H "Content-Type: application/json" \
-    -d "{\"metadata\":{\"name\":\"list-pag-$(printf '%02d' $i)-$TEST_RUN\",\"labels\":$labels},\"color\":\"blue\",\"size\":10}" > /dev/null
+    -d "{\"metadata\":{\"name\":\"list-pag-$(printf '%02d' $i)-$TEST_RUN\",\"labels\":$labels},\"spec\":{\"color\":\"blue\",\"size\":10}}" > /dev/null
 done
 
 # 2. Filter to 3, limit 10 → should return 3 (not 10)
@@ -1115,7 +1148,7 @@ sleep 2
 # 2. Create widget matching BOTH selectors (should be delivered)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"watch-combo-target-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":10}"
+  -d "{\"metadata\":{\"name\":\"watch-combo-target-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"blue\",\"size\":10}}"
 
 sleep 1
 
@@ -1124,14 +1157,14 @@ sleep 1
 # a different name won't match the fieldSelector anyway. This tests label filtering independently.
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"watch-combo-wrong-label-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"color\":\"red\",\"size\":20}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"watch-combo-wrong-label-$TEST_RUN\",\"labels\":{\"app\":\"apache\"}},\"spec\":{\"color\":\"red\",\"size\":20}}" > /dev/null
 
 sleep 1
 
 # 4. Create widget with matching label but wrong name (should NOT be delivered — name mismatch)
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"watch-combo-other-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"green\",\"size\":30}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"watch-combo-other-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"green\",\"size\":30}}" > /dev/null
 
 sleep 2
 
@@ -1192,14 +1225,20 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
 # 1. Create an object
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"status-widget-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}" | python3 -m json.tool
+  -d "{\"metadata\":{\"name\":\"status-widget-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":10}}" | python3 -m json.tool
 
-# 2. Verify status is null on created object
+# 2. Verify status field is absent on created object
 echo "=== Status on created object ==="
 curl -s "http://localhost:8080/apis/example.io/v1/Widget/status-widget-$TEST_RUN" | python3 -c "
 import sys, json
 obj = json.load(sys.stdin)
-print(f\"Status: {obj.get('status', 'MISSING')}\")
+status = obj.get('status')
+if status is None and 'status' not in obj:
+    print('Status: field absent (correct)')
+elif status is None:
+    print('Status: null')
+else:
+    print(f'Status: {status}')
 "
 
 # 3. Update status via PUT /status
@@ -1222,7 +1261,7 @@ print(f\"Spec: {obj['spec']}\")
 ```
 
 **Expected results:**
-- Created object has `status: null`
+- Created object has no `status` field (field is omitted from JSON when status is None)
 - PUT /status returns 200 with full `StoredObject` including updated status
 - GET /status returns the status value (inline JSON: `{"phase":"Running","message":"All systems go"}`)
 - Full object GET shows both spec and status
@@ -1252,7 +1291,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
 # 2. Create an object
 curl -s -X POST http://localhost:8080/apis/test.io/v1/Gadget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"no-status-gadget-$TEST_RUN\"},\"name\":\"test\"}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"no-status-gadget-$TEST_RUN\"},\"spec\":{\"name\":\"test\"}}" > /dev/null
 
 # 3. GET /status should return 404
 echo "=== GET /status (should be 404) ==="
@@ -1281,7 +1320,7 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X PUT \
 # 1. Create object
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"invalid-status-$TEST_RUN\"},\"color\":\"blue\"}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"invalid-status-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"}}" > /dev/null
 
 # 2. Update status with invalid type (phase should be string, not integer)
 echo "=== Invalid status update ==="
@@ -1324,7 +1363,7 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X PUT \
 # 1. Create object
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"spec-preserve-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"spec-preserve-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":10}}" > /dev/null
 
 # 2. Update status
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/spec-preserve-$TEST_RUN/status" \
@@ -1361,7 +1400,7 @@ print('PASS: spec unchanged, status set')
 # 1. Create object and capture resourceVersion
 CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"rv-bump-$TEST_RUN\"},\"color\":\"blue\"}")
+  -d "{\"metadata\":{\"name\":\"rv-bump-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"}}")
 INITIAL_RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
 echo "Initial resourceVersion: $INITIAL_RV"
 
@@ -1386,29 +1425,22 @@ print(f'PASS: resourceVersion bumped from {initial} to {after}')
 
 ---
 
-## Test 36: Create object with status in body — status is ignored
+## Test 36: Create object with unknown top-level field — rejected with 400
 
-**Goal:** Verify that `status` field in the create request body is stripped and ignored.
+**Goal:** Verify that unknown top-level fields in the create request body are rejected with 400 Bad Request.
 
 ```bash
-# 1. Create object with status in body
-echo "=== Create with status in body ==="
-curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+# 1. Create object with unknown top-level field "status"
+echo "=== Create with unknown field ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"create-with-status-$TEST_RUN\"},\"color\":\"blue\",\"status\":{\"phase\":\"Pre-set\"}}" | python3 -c "
-import sys, json
-obj = json.load(sys.stdin)
-status = obj.get('status')
-assert status is None or status == 'null', \
-    f'status should be null, got: {status}'
-print(f'Status: {status}')
-print('PASS: status ignored on create')
-"
+  -d "{\"metadata\":{\"name\":\"create-with-status-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"},\"status\":{\"phase\":\"Pre-set\"}}"
 ```
 
 **Expected results:**
-- Object created successfully (201)
-- `status` field is `null` in the response
+- HTTP 400 Bad Request
+- Response body contains `"code": "InvalidRequestBody"`
+- Error message mentions unknown field(s)
 
 ---
 
@@ -1420,7 +1452,7 @@ print('PASS: status ignored on create')
 # 1. Create object
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"replace-status-$TEST_RUN\"},\"color\":\"blue\"}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"replace-status-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"}}" > /dev/null
 
 # 2. Set status with both phase and message
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/replace-status-$TEST_RUN/status" \
@@ -1457,7 +1489,7 @@ print('PASS: status replaced, not merged')
 # 1. Create object
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"status-event-$TEST_RUN\"},\"color\":\"blue\"}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"status-event-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"}}" > /dev/null
 
 # 2. Start watching BEFORE status update
 curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
@@ -1480,13 +1512,13 @@ echo "=== Watch events ==="
 cat /tmp/watch-status-event.log
 
 echo "=== Event types ==="
-grep -o '"event_type":"[^"]*"' /tmp/watch-status-event.log
+grep -o '"eventType":"[^"]*"' /tmp/watch-status-event.log
 ```
 
 **Expected results:**
-- Watch log contains `"event_type":"StatusModified"` event
+- Watch log contains `"eventType":"StatusModified"` event
 - Event object includes full `StoredObject` (both spec and status)
-- No `"event_type":"Modified"` for the status update
+- No `"eventType":"Modified"` for the status update
 
 ---
 
@@ -1498,7 +1530,7 @@ grep -o '"event_type":"[^"]*"' /tmp/watch-status-event.log
 # 1. Create object
 CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"spec-event-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}")
+  -d "{\"metadata\":{\"name\":\"spec-event-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":10}}")
 RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
 CREATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
 UPDATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
@@ -1529,12 +1561,12 @@ echo "=== Watch events ==="
 cat /tmp/watch-spec-event.log
 
 echo "=== Event types ==="
-grep -o '"event_type":"[^"]*"' /tmp/watch-spec-event.log
+grep -o '"eventType":"[^"]*"' /tmp/watch-spec-event.log
 ```
 
 **Expected results:**
-- Watch log contains `"event_type":"Modified"` for the spec update
-- No `"event_type":"StatusModified"` for the spec update
+- Watch log contains `"eventType":"Modified"` for the spec update
+- No `"eventType":"StatusModified"` for the spec update
 
 ---
 
@@ -1546,7 +1578,7 @@ grep -o '"event_type":"[^"]*"' /tmp/watch-spec-event.log
 # 1. Create an object
 CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"gen-create-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}")
+  -d "{\"metadata\":{\"name\":\"gen-create-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":10}}")
 
 echo "=== Create response ==="
 echo "$CREATE_RESP" | python3 -m json.tool
@@ -1578,7 +1610,7 @@ print('PASS: generation starts at 1')
 # 1. Create object with labels
 CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"color\":\"blue\",\"size\":10}")
+  -d "{\"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"blue\",\"size\":10}}")
 INITIAL_GEN=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['generation'])")
 INITIAL_RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
 CREATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
@@ -1717,7 +1749,7 @@ print('PASS: generation unchanged, resourceVersion bumped on status update')
 # 1. Start fresh — create a new object
 CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"gen-indep-$TEST_RUN\"},\"color\":\"blue\",\"size\":10}")
+  -d "{\"metadata\":{\"name\":\"gen-indep-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":10}}")
 echo "=== Step 0: CREATE ==="
 echo "$CREATE_RESP" | python3 -c "
 import sys, json
@@ -1842,7 +1874,7 @@ rm -f /tmp/kapi-persist-test.db /tmp/kapi-test.db
 | 33 | Update status for non-existent object → 404 `NotFound` |
 | 34 | Status update does not modify spec field |
 | 35 | Status update bumps `resourceVersion` |
-| 36 | Create object with `status` in body → status is ignored (null) |
+| 36 | Create object with unknown top-level field → rejected with 400 `InvalidRequestBody` |
 | 37 | Status update replaces status completely (not merged) |
 | 38 | Status update publishes `StatusModified` watch event |
 | 39 | Spec update publishes `Modified` event (unchanged behavior) |

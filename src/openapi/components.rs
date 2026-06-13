@@ -79,10 +79,11 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                 "type": "object",
                 "properties": {
                     "resourceVersion": { "type": "integer", "format": "int64" },
+                    "generation": { "type": "integer", "format": "int64", "description": "Sequence number representing observed generation of the object's spec. Bumps only when spec changes." },
                     "createdAt": { "type": "string", "format": "date-time" },
                     "updatedAt": { "type": "string", "format": "date-time" }
                 },
-                "required": ["resourceVersion", "createdAt", "updatedAt"]
+                "required": ["resourceVersion", "generation", "createdAt", "updatedAt"]
             }),
         ),
         // StoredObject: generic envelope wrapping a stored resource

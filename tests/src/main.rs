@@ -46,6 +46,18 @@ async fn main() {
         run_test!("list_exhausted", object_crud::test_list_exhausted);
 
         println!();
+        run_test!("create_missing_spec", object_crud::test_create_missing_spec);
+        run_test!("create_empty_spec", object_crud::test_create_empty_spec);
+        run_test!(
+            "create_non_object_spec",
+            object_crud::test_create_non_object_spec
+        );
+        run_test!(
+            "create_unknown_top_level_field",
+            object_crud::test_create_unknown_top_level_field
+        );
+
+        println!();
         run_test!(
             "create_object_with_labels",
             object_labels::test_create_object_with_labels
@@ -232,8 +244,8 @@ async fn main() {
             status_subresource::test_concurrent_spec_and_status_update
         );
         run_test!(
-            "create_ignores_status",
-            status_subresource::test_create_ignores_status_in_body
+            "create_rejects_unknown_fields",
+            status_subresource::test_create_rejects_unknown_top_level_fields
         );
         run_test!(
             "status_update_nonexistent",
