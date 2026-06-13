@@ -164,7 +164,7 @@ fn encode_continue_token(name: &str) -> ContinueToken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::object::types::{LabelSelector, ObjectMeta, SpecData, SystemMetadata};
+    use crate::object::types::{LabelSelector, ObjectMeta, SystemMetadata};
     use serde_json::json;
     use std::collections::HashMap;
 
@@ -177,7 +177,7 @@ mod tests {
                 labels: HashMap::new(),
             },
             system: SystemMetadata::initial(),
-            spec: SpecData { value: spec },
+            spec,
             status: None,
         }
     }
@@ -201,13 +201,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
-        assert_eq!(created.spec.value, data);
+        assert_eq!(created.spec, data);
         assert_eq!(created.key, key);
         assert_eq!(created.system.resource_version, 1);
 
         let retrieved = store.get(&key, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
-        assert_eq!(retrieved.spec.value, created.spec.value);
+        assert_eq!(retrieved.spec, created.spec);
         assert_eq!(
             retrieved.system.resource_version,
             created.system.resource_version
@@ -364,7 +364,7 @@ mod tests {
                 Box::new(|existing| {
                     // Caller is responsible for setting metadata before Apply
                     let mut updated = existing.clone();
-                    updated.spec.value = json!({"x": 2});
+                    updated.spec = json!({"x": 2});
                     updated.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(updated)
                 }),
@@ -376,7 +376,7 @@ mod tests {
             result.system.resource_version,
             created.system.resource_version + 1
         );
-        assert_eq!(result.spec.value, json!({"x": 2}));
+        assert_eq!(result.spec, json!({"x": 2}));
     }
 
     #[tokio::test]
@@ -408,7 +408,7 @@ mod tests {
             .transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete))
             .unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
-        assert_eq!(deleted.spec.value, created.spec.value);
+        assert_eq!(deleted.spec, created.spec);
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
@@ -436,7 +436,7 @@ mod tests {
         assert!(matches!(err, AppError::NotFound { .. }));
 
         let other = store.get(&key, "other").await.unwrap();
-        assert_eq!(other.spec.value, json!({"x": 2}));
+        assert_eq!(other.spec, json!({"x": 2}));
     }
 
     #[tokio::test]
@@ -711,9 +711,7 @@ mod tests {
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
-                    obj.status = Some(SpecData {
-                        value: json!({"phase": "Running"}),
-                    });
+                    obj.status = Some(json!({"phase": "Running"}));
                     // Caller sets metadata before Apply
                     obj.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(obj)
@@ -723,12 +721,12 @@ mod tests {
 
         assert!(updated.status.is_some());
         assert_eq!(
-            updated.status.clone().unwrap().value,
+            updated.status.clone().unwrap(),
             json!({"phase": "Running"})
         );
         assert_eq!(updated.system.resource_version, v1 + 1);
         // Spec should be unchanged
-        assert_eq!(updated.spec.value, json!({"color": "blue"}));
+        assert_eq!(updated.spec, json!({"color": "blue"}));
     }
 
     #[tokio::test]
@@ -763,9 +761,7 @@ mod tests {
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
-                    obj.status = Some(SpecData {
-                        value: json!({"phase": "Pending"}),
-                    });
+                    obj.status = Some(json!({"phase": "Pending"}));
                     TransactionOp::Apply(obj)
                 }),
             )
@@ -778,16 +774,14 @@ mod tests {
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
-                    obj.status = Some(SpecData {
-                        value: json!({"phase": "Running"}),
-                    });
+                    obj.status = Some(json!({"phase": "Running"}));
                     TransactionOp::Apply(obj)
                 }),
             )
             .unwrap();
 
         assert_eq!(
-            updated.status.unwrap().value,
+            updated.status.unwrap(),
             json!({"phase": "Running"})
         );
     }
@@ -809,9 +803,7 @@ mod tests {
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
-                    obj.status = Some(SpecData {
-                        value: json!({"phase": "Running"}),
-                    });
+                    obj.status = Some(json!({"phase": "Running"}));
                     // Caller bumps resource_version
                     obj.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(obj)
@@ -838,15 +830,13 @@ mod tests {
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
-                    obj.status = Some(SpecData {
-                        value: json!({"phase": "Running"}),
-                    });
+                    obj.status = Some(json!({"phase": "Running"}));
                     TransactionOp::Apply(obj)
                 }),
             )
             .unwrap();
 
-        assert_eq!(updated.spec.value, json!({"color": "blue", "size": 10}));
+        assert_eq!(updated.spec, json!({"color": "blue", "size": 10}));
     }
 
     // --- Generation transaction tests (replacing old update generation tests) ---
@@ -902,7 +892,7 @@ mod tests {
                 "my-widget",
                 Box::new(move |existing| {
                     let mut obj = existing.clone();
-                    obj.spec.value = json!({"color": "red"});
+                    obj.spec = json!({"color": "red"});
                     obj.system.generation = gen_before + 1;
                     TransactionOp::Apply(obj)
                 }),
@@ -939,7 +929,7 @@ mod tests {
 
         // Object should be unchanged
         let obj = store.get(&key, "my-widget").await.unwrap();
-        assert_eq!(obj.spec.value, json!({"x": 1}));
+        assert_eq!(obj.spec, json!({"x": 1}));
     }
 
     #[tokio::test]
@@ -958,7 +948,7 @@ mod tests {
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
-                    obj.spec.value = json!({"x": 2});
+                    obj.spec = json!({"x": 2});
                     obj.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(obj)
                 }),
@@ -973,7 +963,7 @@ mod tests {
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
-                    obj.spec.value = json!({"x": 3});
+                    obj.spec = json!({"x": 3});
                     obj.system.resource_version = existing.system.resource_version + 1;
                     TransactionOp::Apply(obj)
                 }),

@@ -205,7 +205,7 @@ Requires the full StoredObject with the correct `system.resourceVersion`.
 PUT /apis/{group}/{version}/{kind}/{name}
 ```
 
-**Request body:** Full StoredObject with updated `spec.value` and optionally updated `metadata.labels`.
+**Request body:** Full StoredObject with updated `spec` and optionally updated `metadata.labels`.
 
 ```json
 {
@@ -403,14 +403,12 @@ The status subresource provides a separate write path for controller-runtime sem
 GET /apis/{group}/{version}/{kind}/{name}/status
 ```
 
-**Response:** `200 OK` — returns the status as `SpecData` (with `value` wrapper), or `null` if not set.
+**Response:** `200 OK` — returns the status as an inline JSON value, or `null` if not set.
 
 ```json
 {
-    "value": {
-        "phase": "Running",
-        "message": "All systems go"
-    }
+    "phase": "Running",
+    "message": "All systems go"
 }
 ```
 
@@ -448,8 +446,8 @@ PUT /apis/{group}/{version}/{kind}/{name}/status
     "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
     "metadata": { "name": "my-widget", "labels": {} },
     "system": { "resourceVersion": 5, "createdAt": "...", "updatedAt": "..." },
-    "spec": { "value": { "color": "blue", "size": 10 } },
-    "status": { "value": { "phase": "Running", "message": "All systems go" } }
+    "spec": { "color": "blue", "size": 10 },
+    "status": { "phase": "Running", "message": "All systems go" }
 }
 ```
 

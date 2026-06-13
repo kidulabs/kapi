@@ -19,7 +19,7 @@ use std::collections::HashMap;
 use crate::error::AppError;
 use crate::object::types::{
     ContinueToken, FieldSelector, LabelRequirement, LabelSelector, ListOptions, ObjectMeta,
-    StoredObject, WatchFilter, SpecData,
+    StoredObject, WatchFilter,
 };
 use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
@@ -443,7 +443,7 @@ pub async fn delete(
 pub async fn get_status(
     State(state): State<AppState>,
     Path(path): Path<ObjectNamePath>,
-) -> Result<Json<Option<SpecData>>, AppError> {
+) -> Result<Json<Option<Value>>, AppError> {
     let key = ResourceKey {
         group: path.group,
         version: path.version,

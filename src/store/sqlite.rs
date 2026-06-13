@@ -12,7 +12,7 @@ use std::collections::HashMap;
 use crate::error::AppError;
 use crate::object::types::{
     ContinueToken, FieldSelector, LabelRequirement, ListOptions, ListResponse, ObjectMeta,
-    SpecData, StoredObject, SystemMetadata,
+    StoredObject, SystemMetadata,
 };
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
@@ -113,11 +113,9 @@ impl SQLiteStore {
     ) -> Result<StoredObject, AppError> {
         let spec_value: Value =
             serde_json::from_str(&spec).map_err(|e| AppError::Internal(e.into()))?;
-        let status_value: Option<SpecData> = status
+        let status_value: Option<Value> = status
             .map(|s| {
-                serde_json::from_str(&s)
-                    .map(|v| SpecData { value: v })
-                    .map_err(|e| AppError::Internal(e.into()))
+                serde_json::from_str(&s).map_err(|e| AppError::Internal(e.into()))
             })
             .transpose()?;
         let created_at =
@@ -140,7 +138,7 @@ impl SQLiteStore {
                 created_at: created_at.with_timezone(&Utc),
                 updated_at: updated_at.with_timezone(&Utc),
             },
-            spec: SpecData { value: spec_value },
+            spec: spec_value,
             status: status_value,
         })
     }
@@ -266,11 +264,11 @@ impl SQLiteStore {
         object: &StoredObject,
     ) -> Result<(), AppError> {
         let spec_json =
-            serde_json::to_string(&object.spec.value).map_err(|e| AppError::Internal(e.into()))?;
+            serde_json::to_string(&object.spec).map_err(|e| AppError::Internal(e.into()))?;
         let status_json = object
             .status
             .as_ref()
-            .map(|s| serde_json::to_string(&s.value))
+            .map(serde_json::to_string)
             .transpose()
             .map_err(|e| AppError::Internal(e.into()))?;
         let created_at = object.system.created_at.to_rfc3339();
@@ -398,11 +396,11 @@ impl ObjectStore for SQLiteStore {
 
         tokio::task::spawn_blocking(move || {
             let spec_json =
-                serde_json::to_string(&object.spec.value).map_err(|e| AppError::Internal(e.into()))?;
+                serde_json::to_string(&object.spec).map_err(|e| AppError::Internal(e.into()))?;
             let status_json = object
                 .status
                 .as_ref()
-                .map(|s| serde_json::to_string(&s.value))
+                .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| AppError::Internal(e.into()))?;
             let created_at = object.system.created_at.to_rfc3339();
@@ -762,7 +760,7 @@ mod tests {
                 labels: HashMap::new(),
             },
             system: SystemMetadata::initial(),
-            spec: SpecData { value: spec },
+            spec,
             status: None,
         }
     }
@@ -795,13 +793,13 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(created.metadata.name, "my-widget");
-        assert_eq!(created.spec.value, data);
+        assert_eq!(created.spec, data);
         assert_eq!(created.key, key);
         assert_eq!(created.system.resource_version, 1);
 
         let retrieved = store.get(&key, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
-        assert_eq!(retrieved.spec.value, created.spec.value);
+        assert_eq!(retrieved.spec, created.spec);
         assert_eq!(
             retrieved.system.resource_version,
             created.system.resource_version
@@ -952,7 +950,7 @@ mod tests {
         let updated = store
             .transaction(&key, "my-widget", Box::new(|existing| {
                 let mut updated = existing.clone();
-                updated.spec.value = json!({"x": 2});
+                updated.spec = json!({"x": 2});
                 // Caller bumps resource_version
                 updated.system.resource_version = existing.system.resource_version + 1;
                 TransactionOp::Apply(updated)
@@ -960,7 +958,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(updated.system.resource_version, v1 + 1);
-        assert_eq!(updated.spec.value, json!({"x": 2}));
+        assert_eq!(updated.spec, json!({"x": 2}));
     }
 
     #[tokio::test]
@@ -1042,7 +1040,7 @@ mod tests {
             let store = SQLiteStore::new(db_path.to_str().unwrap()).unwrap();
             let key = test_key();
             let retrieved = store.get(&key, "persistent").await.unwrap();
-            assert_eq!(retrieved.spec.value, json!({"data": "hello"}));
+            assert_eq!(retrieved.spec, json!({"data": "hello"}));
         }
     }
 
@@ -1432,7 +1430,7 @@ mod tests {
         let updated = store
             .transaction(&key, "my-widget", Box::new(|existing| {
                 let mut updated = existing.clone();
-                updated.status = Some(SpecData { value: json!({"phase": "Running"}) });
+                updated.status = Some(json!({"phase": "Running"}));
                 // Caller bumps resource_version
                 updated.system.resource_version = existing.system.resource_version + 1;
                 TransactionOp::Apply(updated)
@@ -1440,9 +1438,9 @@ mod tests {
             .unwrap();
 
         assert!(updated.status.is_some());
-        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+        assert_eq!(updated.status.unwrap(), json!({"phase": "Running"}));
         assert_eq!(updated.system.resource_version, v1 + 1);
-        assert_eq!(updated.spec.value, json!({"color": "blue"}));
+        assert_eq!(updated.spec, json!({"color": "blue"}));
     }
 
     #[tokio::test]
@@ -1469,7 +1467,7 @@ mod tests {
         store
             .transaction(&key, "my-widget", Box::new(|existing| {
                 let mut updated = existing.clone();
-                updated.status = Some(SpecData { value: json!({"phase": "Pending"}) });
+                updated.status = Some(json!({"phase": "Pending"}));
                 TransactionOp::Apply(updated)
             }))
             .unwrap();
@@ -1477,11 +1475,11 @@ mod tests {
         let updated = store
             .transaction(&key, "my-widget", Box::new(|existing| {
                 let mut updated = existing.clone();
-                updated.status = Some(SpecData { value: json!({"phase": "Running"}) });
+                updated.status = Some(json!({"phase": "Running"}));
                 TransactionOp::Apply(updated)
             }))
             .unwrap();
-        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+        assert_eq!(updated.status.unwrap(), json!({"phase": "Running"}));
     }
 
     #[tokio::test]
@@ -1498,7 +1496,7 @@ mod tests {
         let updated = store
             .transaction(&key, "my-widget", Box::new(|existing| {
                 let mut updated = existing.clone();
-                updated.status = Some(SpecData { value: json!({"phase": "Running"}) });
+                updated.status = Some(json!({"phase": "Running"}));
                 // Caller bumps resource_version
                 updated.system.resource_version = existing.system.resource_version + 1;
                 TransactionOp::Apply(updated)
@@ -1520,11 +1518,11 @@ mod tests {
         let updated = store
             .transaction(&key, "my-widget", Box::new(|existing| {
                 let mut updated = existing.clone();
-                updated.status = Some(SpecData { value: json!({"phase": "Running"}) });
+                updated.status = Some(json!({"phase": "Running"}));
                 TransactionOp::Apply(updated)
             }))
             .unwrap();
-        assert_eq!(updated.spec.value, json!({"color": "blue", "size": 10}));
+        assert_eq!(updated.spec, json!({"color": "blue", "size": 10}));
     }
 
     // --- New transaction-based tests ---
@@ -1542,7 +1540,7 @@ mod tests {
         let result = store
             .transaction(&key, "test", Box::new(|existing| {
                 let mut updated = existing.clone();
-                updated.spec.value = json!({"x": 2});
+                updated.spec = json!({"x": 2});
                 // Caller bumps resource_version
                 updated.system.resource_version = existing.system.resource_version + 1;
                 TransactionOp::Apply(updated)
@@ -1550,7 +1548,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(result.system.resource_version, v1 + 1);
-        assert_eq!(result.spec.value, json!({"x": 2}));
+        assert_eq!(result.spec, json!({"x": 2}));
     }
 
     #[tokio::test]
@@ -1575,7 +1573,7 @@ mod tests {
         // Verify object is unmodified
         let retrieved = store.get(&key, "test").await.unwrap();
         assert_eq!(retrieved.system.resource_version, v1);
-        assert_eq!(retrieved.spec.value, json!({"x": 1}));
+        assert_eq!(retrieved.spec, json!({"x": 1}));
     }
 
     #[tokio::test]

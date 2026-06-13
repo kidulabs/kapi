@@ -67,8 +67,8 @@ pub async fn test_status_subresource_update(app: &TestApp) -> Result<(), String>
         .await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
-    assert_eq!(updated["status"]["value"]["phase"], "Running");
-    assert_eq!(updated["status"]["value"]["message"], "All systems go");
+    assert_eq!(updated["status"]["phase"], "Running");
+    assert_eq!(updated["status"]["message"], "All systems go");
 
     // Get status via /status endpoint
     let resp = client
@@ -76,8 +76,8 @@ pub async fn test_status_subresource_update(app: &TestApp) -> Result<(), String>
         .await;
     assert_status(&resp, StatusCode::OK);
     let status: Value = parse_body(resp).await;
-    // Status is returned as SpecData with a "value" wrapper
-    assert_eq!(status["value"]["phase"], "Running");
+    // Status is returned as inline JSON value (no `value` wrapper)
+    assert_eq!(status["phase"], "Running");
 
     Ok(())
 }
@@ -196,7 +196,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
         .await;
     assert_status(&resp, StatusCode::OK);
     let status_updated: Value = parse_body(resp).await;
-    assert_eq!(status_updated["status"]["value"]["phase"], "Running");
+    assert_eq!(status_updated["status"]["phase"], "Running");
 
     // Verify status persists by getting the object
     let resp = client
@@ -204,7 +204,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
         .await;
     assert_status(&resp, StatusCode::OK);
     let obj: Value = parse_body(resp).await;
-    assert_eq!(obj["status"]["value"]["phase"], "Running");
+    assert_eq!(obj["status"]["phase"], "Running");
 
     // Update status again - should succeed without CAS
     let resp = client
@@ -217,7 +217,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
         .await;
     assert_status(&resp, StatusCode::OK);
     let status_updated2: Value = parse_body(resp).await;
-    assert_eq!(status_updated2["status"]["value"]["phase"], "Completed");
+    assert_eq!(status_updated2["status"]["phase"], "Completed");
 
     Ok(())
 }
@@ -338,7 +338,7 @@ pub async fn test_status_update_publishes_status_modified_event(app: &TestApp) -
     );
     // Full object context should be present
     assert!(
-        event.object.spec.value.get("color").is_some(),
+        event.object.spec.get("color").is_some(),
         "StatusModified event should include full spec context"
     );
 
@@ -386,9 +386,9 @@ pub async fn test_status_update_preserves_spec(app: &TestApp) -> Result<(), Stri
     assert_status(&resp, StatusCode::OK);
     let obj: Value = parse_body(resp).await;
 
-    assert_eq!(obj["spec"]["value"]["color"], "blue", "spec.color should be unchanged");
-    assert_eq!(obj["spec"]["value"]["size"], 10, "spec.size should be unchanged");
-    assert_eq!(obj["status"]["value"]["phase"], "Running", "status should be set");
+    assert_eq!(obj["spec"]["color"], "blue", "spec.color should be unchanged");
+    assert_eq!(obj["spec"]["size"], 10, "spec.size should be unchanged");
+    assert_eq!(obj["status"]["phase"], "Running", "status should be set");
 
     Ok(())
 }
@@ -610,11 +610,11 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
         .await;
     assert_status(&resp, StatusCode::OK);
     let status: Value = parse_body(resp).await;
-    assert_eq!(status["value"]["phase"], "Completed");
+    assert_eq!(status["phase"], "Completed");
     assert!(
-        status["value"].get("message").is_none(),
+        status.get("message").is_none(),
         "message should be removed after status replacement, but got: {}",
-        status["value"]["message"]
+        status["message"]
     );
 
     Ok(())
@@ -660,7 +660,7 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(app: &TestA
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
         "metadata": { "name": "spec-event-widget" },
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
-        "spec": { "value": { "color": "red", "size": 20 } }
+        "spec": { "color": "red", "size": 20 }
     });
     let resp = client
         .put("/apis/example.io/v1/Widget/spec-event-widget", update_body)

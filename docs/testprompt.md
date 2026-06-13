@@ -137,7 +137,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/lifecycle-$TEST_
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"lifecycle-$TEST_RUN\"},
     \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
-    \"spec\":{\"value\":{\"color\":\"yellow\",\"size\":10}}
+    \"spec\":{\"color\":\"yellow\",\"size\":10}
   }"
 
 sleep 1
@@ -348,7 +348,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$
       \"labels\": { \"app\": \"httpd\", \"app.kubernetes.io/version\": \"v1.2.3\", \"tier\": \"frontend\" }
     },
     \"system\": {\"resourceVersion\":$RV,\"createdAt\":\"$CREATED\",\"updatedAt\":\"$UPDATED\"},
-    \"spec\": {\"value\":{\"color\":\"blue\",\"size\":10}}
+    \"spec\": {\"color\":\"blue\",\"size\":10}}
   }" | python3 -m json.tool
 
 # 3. GET and verify labels changed
@@ -587,7 +587,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" \
       \"labels\": { \"app\": \"httpd\", \"app.kubernetes.io/version\": \"v1.2.3\", \"tier\": \"frontend\" }
     },
     \"system\": {\"resourceVersion\":$RV,\"createdAt\":\"$CREATED\",\"updatedAt\":\"$UPDATED\"},
-    \"spec\": {\"value\":{\"color\":\"blue\",\"size\":10}}
+    \"spec\": {\"color\":\"blue\",\"size\":10}}
   }" > /dev/null
 
 # 4. Verify labels before restart
@@ -1224,7 +1224,7 @@ print(f\"Spec: {obj['spec']}\")
 **Expected results:**
 - Created object has `status: null`
 - PUT /status returns 200 with full `StoredObject` including updated status
-- GET /status returns the status value (with `value` wrapper: `{"value":{"phase":"Running","message":"All systems go"}}`)
+- GET /status returns the status value (inline JSON: `{"phase":"Running","message":"All systems go"}`)
 - Full object GET shows both spec and status
 
 ---
@@ -1336,7 +1336,7 @@ echo "=== Verify spec unchanged ==="
 curl -s "http://localhost:8080/apis/example.io/v1/Widget/spec-preserve-$TEST_RUN" | python3 -c "
 import sys, json
 obj = json.load(sys.stdin)
-spec = obj['spec']['value']
+spec = obj['spec']
 status = obj['status']
 print(f\"Spec color: {spec['color']}\")
 print(f\"Spec size: {spec['size']}\")
@@ -1349,7 +1349,7 @@ print('PASS: spec unchanged, status set')
 
 **Expected results:**
 - `spec.color` is still `"blue"`, `spec.size` is still `10`
-- `status` is `{"value":{"phase":"Running"}}`
+- `status` is `{"phase":"Running"}`
 
 ---
 
@@ -1399,7 +1399,7 @@ curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
 import sys, json
 obj = json.load(sys.stdin)
 status = obj.get('status')
-assert status is None or status == 'null' or (isinstance(status, dict) and status.get('value') is None), \
+assert status is None or status == 'null', \
     f'status should be null, got: {status}'
 print(f'Status: {status}')
 print('PASS: status ignored on create')
@@ -1436,7 +1436,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/replace-status-$
 echo "=== Verify status replaced ==="
 curl -s "http://localhost:8080/apis/example.io/v1/Widget/replace-status-$TEST_RUN/status" | python3 -c "
 import sys, json
-status = json.load(sys.stdin)['value']
+status = json.load(sys.stdin)
 print(f'Status: {status}')
 assert status.get('phase') == 'Completed', f'phase should be Completed, got {status.get(\"phase\")}'
 assert 'message' not in status, f'message should be removed, but got: {status.get(\"message\")}'
@@ -1516,7 +1516,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/spec-event-$TEST
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"spec-event-$TEST_RUN\"},
     \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
-    \"spec\":{\"value\":{\"color\":\"red\",\"size\":20}}
+    \"spec\":{\"color\":\"red\",\"size\":20}}
   }" > /dev/null
 
 sleep 2
@@ -1593,7 +1593,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_R
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},
     \"system\":{\"resourceVersion\":$INITIAL_RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
-    \"spec\":{\"value\":{\"color\":\"blue\",\"size\":10}}
+    \"spec\":{\"color\":\"blue\",\"size\":10}}
   }" > /tmp/gen-meta-update.json
 
 echo "=== After metadata-only update ==="
@@ -1641,7 +1641,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_R
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},
     \"system\":{\"resourceVersion\":$BEFORE_RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
-    \"spec\":{\"value\":{\"color\":\"red\",\"size\":10}}
+    \"spec\":{\"color\":\"red\",\"size\":10}}
   }" > /tmp/gen-spec-update.json
 
 echo "=== After spec update ==="
@@ -1705,7 +1705,7 @@ print('PASS: generation unchanged, resourceVersion bumped on status update')
 **Expected results:**
 - `generation` stays unchanged
 - `resourceVersion` increments
-- Status set to `{"value":{"phase":"Running"}}`
+- Status set to `{"phase":"Running"}`
 
 ---
 
@@ -1737,7 +1737,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},
     \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
-    \"spec\":{\"value\":{\"color\":\"blue\",\"size\":10}}
+    \"spec\":{\"color\":\"blue\",\"size\":10}}
   }" > /dev/null
 echo "=== Step 1: UPDATE labels only ==="
 curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" | python3 -c "
@@ -1758,7 +1758,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},
     \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
-    \"spec\":{\"value\":{\"color\":\"red\",\"size\":20}}
+    \"spec\":{\"color\":\"red\",\"size\":20}}
   }" > /dev/null
 echo "=== Step 2: UPDATE spec ==="
 curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" | python3 -c "
@@ -1790,7 +1790,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"httpd\",\"env\":\"prod\"}},
     \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
-    \"spec\":{\"value\":{\"color\":\"red\",\"size\":20}}
+    \"spec\":{\"color\":\"red\",\"size\":20}}
   }" > /dev/null
 echo "=== Step 4: UPDATE labels again ==="
 curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" | python3 -c "

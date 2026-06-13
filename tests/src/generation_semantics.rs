@@ -71,7 +71,7 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
         "metadata": { "name": "gen-widget", "labels": { "env": "prod" } },
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
-        "spec": { "value": { "color": "blue", "size": 10 } }
+        "spec": { "color": "blue", "size": 10 }
     });
     let resp = client
         .put("/apis/example.io/v1/Widget/gen-widget", update_body)
@@ -99,7 +99,7 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
         "metadata": { "name": "gen-widget", "labels": { "env": "prod" } },
         "system": { "resourceVersion": rv2, "createdAt": created_at, "updatedAt": updated_at2 },
-        "spec": { "value": { "color": "red", "size": 20 } }
+        "spec": { "color": "red", "size": 20 }
     });
     let resp = client
         .put("/apis/example.io/v1/Widget/gen-widget", update_body)
@@ -156,7 +156,7 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
         "metadata": { "name": "gen-widget", "labels": { "app": "httpd", "env": "staging" } },
         "system": { "resourceVersion": rv4, "createdAt": created_at, "updatedAt": updated_at4 },
-        "spec": { "value": { "color": "red", "size": 20 } }
+        "spec": { "color": "red", "size": 20 }
     });
     let resp = client
         .put("/apis/example.io/v1/Widget/gen-widget", update_body)

@@ -14,7 +14,7 @@ use serde_json::Value;
 use crate::error::AppError;
 use crate::event::EventPublisher;
 use crate::object::types::{
-    ListOptions, ListResponse, ObjectMeta, SchemaData, SpecData, StoredObject, SystemMetadata,
+    ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, SystemMetadata,
     WatchEvent, WatchEventType, WatchFilter,
 };
 use crate::schema::{SchemaRegistry, SchemaValidator, SCHEMA_KIND};
@@ -200,7 +200,7 @@ impl ObjectService {
     /// After successful store update, publishes a Modified event.
     pub async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
         let key = object.key.clone();
-        let spec = object.spec.value.clone();
+        let spec = object.spec.clone();
 
         if key.kind == SCHEMA_KIND {
             // Schema path: meta-schema validate → compile → cache → store → publish
@@ -271,7 +271,7 @@ impl ObjectService {
             Box::new(move |existing| {
                 Self::apply_with_metadata(existing, |_existing| {
                     let mut updated = existing.clone();
-                    updated.status = Some(SpecData { value: status });
+                    updated.status = Some(status);
                     updated
                 })
             }),
@@ -288,7 +288,7 @@ impl ObjectService {
         &self,
         key: ResourceKey,
         name: String,
-    ) -> Result<Option<SpecData>, AppError> {
+    ) -> Result<Option<Value>, AppError> {
         // Check that status subresource is enabled
         self.schema_registry.get_status_validator(&key).await?;
 
@@ -344,7 +344,7 @@ impl ObjectService {
         // Preserve the original creation timestamp
         new_obj.system.created_at = existing.system.created_at;
         // Bump generation only if spec changed, otherwise preserve it
-        if new_obj.spec.value != existing.spec.value {
+        if new_obj.spec != existing.spec {
             new_obj.system.generation = existing.system.generation + 1;
         } else {
             new_obj.system.generation = existing.system.generation;
@@ -378,7 +378,7 @@ impl ObjectService {
                 key: key.clone(),
                 metadata: meta.clone(),
                 system: SystemMetadata::initial(),
-                spec: SpecData { value: spec },
+                spec,
                 status: None,
             })
             .await?;
@@ -412,7 +412,7 @@ impl ObjectService {
                 key: key.clone(),
                 metadata: meta,
                 system: SystemMetadata::initial(),
-                spec: SpecData { value: spec },
+                spec,
                 status: None,
             })
             .await?;
@@ -506,7 +506,7 @@ impl ObjectService {
         let schema_obj = self.store.get(&key, &name).await?;
 
         // Step 2: Parse schema data to extract target kind
-        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.value.clone())
+        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         // Step 3: Build target key and check for existing objects
@@ -751,7 +751,7 @@ mod tests {
 
         let v1 = created.system.resource_version;
         let mut updated_obj = created;
-        updated_obj.spec.value = json!({ "color": "red", "size": 20 });
+        updated_obj.spec = json!({ "color": "red", "size": 20 });
         updated_obj.system.resource_version = v1;
 
         let result = service.update(updated_obj).await;
@@ -783,7 +783,7 @@ mod tests {
             .unwrap();
 
         let mut wrong_version_obj = created;
-        wrong_version_obj.spec.value = json!({ "color": "red" });
+        wrong_version_obj.spec = json!({ "color": "red" });
         wrong_version_obj.system.resource_version = 999;
 
         // OCC check in service layer rejects stale versions
@@ -1177,7 +1177,7 @@ mod tests {
                     labels: HashMap::new(),
                 },
                 system: SystemMetadata::initial(),
-                spec: SpecData { value: invalid_schema },
+                spec: invalid_schema,
                 status: None,
             })
             .await
@@ -1352,7 +1352,7 @@ mod tests {
             .await
             .unwrap();
         assert!(updated.status.is_some());
-        assert_eq!(updated.status.unwrap().value, json!({"phase": "Running"}));
+        assert_eq!(updated.status.unwrap(), json!({"phase": "Running"}));
     }
 
     #[tokio::test]
@@ -1489,7 +1489,7 @@ mod tests {
             .await
             .unwrap();
         assert!(status.is_some());
-        assert_eq!(status.unwrap().value, json!({"phase": "Running"}));
+        assert_eq!(status.unwrap(), json!({"phase": "Running"}));
     }
 
     #[tokio::test]
@@ -1641,7 +1641,7 @@ mod tests {
         let v1 = created.system.resource_version;
         let mut update_obj = created;
         update_obj.system.resource_version = v1;
-        update_obj.spec.value = json!({"color": "red", "size": 20});
+        update_obj.spec = json!({"color": "red", "size": 20});
 
         let result = service.update(update_obj).await.unwrap();
         assert_eq!(
@@ -1715,7 +1715,7 @@ mod tests {
         let rv = created.system.resource_version;
         let mut update_obj = created;
         update_obj.system.resource_version = rv;
-        update_obj.spec.value = json!({"color": "red", "size": 2});
+        update_obj.spec = json!({"color": "red", "size": 2});
 
         let result = service.update(update_obj).await;
         assert!(result.is_ok(), "update should succeed with matching rv");
@@ -1744,7 +1744,7 @@ mod tests {
             .unwrap();
 
         let mut update_obj = created;
-        update_obj.spec.value = json!({"color": "red", "size": 2});
+        update_obj.spec = json!({"color": "red", "size": 2});
         update_obj.system.resource_version = 999; // wrong version
 
         let result = service.update(update_obj).await;

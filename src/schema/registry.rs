@@ -140,7 +140,7 @@ impl SchemaRegistry {
             })?;
 
         // Parse and compile
-        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.value)
+        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         let compiled = JsonSchemaValidator::compile(&schema_data.spec_schema)
@@ -208,7 +208,7 @@ impl SchemaRegistry {
             })?;
 
         // Parse SchemaData
-        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.value)
+        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         // Check if status_schema is present
@@ -277,7 +277,7 @@ mod tests {
                     labels: std::collections::HashMap::new(),
                 },
                 system: crate::object::types::SystemMetadata::initial(),
-                spec: crate::object::types::SpecData { value: schema_data },
+                spec: schema_data,
                 status: None,
             })
             .await
@@ -406,7 +406,7 @@ mod tests {
                     labels: std::collections::HashMap::new(),
                 },
                 system: crate::object::types::SystemMetadata::initial(),
-                spec: crate::object::types::SpecData { value: invalid_schema },
+                spec: invalid_schema,
                 status: None,
             })
             .await
@@ -524,7 +524,7 @@ mod tests {
                     labels: std::collections::HashMap::new(),
                 },
                 system: crate::object::types::SystemMetadata::initial(),
-                spec: crate::object::types::SpecData { value: schema_data },
+                spec: schema_data,
                 status: None,
             })
             .await
@@ -561,7 +561,7 @@ mod tests {
                     labels: std::collections::HashMap::new(),
                 },
                 system: crate::object::types::SystemMetadata::initial(),
-                spec: crate::object::types::SpecData { value: schema_data },
+                spec: schema_data,
                 status: None,
             })
             .await

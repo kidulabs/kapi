@@ -56,7 +56,7 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
     // Parse each StoredObject's data field into SchemaData and generate dynamic content
     for item in &schema_list.items {
         let schema_data: crate::object::types::SchemaData =
-            match serde_json::from_value(item.spec.value.clone()) {
+            match serde_json::from_value(item.spec.clone()) {
                 Ok(sd) => sd,
                 Err(_) => continue,
             };
@@ -300,7 +300,7 @@ pub(crate) fn build_kind_paths(
     let stored_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}StoredObject") });
     let list_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}ListResponse") });
     let error_ref = json!({ "$ref": "#/components/schemas/AppError" });
-    let spec_data_ref = json!({ "$ref": "#/components/schemas/SpecData" });
+    let status_ref = json!({ "nullable": true, "description": "Status subresource, or null if not set" });
 
     vec![
         // Collection path: GET (list) + POST (create)
@@ -512,7 +512,7 @@ pub(crate) fn build_kind_paths(
                             "description": format!("The status of the {} object (null if not set)", kind),
                             "content": {
                                 "application/json": {
-                                    "schema": spec_data_ref
+                                    "schema": status_ref
                                 }
                             }
                         },

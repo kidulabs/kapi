@@ -66,16 +66,6 @@ struct SystemMetadata {
 
 Wire format uses camelCase: `resourceVersion`, `createdAt`, `updatedAt`.
 
-### SpecData
-
-Envelope for the user's domain payload (the spec). This is what gets validated against the registered JSON Schema.
-
-```rust
-struct SpecData {
-    value: serde_json::Value,
-}
-```
-
 ### StoredObject
 
 The complete unit of storage and retrieval. Everything stored in the system is a `StoredObject`.
@@ -85,12 +75,12 @@ struct StoredObject {
     key: ResourceKey,
     metadata: ObjectMeta,
     system: SystemMetadata,
-    spec: SpecData,
-    status: Option<SpecData>,   // nullable, None for kinds without statusSchema
+    spec: serde_json::Value,             // user-defined spec payload
+    status: Option<serde_json::Value>,   // nullable, None for kinds without statusSchema
 }
 ```
 
-The `status` field is managed via the `/status` subresource endpoint. It starts as `null` on create and is updated independently of `spec` (no optimistic concurrency check). When serialized, the `status` field is omitted if `None`.
+The `spec` and `status` fields are inline JSON values — they are the user-supplied payload directly, with no `value` wrapper envelope. The `status` field is managed via the `/status` subresource endpoint. It starts as `null` on create and is updated independently of `spec` (no optimistic concurrency check). When serialized, the `status` field is omitted if `None`.
 
 ### WatchEvent
 
@@ -244,10 +234,8 @@ data: {"eventType":"Modified","object":{...}}
         "replicas": 3
     },
     "status": {
-        "value": {
-            "phase": "Running",
-            "availableReplicas": 3
-        }
+        "phase": "Running",
+        "availableReplicas": 3
     }
 }
 ```

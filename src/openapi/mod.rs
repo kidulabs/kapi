@@ -69,14 +69,13 @@ mod tests {
     }
 
     #[test]
-    fn build_static_components_contains_all_twelve() {
+    fn build_static_components_contains_all_eleven() {
         let components = build_static_components();
         let names: Vec<&str> = components.iter().map(|(n, _)| n.as_str()).collect();
         let expected = [
             "ResourceKey",
             "ObjectMeta",
             "SystemMetadata",
-            "SpecData",
             "StoredObject",
             "ListResponse",
             "WatchEvent",
@@ -168,7 +167,7 @@ mod tests {
     }
 
     #[test]
-    fn build_kind_spec_component_wraps_user_schema() {
+    fn build_kind_spec_component_uses_user_schema_directly() {
         let schema_data = crate::object::types::SchemaData {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
@@ -186,13 +185,12 @@ mod tests {
         assert_eq!(name, "WidgetExampleIo");
         let obj = schema.as_object().unwrap();
         assert_eq!(obj["type"], "object");
+        // User fields appear at the top level (no `value` wrapper).
         let props = obj["properties"].as_object().unwrap();
-        assert!(props.contains_key("value"));
-        let value_schema = &props["value"];
-        assert_eq!(value_schema["type"], "object");
-        assert!(value_schema["properties"]["color"].as_object().is_some());
-        assert_eq!(value_schema["properties"]["color"]["type"], "string");
-        assert_eq!(value_schema["properties"]["size"]["type"], "integer");
+        assert!(props.contains_key("color"));
+        assert!(props.contains_key("size"));
+        assert_eq!(props["color"]["type"], "string");
+        assert_eq!(props["size"]["type"], "integer");
     }
 
     #[test]
