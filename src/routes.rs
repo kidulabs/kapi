@@ -55,8 +55,7 @@ pub fn build_router(state: AppState) -> Router {
         // Status subresource routes: get status (GET), update status (PUT)
         .route(
             "/apis/{group}/{version}/{kind}/{name}/status",
-            axum::routing::get(handler::get_status)
-                .put(handler::update_status),
+            axum::routing::get(handler::get_status).put(handler::update_status),
         )
         // OpenAPI spec endpoint: dynamically generated on every request
         .route(

@@ -14,12 +14,12 @@ use serde_json::Value;
 use crate::error::AppError;
 use crate::event::EventPublisher;
 use crate::object::types::{
-    ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, SystemMetadata,
-    WatchEvent, WatchEventType, WatchFilter,
+    ListOptions, ListResponse, ObjectMeta, SchemaData, StoredObject, SystemMetadata, WatchEvent,
+    WatchEventType, WatchFilter,
 };
-use crate::schema::{SchemaRegistry, SchemaValidator, SCHEMA_KIND};
 #[cfg(test)]
 use crate::schema::schema_key;
+use crate::schema::{SCHEMA_KIND, SchemaRegistry, SchemaValidator};
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 /// Validates a label key according to label validation rules.
@@ -118,6 +118,44 @@ fn validate_labels(labels: &HashMap<String, String>) -> Result<(), AppError> {
         validate_label_key(key)?;
         validate_label_value(key, value)?;
     }
+    Ok(())
+}
+
+/// Validates an annotation key: non-empty, max 256 chars, no character restrictions.
+fn validate_annotation_key(key: &str) -> Result<(), AppError> {
+    if key.is_empty() {
+        return Err(AppError::InvalidAnnotation(
+            "annotation key must not be empty".to_string(),
+        ));
+    }
+    if key.len() > 256 {
+        return Err(AppError::InvalidAnnotation(format!(
+            "annotation key '{}' exceeds maximum length of 256 characters",
+            key
+        )));
+    }
+    Ok(())
+}
+
+/// Validates all annotations: validates keys and total serialized size.
+///
+/// Key validation: non-empty, max 256 chars, no character restrictions.
+/// Size validation: total serialized size must not exceed 256KB.
+fn validate_annotations(annotations: &HashMap<String, String>) -> Result<(), AppError> {
+    for key in annotations.keys() {
+        validate_annotation_key(key)?;
+    }
+    
+    // Check total serialized size
+    let serialized_size = serde_json::to_string(annotations)
+        .map_err(|e| AppError::Internal(e.into()))?
+        .len();
+    if serialized_size > 256 * 1024 {
+        return Err(AppError::InvalidAnnotation(format!(
+            "total annotations size {serialized_size} bytes exceeds maximum of 256KB"
+        )));
+    }
+    
     Ok(())
 }
 
@@ -227,10 +265,9 @@ impl ObjectService {
             self.delete_schema(key, name).await
         } else {
             // Regular object path: delete via transaction and publish
-            let deleted = self.store.transaction(
-                &key, &name,
-                Box::new(|_existing| TransactionOp::Delete),
-            )?;
+            let deleted =
+                self.store
+                    .transaction(&key, &name, Box::new(|_existing| TransactionOp::Delete))?;
             self.publish_event(&key, WatchEventType::Deleted, &deleted);
             Ok(deleted)
         }
@@ -267,7 +304,8 @@ impl ObjectService {
         // Update status in store via transaction
         // No OCC check for status updates — they are unconditional per spec.
         let updated = self.store.transaction(
-            &key, &name,
+            &key,
+            &name,
             Box::new(move |existing| {
                 Self::apply_with_metadata(existing, |_existing| {
                     let mut updated = existing.clone();
@@ -370,6 +408,7 @@ impl ObjectService {
         spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
+        validate_annotations(&meta.annotations)?;
         let (_schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
         let stored = self
@@ -399,6 +438,7 @@ impl ObjectService {
         spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
+        validate_annotations(&meta.annotations)?;
         let validator = self.schema_registry.get_validator(&key).await?;
 
         if !validator.is_valid(&spec) {
@@ -427,28 +467,33 @@ impl ObjectService {
         spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
+        validate_annotations(&object.metadata.annotations)?;
         let (_schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
 
         let key = object.key.clone();
         let name = object.metadata.name.clone();
         let incoming_rv = object.system.resource_version;
-        let updated = self.store.transaction(&key, &name, Box::new(move |existing| {
-            // OCC check: reject if resource_version doesn't match
-            if incoming_rv != existing.system.resource_version {
-                return TransactionOp::Abort(AppError::Conflict {
-                    expected: existing.system.resource_version,
-                    actual: incoming_rv,
-                });
-            }
-            // Use centralized metadata wrapper
-            Self::apply_with_metadata(existing, |_existing| {
-                let mut updated = existing.clone();
-                updated.metadata = object.metadata.clone();
-                updated.spec = object.spec.clone();
-                updated
-            })
-        }))?;
+        let updated = self.store.transaction(
+            &key,
+            &name,
+            Box::new(move |existing| {
+                // OCC check: reject if resource_version doesn't match
+                if incoming_rv != existing.system.resource_version {
+                    return TransactionOp::Abort(AppError::Conflict {
+                        expected: existing.system.resource_version,
+                        actual: incoming_rv,
+                    });
+                }
+                // Use centralized metadata wrapper
+                Self::apply_with_metadata(existing, |_existing| {
+                    let mut updated = existing.clone();
+                    updated.metadata = object.metadata.clone();
+                    updated.spec = object.spec.clone();
+                    updated
+                })
+            }),
+        )?;
         self.schema_registry
             .insert(&updated.metadata.name, compiled);
         if let Some(status_validator) = status_compiled {
@@ -466,6 +511,7 @@ impl ObjectService {
         spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
+        validate_annotations(&object.metadata.annotations)?;
         let validator = self.schema_registry.get_validator(&object.key).await?;
 
         if !validator.is_valid(&spec) {
@@ -476,22 +522,26 @@ impl ObjectService {
         let key = object.key.clone();
         let name = object.metadata.name.clone();
         let incoming_rv = object.system.resource_version;
-        let updated = self.store.transaction(&key, &name, Box::new(move |existing| {
-            // OCC check: reject if resource_version doesn't match
-            if incoming_rv != existing.system.resource_version {
-                return TransactionOp::Abort(AppError::Conflict {
-                    expected: existing.system.resource_version,
-                    actual: incoming_rv,
-                });
-            }
-            // Use centralized metadata wrapper
-            Self::apply_with_metadata(existing, |_existing| {
-                let mut updated = existing.clone();
-                updated.metadata = object.metadata.clone();
-                updated.spec = object.spec.clone();
-                updated
-            })
-        }))?;
+        let updated = self.store.transaction(
+            &key,
+            &name,
+            Box::new(move |existing| {
+                // OCC check: reject if resource_version doesn't match
+                if incoming_rv != existing.system.resource_version {
+                    return TransactionOp::Abort(AppError::Conflict {
+                        expected: existing.system.resource_version,
+                        actual: incoming_rv,
+                    });
+                }
+                // Use centralized metadata wrapper
+                Self::apply_with_metadata(existing, |_existing| {
+                    let mut updated = existing.clone();
+                    updated.metadata = object.metadata.clone();
+                    updated.spec = object.spec.clone();
+                    updated
+                })
+            }),
+        )?;
         self.publish_event(&updated.key, WatchEventType::Modified, &updated);
         Ok(updated)
     }
@@ -524,10 +574,9 @@ impl ObjectService {
         }
 
         // Step 4: Delete the schema via transaction
-        let deleted = self.store.transaction(
-            &key, &name,
-            Box::new(|_existing| TransactionOp::Delete),
-        )?;
+        let deleted =
+            self.store
+                .transaction(&key, &name, Box::new(|_existing| TransactionOp::Delete))?;
 
         // Step 5: Evict from cache
         self.schema_registry.evict(&name);
@@ -581,6 +630,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -606,6 +656,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -615,7 +666,12 @@ mod tests {
         assert_eq!(stored.metadata.name, "Widget.example.io");
 
         // Verify cached
-        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            service
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
 
         // Verify stored in store
         let retrieved = service
@@ -641,6 +697,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 invalid_data,
             )
@@ -668,6 +725,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 invalid_schema,
             )
@@ -692,6 +750,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({}),
             )
@@ -719,6 +778,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 invalid_data,
             )
@@ -743,6 +803,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({ "color": "blue", "size": 10 }),
             )
@@ -776,6 +837,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({ "color": "blue", "size": 10 }),
             )
@@ -808,6 +870,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -815,7 +878,12 @@ mod tests {
             .unwrap();
 
         // Verify cached
-        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            service
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
 
         // Delete the schema
         let result = service
@@ -824,7 +892,12 @@ mod tests {
         assert!(result.is_ok());
 
         // Verify cache evicted
-        assert!(!service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            !service
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
     }
 
     // T27: Delete Schema with existing objects → SchemaHasObjects, nothing deleted
@@ -845,6 +918,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({ "color": "blue", "size": 10 }),
             )
@@ -856,9 +930,7 @@ mod tests {
         let result = service
             .delete(schema_key, "Widget.example.io".to_string())
             .await;
-        assert!(
-            matches!(result, Err(AppError::SchemaHasObjects { kind }) if kind == "Widget")
-        );
+        assert!(matches!(result, Err(AppError::SchemaHasObjects { kind }) if kind == "Widget"));
     }
 
     // T28: Delete regular object → success, Deleted event published
@@ -878,6 +950,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({ "color": "blue", "size": 10 }),
             )
@@ -906,6 +979,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data.clone(),
             )
@@ -919,6 +993,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -943,18 +1018,29 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
             .await
             .unwrap();
-        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            service
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
 
         service
             .delete(schema_key, "Widget.example.io".to_string())
             .await
             .unwrap();
-        assert!(!service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            !service
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
     }
 
     // Schema create with missing targetKind returns InvalidSchema error
@@ -976,6 +1062,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -1002,6 +1089,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -1043,6 +1131,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -1054,6 +1143,7 @@ mod tests {
                 ObjectMeta {
                     name: "widget-1".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "red"}),
             )
@@ -1062,7 +1152,12 @@ mod tests {
 
         // Service B: same store, fresh cache (simulating restart)
         let service_b = ObjectService::new(store, event_bus, meta_validator);
-        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            !service_b
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
 
         let result = service_b
             .create(
@@ -1070,12 +1165,18 @@ mod tests {
                 ObjectMeta {
                     name: "widget-2".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue"}),
             )
             .await;
         assert!(result.is_ok());
-        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            service_b
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
     }
 
     // T32: Cache miss triggers compilation, subsequent requests use cached validator
@@ -1115,6 +1216,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -1123,7 +1225,12 @@ mod tests {
 
         // Service B starts with empty cache
         let service_b = ObjectService::new(store, event_bus, meta_validator);
-        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            !service_b
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
 
         // First creation triggers lazy compilation
         let first = service_b
@@ -1132,12 +1239,18 @@ mod tests {
                 ObjectMeta {
                     name: "widget-1".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "red", "size": 1}),
             )
             .await;
         assert!(first.is_ok());
-        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(
+            service_b
+                .schema_registry
+                .cache
+                .contains_key("Widget.example.io")
+        );
 
         // Second creation uses cached validator
         let second = service_b
@@ -1146,6 +1259,7 @@ mod tests {
                 ObjectMeta {
                     name: "widget-2".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 2}),
             )
@@ -1175,6 +1289,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 system: SystemMetadata::initial(),
                 spec: invalid_schema,
@@ -1196,6 +1311,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "red"}),
             )
@@ -1284,6 +1400,64 @@ mod tests {
         assert!(validate_labels(&labels).is_err());
     }
 
+    // --- validate_annotations unit tests ---
+
+    #[test]
+    fn validate_annotations_empty_map() {
+        let annotations = HashMap::new();
+        assert!(validate_annotations(&annotations).is_ok());
+    }
+
+    #[test]
+    fn validate_annotations_valid_keys() {
+        let mut annotations = HashMap::new();
+        annotations.insert("description".to_string(), "my widget".to_string());
+        annotations.insert("kapi.io/last-applied-config".to_string(), "{}".to_string());
+        annotations.insert("example.com/path@v1".to_string(), "data".to_string());
+        assert!(validate_annotations(&annotations).is_ok());
+    }
+
+    #[test]
+    fn validate_annotations_empty_key_rejected() {
+        let mut annotations = HashMap::new();
+        annotations.insert("".to_string(), "value".to_string());
+        assert!(validate_annotations(&annotations).is_err());
+    }
+
+    #[test]
+    fn validate_annotations_key_too_long() {
+        let mut annotations = HashMap::new();
+        let long_key = "a".repeat(257);
+        annotations.insert(long_key, "value".to_string());
+        assert!(validate_annotations(&annotations).is_err());
+    }
+
+    #[test]
+    fn validate_annotations_size_limit_exceeded() {
+        let mut annotations = HashMap::new();
+        let large_value = "x".repeat(256 * 1024); // > 256KB
+        annotations.insert("key".to_string(), large_value);
+        assert!(validate_annotations(&annotations).is_err());
+    }
+
+    #[test]
+    fn validate_annotations_special_characters_accepted() {
+        let mut annotations = HashMap::new();
+        annotations.insert(
+            "build-url".to_string(),
+            "https://example.com/path?query=value&other=123".to_string(),
+        );
+        annotations.insert("config".to_string(), "{\"key\": \"value\"}".to_string());
+        assert!(validate_annotations(&annotations).is_ok());
+    }
+
+    #[test]
+    fn validate_annotations_empty_value_accepted() {
+        let mut annotations = HashMap::new();
+        annotations.insert("key".to_string(), "".to_string());
+        assert!(validate_annotations(&annotations).is_ok());
+    }
+
     // --- Status subresource tests ---
 
     // Helper to register a Schema with statusSchema
@@ -1313,6 +1487,7 @@ mod tests {
                 ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -1336,6 +1511,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1372,6 +1548,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1405,6 +1582,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1461,6 +1639,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1508,6 +1687,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1539,6 +1719,7 @@ mod tests {
                 ObjectMeta {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "status": {"phase": "Running"}}),
             )
@@ -1565,6 +1746,7 @@ mod tests {
                 ObjectMeta {
                     name: "meta-test".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1598,6 +1780,7 @@ mod tests {
                 ObjectMeta {
                     name: "created-at-test".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1631,6 +1814,7 @@ mod tests {
                 ObjectMeta {
                     name: "gen-bump-test".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1645,8 +1829,7 @@ mod tests {
 
         let result = service.update(update_obj).await.unwrap();
         assert_eq!(
-            result.system.generation,
-            2,
+            result.system.generation, 2,
             "generation should bump to 2 on spec change"
         );
     }
@@ -1667,6 +1850,7 @@ mod tests {
                 ObjectMeta {
                     name: "gen-preserve-test".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1678,12 +1862,14 @@ mod tests {
         // Update with same spec, different labels
         let mut update_obj = created;
         update_obj.system.resource_version = v1;
-        update_obj.metadata.labels.insert("env".to_string(), "prod".to_string());
+        update_obj
+            .metadata
+            .labels
+            .insert("env".to_string(), "prod".to_string());
 
         let result = service.update(update_obj).await.unwrap();
         assert_eq!(
-            result.system.generation,
-            gen1,
+            result.system.generation, gen1,
             "generation should not bump on metadata-only update"
         );
     }
@@ -1706,6 +1892,7 @@ mod tests {
                 ObjectMeta {
                     name: "occ-pass".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 1}),
             )
@@ -1737,6 +1924,7 @@ mod tests {
                 ObjectMeta {
                     name: "occ-fail".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 1}),
             )
@@ -1771,6 +1959,7 @@ mod tests {
                 ObjectMeta {
                     name: "status-occ".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 json!({"color": "blue", "size": 1}),
             )
@@ -1795,8 +1984,7 @@ mod tests {
             "resource_version should increment"
         );
         assert_eq!(
-            updated.system.generation,
-            created.system.generation,
+            updated.system.generation, created.system.generation,
             "generation should NOT increment on status update"
         );
     }

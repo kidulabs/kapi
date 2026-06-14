@@ -29,6 +29,11 @@ pub enum AppError {
     #[error("invalid label: {0}")]
     InvalidLabel(String),
 
+    // Annotation validation failure (key length, total size)
+    // Maps to HTTP 400 Bad Request in into_response
+    #[error("invalid annotation: {0}")]
+    InvalidAnnotation(String),
+
     // labelSelector query parameter parsing failed (malformed syntax)
     // Maps to HTTP 400 Bad Request in into_response
     #[error("invalid label selector: {0}")]
@@ -97,6 +102,13 @@ impl IntoResponse for AppError {
                 StatusCode::BAD_REQUEST,
                 "InvalidLabel",
                 format!("invalid label: {msg}"),
+                json!({ "message": msg }),
+            ),
+            // InvalidAnnotation maps to HTTP 400 with the error message
+            AppError::InvalidAnnotation(msg) => (
+                StatusCode::BAD_REQUEST,
+                "InvalidAnnotation",
+                format!("invalid annotation: {msg}"),
                 json!({ "message": msg }),
             ),
             // InvalidLabelSelector maps to HTTP 400 with the error message

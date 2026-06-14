@@ -29,14 +29,8 @@ pub async fn test_create_schema_then_object(app: &TestApp) -> Result<(), String>
         fetched["metadata"]["name"], "my-widget",
         "GET returned wrong name"
     );
-    assert_eq!(
-        fetched["spec"]["color"], "blue",
-        "GET returned wrong color"
-    );
-    assert_eq!(
-        fetched["spec"]["size"], 42,
-        "GET returned wrong size"
-    );
+    assert_eq!(fetched["spec"]["color"], "blue", "GET returned wrong color");
+    assert_eq!(fetched["spec"]["size"], 42, "GET returned wrong size");
 
     Ok(())
 }

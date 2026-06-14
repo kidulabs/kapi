@@ -37,10 +37,7 @@ impl SchemaRegistry {
     /// Creates a new `SchemaRegistry` with the given store and meta-validator.
     ///
     /// The cache starts empty and is populated lazily on cache misses.
-    pub fn new(
-        store: Arc<dyn ObjectStore>,
-        meta_validator: Arc<dyn SchemaValidator>,
-    ) -> Self {
+    pub fn new(store: Arc<dyn ObjectStore>, meta_validator: Arc<dyn SchemaValidator>) -> Self {
         Self {
             store,
             meta_validator,
@@ -63,11 +60,7 @@ impl SchemaRegistry {
     /// - The spec cannot be parsed into `SchemaData`
     /// - The spec_schema cannot be compiled
     /// - The status_schema cannot be compiled (when present)
-    pub fn validate_and_compile(
-        &self,
-        spec: &Value,
-    ) -> Result<CompileResult, AppError>
-    {
+    pub fn validate_and_compile(&self, spec: &Value) -> Result<CompileResult, AppError> {
         // Validate against meta-schema
         if !self.meta_validator.is_valid(spec) {
             let errors: Vec<String> = self
@@ -212,11 +205,12 @@ impl SchemaRegistry {
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         // Check if status_schema is present
-        let status_schema = schema_data.status_schema.ok_or_else(|| {
-            AppError::StatusSubresourceNotEnabled {
-                kind: key.kind.clone(),
-            }
-        })?;
+        let status_schema =
+            schema_data
+                .status_schema
+                .ok_or_else(|| AppError::StatusSubresourceNotEnabled {
+                    kind: key.kind.clone(),
+                })?;
 
         // Compile status_schema
         let compiled = JsonSchemaValidator::compile(&status_schema)
@@ -275,6 +269,7 @@ mod tests {
                 metadata: crate::object::types::ObjectMeta {
                     name: name.to_string(),
                     labels: std::collections::HashMap::new(),
+                    annotations: std::collections::HashMap::new(),
                 },
                 system: crate::object::types::SystemMetadata::initial(),
                 spec: schema_data,
@@ -347,7 +342,9 @@ mod tests {
         // Prime the cache directly
         let dummy_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        registry.cache.insert("Widget.example.io".to_string(), dummy_validator.clone());
+        registry
+            .cache
+            .insert("Widget.example.io".to_string(), dummy_validator.clone());
 
         let result = registry.get_validator(&key).await;
         assert!(result.is_ok());
@@ -404,6 +401,7 @@ mod tests {
                 metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: std::collections::HashMap::new(),
+                    annotations: std::collections::HashMap::new(),
                 },
                 system: crate::object::types::SystemMetadata::initial(),
                 spec: invalid_schema,
@@ -490,7 +488,10 @@ mod tests {
         // Prime the cache with a status validator
         let dummy_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        registry.cache.insert("Widget.example.io.status".to_string(), dummy_validator.clone());
+        registry.cache.insert(
+            "Widget.example.io.status".to_string(),
+            dummy_validator.clone(),
+        );
 
         let result = registry.get_status_validator(&key).await;
         assert!(result.is_ok());
@@ -522,6 +523,7 @@ mod tests {
                 metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: std::collections::HashMap::new(),
+                    annotations: std::collections::HashMap::new(),
                 },
                 system: crate::object::types::SystemMetadata::initial(),
                 spec: schema_data,
@@ -559,6 +561,7 @@ mod tests {
                 metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: std::collections::HashMap::new(),
+                    annotations: std::collections::HashMap::new(),
                 },
                 system: crate::object::types::SystemMetadata::initial(),
                 spec: schema_data,
@@ -568,7 +571,10 @@ mod tests {
             .expect("store create should succeed");
 
         let result = registry.get_status_validator(&key).await;
-        assert!(matches!(result, Err(AppError::StatusSubresourceNotEnabled { .. })));
+        assert!(matches!(
+            result,
+            Err(AppError::StatusSubresourceNotEnabled { .. })
+        ));
     }
 
     // --- insert_status tests ---

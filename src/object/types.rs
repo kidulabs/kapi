@@ -130,6 +130,8 @@ pub struct ObjectMeta {
     pub name: String,
     #[serde(default)]
     pub labels: HashMap<String, String>,
+    #[serde(default)]
+    pub annotations: HashMap<String, String>,
 }
 
 /// Server-maintained metadata for stored objects.
@@ -196,6 +198,7 @@ mod tests {
             metadata: ObjectMeta {
                 name: name.to_string(),
                 labels: HashMap::new(),
+                annotations: HashMap::new(),
             },
             system: SystemMetadata::initial(),
             spec,
@@ -215,6 +218,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: name.into(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,
@@ -444,6 +448,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: "test".into(),
                     labels,
+                    annotations: HashMap::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,
@@ -480,6 +485,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: "test".into(),
                     labels,
+                    annotations: HashMap::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,
@@ -519,6 +525,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: "target".into(),
                     labels,
+                    annotations: HashMap::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,
@@ -570,6 +577,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: "target".into(),
                     labels,
+                    annotations: HashMap::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,
@@ -616,6 +624,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: "target".into(),
                     labels,
+                    annotations: HashMap::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,
@@ -643,6 +652,7 @@ mod tests {
             metadata: ObjectMeta {
                 name: "test".to_string(),
                 labels: HashMap::new(),
+                annotations: HashMap::new(),
             },
             system: SystemMetadata {
                 resource_version: 1,
@@ -670,6 +680,7 @@ mod tests {
             metadata: ObjectMeta {
                 name: "test".to_string(),
                 labels: HashMap::new(),
+                annotations: HashMap::new(),
             },
             system: SystemMetadata {
                 resource_version: 1,

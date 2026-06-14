@@ -125,6 +125,10 @@ POST /apis/{group}/{version}/{kind}
         "labels": {
             "app.example.io/name": "my-widget",
             "tier": "frontend"
+        },
+        "annotations": {
+            "description": "Production deployment",
+            "owner": "team-platform"
         }
     },
     "spec": {
@@ -134,7 +138,7 @@ POST /apis/{group}/{version}/{kind}
 }
 ```
 
-The `metadata.name` field is extracted by the handler. The optional `metadata.labels` field is extracted and validated (see [Label Validation](#label-validation)). The `spec` field contains the domain data, validated against the registered JSON Schema. Only `metadata` and `spec` are allowed as top-level fields; unknown fields are rejected with 400 Bad Request.
+The `metadata.name` field is extracted by the handler. The optional `metadata.labels` field is extracted and validated (see [Label Validation](#label-validation)). The optional `metadata.annotations` field is extracted and validated (see [Annotation Validation](#annotation-validation)). The `spec` field contains the domain data, validated against the registered JSON Schema. Only `metadata` and `spec` are allowed as top-level fields; unknown fields are rejected with 400 Bad Request.
 
 **Response:** `201 Created`
 
@@ -207,7 +211,7 @@ Requires the full StoredObject with the correct `system.resourceVersion`.
 PUT /apis/{group}/{version}/{kind}/{name}
 ```
 
-**Request body:** Full StoredObject with updated `spec` and optionally updated `metadata.labels`.
+**Request body:** Full StoredObject with updated `spec` and optionally updated `metadata.labels` and `metadata.annotations`.
 
 ```json
 {
@@ -231,7 +235,7 @@ PUT /apis/{group}/{version}/{kind}/{name}
 }
 ```
 
-Labels are updated via diff-based strategy: the server reads the existing labels, computes the delta, and applies only the changed key-value pairs in the same transaction as the object update.
+Labels and annotations are updated by the client sending the full `StoredObject` with the desired values. The server replaces the stored metadata with the provided values.
 
 **Response:** `200 OK` — updated StoredObject with bumped `system.resourceVersion`
 
@@ -395,6 +399,62 @@ Labels on `ObjectMeta` follow structured validation rules. Invalid labels cause 
 
 ---
 
+## Annotation Validation
+
+Annotations on `ObjectMeta` follow minimal validation rules. Invalid annotations cause the request to be rejected with `400 Bad Request` and error code `InvalidAnnotation`.
+
+### Key Rules
+
+| Rule | Constraint |
+|------|------------|
+| Non-empty | Key must not be empty |
+| Max length | 256 characters |
+| Character restrictions | None — any Unicode characters allowed |
+
+### Value Rules
+
+| Rule | Constraint |
+|------|------------|
+| Any string allowed | Values accept any string, including empty strings |
+| Per-value length | No per-value limit (total size limit applies instead) |
+| Character restrictions | None |
+
+### Total Size Limit
+
+The total serialized size of all annotations for a single object must not exceed **256KB**. This prevents abuse while allowing flexibility for arbitrary metadata.
+
+### Valid Examples
+
+| Key | Value | Notes |
+|-----|-------|-------|
+| `description` | `My widget` | Simple key-value |
+| `kapi.io/last-applied-config` | `{}` | Prefixed key (no prefix validation) |
+| `example.com/path@v1` | `data` | Special characters in key |
+| `build-url` | `https://example.com/path?query=value` | URL in value |
+| `config` | `{"key": "value", "nested": true}` | JSON in value (stored as string) |
+
+### Invalid Examples
+
+| Key | Value | Reason |
+|-----|-------|--------|
+| `` (empty) | `value` | Empty key |
+| `a...a` (257 chars) | `value` | Key exceeds 256 character limit |
+| `key` | `x...x` (>256KB total) | Total serialized size exceeds 256KB |
+
+### Error Response
+
+```json
+{
+    "error": "invalid annotation: annotation key '' exceeds maximum length of 256 characters",
+    "code": "InvalidAnnotation",
+    "details": {
+        "message": "annotation key '' exceeds maximum length of 256 characters"
+    }
+}
+```
+
+---
+
 ## Status Subresource
 
 The status subresource provides a separate write path for controller-runtime semantics. Controllers write observed state to `status` while users write desired state to `spec`. Status updates do not use optimistic concurrency control.
@@ -505,6 +565,7 @@ All errors follow this format:
 | 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
 | 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field or malformed syntax) |
 | 400 | `InvalidLabelSelector` | Invalid labelSelector query parameter (malformed syntax, empty value) |
+| 400 | `InvalidAnnotation` | Annotation key is empty, exceeds 256 chars, or total size exceeds 256KB |
 | 400 | `InvalidLabel` | Label key or value violates format or length rules |
 | 400 | `InvalidRequestBody` | Request body validation failed (missing spec, unknown fields, empty spec) |
 | 422 | `SchemaValidation` | Object data doesn't match schema |

@@ -67,6 +67,11 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "labels": {
                         "type": "object",
                         "additionalProperties": { "type": "string" }
+                    },
+                    "annotations": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Arbitrary key-value metadata (non-queryable)"
                     }
                 },
                 "required": ["name"]
