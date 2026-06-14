@@ -41,7 +41,12 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
     let resp = client
         .post(
             "/apis/example.io/v1/Widget",
-            widget_with_labels("gen-widget", "blue", 10, serde_json::json!({"app": "nginx"})),
+            widget_with_labels(
+                "gen-widget",
+                "blue",
+                10,
+                serde_json::json!({"app": "nginx"}),
+            ),
         )
         .await;
     assert_status(&resp, StatusCode::CREATED);

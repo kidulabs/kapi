@@ -1,9 +1,7 @@
 use axum::http::StatusCode;
 use serde_json::Value;
 
-use crate::{
-    TestApp, assert_status, parse_body,
-};
+use crate::{TestApp, assert_status, parse_body};
 
 fn widget_schema_with_status() -> Value {
     serde_json::json!({
@@ -207,9 +205,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
     assert_eq!(status_updated["status"]["phase"], "Running");
 
     // Verify status persists by getting the object
-    let resp = client
-        .get("/apis/example.io/v1/Widget/test-widget")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget/test-widget").await;
     assert_status(&resp, StatusCode::OK);
     let obj: Value = parse_body(resp).await;
     assert_eq!(obj["status"]["phase"], "Running");
@@ -290,10 +286,12 @@ pub async fn test_status_update_nonexistent_object(app: &TestApp) -> Result<(), 
 }
 
 /// Status update publishes StatusModified watch event
-pub async fn test_status_update_publishes_status_modified_event(app: &TestApp) -> Result<(), String> {
-    use crate::{watch_events, WatchEventType};
-    use tokio::time::timeout;
+pub async fn test_status_update_publishes_status_modified_event(
+    app: &TestApp,
+) -> Result<(), String> {
+    use crate::{WatchEventType, watch_events};
     use std::time::Duration;
+    use tokio::time::timeout;
 
     let client = app.client();
 
@@ -400,7 +398,10 @@ pub async fn test_status_update_preserves_spec(app: &TestApp) -> Result<(), Stri
     assert_status(&resp, StatusCode::OK);
     let obj: Value = parse_body(resp).await;
 
-    assert_eq!(obj["spec"]["color"], "blue", "spec.color should be unchanged");
+    assert_eq!(
+        obj["spec"]["color"], "blue",
+        "spec.color should be unchanged"
+    );
     assert_eq!(obj["spec"]["size"], 10, "spec.size should be unchanged");
     assert_eq!(obj["status"]["phase"], "Running", "status should be set");
 
@@ -531,7 +532,9 @@ pub async fn test_get_status_returns_null_when_not_set(app: &TestApp) -> Result<
 }
 
 /// Meta-schema rejects statusSchema with invalid type (non-object)
-pub async fn test_meta_schema_rejects_invalid_status_schema_type(app: &TestApp) -> Result<(), String> {
+pub async fn test_meta_schema_rejects_invalid_status_schema_type(
+    app: &TestApp,
+) -> Result<(), String> {
     let client = app.client();
 
     // statusSchema must be an object, not a string
@@ -641,10 +644,12 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
 }
 
 /// Spec update publishes Modified event (not StatusModified)
-pub async fn test_spec_update_publishes_modified_not_status_modified(app: &TestApp) -> Result<(), String> {
-    use crate::{watch_events, WatchEventType};
-    use tokio::time::timeout;
+pub async fn test_spec_update_publishes_modified_not_status_modified(
+    app: &TestApp,
+) -> Result<(), String> {
+    use crate::{WatchEventType, watch_events};
     use std::time::Duration;
+    use tokio::time::timeout;
 
     let client = app.client();
 
@@ -670,8 +675,14 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(app: &TestA
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
-    let created_at = created["system"]["createdAt"].as_str().unwrap_or("").to_string();
-    let updated_at = created["system"]["updatedAt"].as_str().unwrap_or("").to_string();
+    let created_at = created["system"]["createdAt"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+    let updated_at = created["system"]["updatedAt"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
 
     // Start watching
     let mut events = watch_events(&client, "/apis/example.io/v1/Widget?watch=true").await;

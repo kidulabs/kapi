@@ -55,6 +55,7 @@ impl SQLiteStore {
                 name               TEXT    NOT NULL,
                 spec               TEXT    NOT NULL,
                 status             TEXT,
+                annotations        TEXT,
                 resource_version   INTEGER NOT NULL,
                 generation         INTEGER NOT NULL DEFAULT 1,
                 created_at         TEXT    NOT NULL,
@@ -64,6 +65,7 @@ impl SQLiteStore {
             [],
         )
         .map_err(|e| AppError::Internal(e.into()))?;
+
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_objects_gvkn ON objects(resource_group, api_version, resource_kind, name)",
             [],
@@ -98,6 +100,7 @@ impl SQLiteStore {
 
     /// Converts raw column values from a query row into a `StoredObject`.
     /// Labels are set to empty — callers must populate them via `query_labels()`.
+    /// Annotations are deserialized from JSON; NULL maps to empty HashMap.
     #[allow(clippy::too_many_arguments)]
     fn deserialize_row(
         group: String,
@@ -106,6 +109,7 @@ impl SQLiteStore {
         name: String,
         spec: String,
         status: Option<String>,
+        annotations: Option<String>,
         resource_version: i64,
         generation: i64,
         created_at: String,
@@ -114,10 +118,12 @@ impl SQLiteStore {
         let spec_value: Value =
             serde_json::from_str(&spec).map_err(|e| AppError::Internal(e.into()))?;
         let status_value: Option<Value> = status
-            .map(|s| {
-                serde_json::from_str(&s).map_err(|e| AppError::Internal(e.into()))
-            })
+            .map(|s| serde_json::from_str(&s).map_err(|e| AppError::Internal(e.into())))
             .transpose()?;
+        let annotations_value: HashMap<String, String> = annotations
+            .map(|a| serde_json::from_str(&a).map_err(|e| AppError::Internal(e.into())))
+            .transpose()?
+            .unwrap_or_default();
         let created_at =
             DateTime::parse_from_rfc3339(&created_at).map_err(|e| AppError::Internal(e.into()))?;
         let updated_at =
@@ -131,6 +137,7 @@ impl SQLiteStore {
             metadata: ObjectMeta {
                 name,
                 labels: HashMap::new(),
+                annotations: annotations_value,
             },
             system: SystemMetadata {
                 resource_version: resource_version as u64,
@@ -234,13 +241,16 @@ impl SQLiteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT resource_group, api_version, resource_kind, name, spec, status, \
-                 resource_version, generation, created_at, updated_at \
+                 annotations, resource_version, generation, created_at, updated_at \
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 \
                  AND resource_kind = ?3 AND name = ?4",
             )
             .map_err(|e| AppError::Internal(e.into()))?;
         let mut obj = stmt
-            .query_row(params![key.group, key.version, key.kind, name], row_to_object)
+            .query_row(
+                params![key.group, key.version, key.kind, name],
+                row_to_object,
+            )
             .optional()
             .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -259,10 +269,7 @@ impl SQLiteStore {
 
     /// Persist an object while holding the connection lock.
     /// Replaces the existing object and its labels.
-    fn persist_object_locked(
-        conn: &Connection,
-        object: &StoredObject,
-    ) -> Result<(), AppError> {
+    fn persist_object_locked(conn: &Connection, object: &StoredObject) -> Result<(), AppError> {
         let spec_json =
             serde_json::to_string(&object.spec).map_err(|e| AppError::Internal(e.into()))?;
         let status_json = object
@@ -271,6 +278,14 @@ impl SQLiteStore {
             .map(serde_json::to_string)
             .transpose()
             .map_err(|e| AppError::Internal(e.into()))?;
+        let annotations_json = if object.metadata.annotations.is_empty() {
+            None
+        } else {
+            Some(
+                serde_json::to_string(&object.metadata.annotations)
+                    .map_err(|e| AppError::Internal(e.into()))?,
+            )
+        };
         let created_at = object.system.created_at.to_rfc3339();
         let updated_at = object.system.updated_at.to_rfc3339();
 
@@ -281,8 +296,8 @@ impl SQLiteStore {
         tx.execute(
             "INSERT OR REPLACE INTO objects \
              (resource_group, api_version, resource_kind, name, spec, status, \
-              resource_version, generation, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+              annotations, resource_version, generation, created_at, updated_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 object.key.group,
                 object.key.version,
@@ -290,6 +305,7 @@ impl SQLiteStore {
                 object.metadata.name,
                 spec_json,
                 status_json,
+                annotations_json,
                 object.system.resource_version as i64,
                 object.system.generation as i64,
                 created_at,
@@ -367,6 +383,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
     let name: String = row.get("name")?;
     let spec: String = row.get("spec")?;
     let status: Option<String> = row.get("status")?;
+    let annotations: Option<String> = row.get("annotations")?;
     let resource_version: i64 = row.get("resource_version")?;
     let generation: i64 = row.get("generation")?;
     let created_at: String = row.get("created_at")?;
@@ -378,6 +395,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
         name,
         spec,
         status,
+        annotations,
         resource_version,
         generation,
         created_at,
@@ -403,6 +421,14 @@ impl ObjectStore for SQLiteStore {
                 .map(serde_json::to_string)
                 .transpose()
                 .map_err(|e| AppError::Internal(e.into()))?;
+            let annotations_json = if object.metadata.annotations.is_empty() {
+                None
+            } else {
+                Some(
+                    serde_json::to_string(&object.metadata.annotations)
+                        .map_err(|e| AppError::Internal(e.into()))?,
+                )
+            };
             let created_at = object.system.created_at.to_rfc3339();
             let updated_at = object.system.updated_at.to_rfc3339();
 
@@ -412,11 +438,11 @@ impl ObjectStore for SQLiteStore {
             let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
             let result = tx.execute(
-                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, annotations, resource_version, generation, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
                 params![
                     object.key.group, object.key.version, object.key.kind, object.metadata.name,
-                    spec_json, status_json,
+                    spec_json, status_json, annotations_json,
                     object.system.resource_version as i64, object.system.generation as i64,
                     created_at, updated_at
                 ],
@@ -510,7 +536,7 @@ impl ObjectStore for SQLiteStore {
         tokio::task::spawn_blocking(move || {
             let c = conn.lock().unwrap();
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, resource_version, generation, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, annotations, resource_version, generation, created_at, updated_at
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let mut obj = stmt
@@ -655,7 +681,7 @@ impl ObjectStore for SQLiteStore {
 
             let sql = format!(
                 "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.spec, o.status, \
-                 o.resource_version, o.generation, o.created_at, o.updated_at \
+                 o.annotations, o.resource_version, o.generation, o.created_at, o.updated_at \
                  FROM objects o \
                  WHERE {where_sql} \
                  ORDER BY o.name ASC \
@@ -726,8 +752,6 @@ impl ObjectStore for SQLiteStore {
         .await
         .map_err(|e| AppError::Internal(e.into()))?
     }
-
-
 }
 
 /// Decodes a base64-encoded continue token back to a name string.
@@ -758,6 +782,7 @@ mod tests {
             metadata: ObjectMeta {
                 name: name.to_string(),
                 labels: HashMap::new(),
+                annotations: HashMap::new(),
             },
             system: SystemMetadata::initial(),
             spec,
@@ -948,13 +973,17 @@ mod tests {
         let v1 = created.system.resource_version;
 
         let updated = store
-            .transaction(&key, "my-widget", Box::new(|existing| {
-                let mut updated = existing.clone();
-                updated.spec = json!({"x": 2});
-                // Caller bumps resource_version
-                updated.system.resource_version = existing.system.resource_version + 1;
-                TransactionOp::Apply(updated)
-            }))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut updated = existing.clone();
+                    updated.spec = json!({"x": 2});
+                    // Caller bumps resource_version
+                    updated.system.resource_version = existing.system.resource_version + 1;
+                    TransactionOp::Apply(updated)
+                }),
+            )
             .unwrap();
 
         assert_eq!(updated.system.resource_version, v1 + 1);
@@ -1031,7 +1060,11 @@ mod tests {
             let store = SQLiteStore::new(db_path.to_str().unwrap()).unwrap();
             let key = test_key();
             store
-                .create(test_obj(key.clone(), "persistent", json!({"data": "hello"})))
+                .create(test_obj(
+                    key.clone(),
+                    "persistent",
+                    json!({"data": "hello"}),
+                ))
                 .await
                 .unwrap();
         }
@@ -1279,7 +1312,9 @@ mod tests {
         for i in 0..50 {
             let mut obj = test_obj(key.clone(), &format!("obj-{i:02}"), json!({}));
             if i < 3 {
-                obj.metadata.labels.insert("app".to_string(), "nginx".to_string());
+                obj.metadata
+                    .labels
+                    .insert("app".to_string(), "nginx".to_string());
             }
             store.create(obj).await.unwrap();
         }
@@ -1428,13 +1463,17 @@ mod tests {
         let v1 = created.system.resource_version;
 
         let updated = store
-            .transaction(&key, "my-widget", Box::new(|existing| {
-                let mut updated = existing.clone();
-                updated.status = Some(json!({"phase": "Running"}));
-                // Caller bumps resource_version
-                updated.system.resource_version = existing.system.resource_version + 1;
-                TransactionOp::Apply(updated)
-            }))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut updated = existing.clone();
+                    updated.status = Some(json!({"phase": "Running"}));
+                    // Caller bumps resource_version
+                    updated.system.resource_version = existing.system.resource_version + 1;
+                    TransactionOp::Apply(updated)
+                }),
+            )
             .unwrap();
 
         assert!(updated.status.is_some());
@@ -1465,19 +1504,27 @@ mod tests {
             .unwrap();
 
         store
-            .transaction(&key, "my-widget", Box::new(|existing| {
-                let mut updated = existing.clone();
-                updated.status = Some(json!({"phase": "Pending"}));
-                TransactionOp::Apply(updated)
-            }))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut updated = existing.clone();
+                    updated.status = Some(json!({"phase": "Pending"}));
+                    TransactionOp::Apply(updated)
+                }),
+            )
             .unwrap();
 
         let updated = store
-            .transaction(&key, "my-widget", Box::new(|existing| {
-                let mut updated = existing.clone();
-                updated.status = Some(json!({"phase": "Running"}));
-                TransactionOp::Apply(updated)
-            }))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut updated = existing.clone();
+                    updated.status = Some(json!({"phase": "Running"}));
+                    TransactionOp::Apply(updated)
+                }),
+            )
             .unwrap();
         assert_eq!(updated.status.unwrap(), json!({"phase": "Running"}));
     }
@@ -1494,13 +1541,17 @@ mod tests {
         let v1 = created.system.resource_version;
 
         let updated = store
-            .transaction(&key, "my-widget", Box::new(|existing| {
-                let mut updated = existing.clone();
-                updated.status = Some(json!({"phase": "Running"}));
-                // Caller bumps resource_version
-                updated.system.resource_version = existing.system.resource_version + 1;
-                TransactionOp::Apply(updated)
-            }))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut updated = existing.clone();
+                    updated.status = Some(json!({"phase": "Running"}));
+                    // Caller bumps resource_version
+                    updated.system.resource_version = existing.system.resource_version + 1;
+                    TransactionOp::Apply(updated)
+                }),
+            )
             .unwrap();
         assert_eq!(updated.system.resource_version, v1 + 1);
     }
@@ -1511,16 +1562,24 @@ mod tests {
         let key = test_key();
 
         store
-            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue", "size": 10})))
+            .create(test_obj(
+                key.clone(),
+                "my-widget",
+                json!({"color": "blue", "size": 10}),
+            ))
             .await
             .unwrap();
 
         let updated = store
-            .transaction(&key, "my-widget", Box::new(|existing| {
-                let mut updated = existing.clone();
-                updated.status = Some(json!({"phase": "Running"}));
-                TransactionOp::Apply(updated)
-            }))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|existing| {
+                    let mut updated = existing.clone();
+                    updated.status = Some(json!({"phase": "Running"}));
+                    TransactionOp::Apply(updated)
+                }),
+            )
             .unwrap();
         assert_eq!(updated.spec, json!({"color": "blue", "size": 10}));
     }
@@ -1538,13 +1597,17 @@ mod tests {
         let v1 = created.system.resource_version;
 
         let result = store
-            .transaction(&key, "test", Box::new(|existing| {
-                let mut updated = existing.clone();
-                updated.spec = json!({"x": 2});
-                // Caller bumps resource_version
-                updated.system.resource_version = existing.system.resource_version + 1;
-                TransactionOp::Apply(updated)
-            }))
+            .transaction(
+                &key,
+                "test",
+                Box::new(|existing| {
+                    let mut updated = existing.clone();
+                    updated.spec = json!({"x": 2});
+                    // Caller bumps resource_version
+                    updated.system.resource_version = existing.system.resource_version + 1;
+                    TransactionOp::Apply(updated)
+                }),
+            )
             .unwrap();
 
         assert_eq!(result.system.resource_version, v1 + 1);

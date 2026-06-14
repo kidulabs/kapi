@@ -25,32 +25,40 @@ User-controlled metadata fields. Clients set these on create and echo them back 
 struct ObjectMeta {
     name: String,                         // unique within a (group, version, kind)
     #[serde(default)]
-    labels: HashMap<String, String>,      // optional key-value metadata
+    labels: HashMap<String, String>,      // optional key-value metadata (queryable)
+    #[serde(default)]
+    annotations: HashMap<String, String>, // optional arbitrary key-value metadata (non-queryable)
 }
 ```
 
-Wire format uses camelCase (`name`, `labels`). The `labels` field defaults to `{}` when absent in the request body — the `#[serde(default)]` attribute ensures deserialization never fails on a missing field.
+Wire format uses camelCase (`name`, `labels`, `annotations`). Both `labels` and `annotations` default to `{}` when absent in the request body — the `#[serde(default)]` attribute ensures deserialization never fails on a missing field.
 
 Serialization examples:
 
 ```json
-// With labels
+// With labels and annotations
 {
     "name": "my-app",
     "labels": {
         "app.example.io/name": "my-app",
         "tier": "frontend",
         "environment": "prod"
+    },
+    "annotations": {
+        "description": "Production deployment of my-app",
+        "owner": "team-platform",
+        "deployment-sha": "a1b2c3d4"
     }
 }
 
-// Minimal (labels omitted — deserializes to empty map)
+// Minimal (all metadata omitted — deserializes to empty maps)
 {
     "name": "my-app"
 }
 ```
 
 Labels are validated against structured validation rules (see [API Reference](api-reference.md#label-validation)).
+Annotations have minimal validation: keys must be non-empty and at most 256 characters, total serialized size must not exceed 256KB. No character restrictions apply.
 
 ### SystemMetadata
 
@@ -160,6 +168,7 @@ All errors conform to a standard JSON envelope:
 | `InvalidSchema` | 422 | Schema registration fails meta-schema or compilation |
 | `SchemaHasObjects` | 409 | Attempting to delete a Schema that has existing objects |
 | `StatusSubresourceNotEnabled` | 404 | Attempting to access `/status` for a kind without `statusSchema` |
+| `InvalidAnnotation` | 400 | Annotation key is empty, exceeds 256 chars, or total size exceeds 256KB |
 | `InvalidLabel` | 400 | Label key or value violates format or length rules |
 | `InvalidLabelSelector` | 400 | labelSelector query parameter is malformed or used without watch=true |
 | `InvalidFieldSelector` | 400 | fieldSelector query parameter is malformed, unsupported field, or used without watch=true |

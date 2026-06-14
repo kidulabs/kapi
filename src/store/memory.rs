@@ -3,9 +3,7 @@ use base64::Engine;
 use dashmap::DashMap;
 
 use crate::error::AppError;
-use crate::object::types::{
-    ContinueToken, FieldSelector, ListOptions, ListResponse, StoredObject,
-};
+use crate::object::types::{ContinueToken, FieldSelector, ListOptions, ListResponse, StoredObject};
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 pub struct InMemoryStore {
@@ -175,6 +173,7 @@ mod tests {
             metadata: ObjectMeta {
                 name: name.to_string(),
                 labels: HashMap::new(),
+                annotations: HashMap::new(),
             },
             system: SystemMetadata::initial(),
             spec,
@@ -385,11 +384,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(
-                &key,
-                "nonexistent",
-                Box::new(|_existing| unreachable!()),
-            )
+            .transaction(&key, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -405,7 +400,11 @@ mod tests {
             .unwrap();
 
         let deleted = store
-            .transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|_existing| TransactionOp::Delete),
+            )
             .unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
         assert_eq!(deleted.spec, created.spec);
@@ -429,7 +428,11 @@ mod tests {
             .unwrap();
 
         store
-            .transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|_existing| TransactionOp::Delete),
+            )
             .unwrap();
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
@@ -445,11 +448,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(
-                &key,
-                "nonexistent",
-                Box::new(|_existing| unreachable!()),
-            )
+            .transaction(&key, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -600,7 +599,9 @@ mod tests {
         for i in 0..50 {
             let mut obj = test_obj(key.clone(), &format!("obj-{i:02}"), json!({}));
             if i < 3 {
-                obj.metadata.labels.insert("app".to_string(), "nginx".to_string());
+                obj.metadata
+                    .labels
+                    .insert("app".to_string(), "nginx".to_string());
             }
             store.create(obj).await.unwrap();
         }
@@ -720,10 +721,7 @@ mod tests {
             .unwrap();
 
         assert!(updated.status.is_some());
-        assert_eq!(
-            updated.status.clone().unwrap(),
-            json!({"phase": "Running"})
-        );
+        assert_eq!(updated.status.clone().unwrap(), json!({"phase": "Running"}));
         assert_eq!(updated.system.resource_version, v1 + 1);
         // Spec should be unchanged
         assert_eq!(updated.spec, json!({"color": "blue"}));
@@ -735,11 +733,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(
-                &key,
-                "nonexistent",
-                Box::new(|_existing| unreachable!()),
-            )
+            .transaction(&key, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -780,10 +774,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(
-            updated.status.unwrap(),
-            json!({"phase": "Running"})
-        );
+        assert_eq!(updated.status.unwrap(), json!({"phase": "Running"}));
     }
 
     #[tokio::test]
@@ -820,7 +811,11 @@ mod tests {
         let key = test_key();
 
         store
-            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue", "size": 10})))
+            .create(test_obj(
+                key.clone(),
+                "my-widget",
+                json!({"color": "blue", "size": 10}),
+            ))
             .await
             .unwrap();
 
@@ -985,7 +980,11 @@ mod tests {
 
         // Delete via transaction
         store
-            .transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .transaction(
+                &key,
+                "my-widget",
+                Box::new(|_existing| TransactionOp::Delete),
+            )
             .unwrap();
 
         // Get should now fail with NotFound

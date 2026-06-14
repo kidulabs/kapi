@@ -69,6 +69,36 @@ fn extract_schema_name(body: &Value) -> Option<String> {
     Some(format!("{}.{}", target_kind, target_group))
 }
 
+/// Extracts annotations from `metadata.annotations` in the request body.
+///
+/// Returns an empty `HashMap` when `metadata.annotations` is absent.
+/// Returns an error when `metadata.annotations` is present but not an object
+/// with string values.
+///
+/// Size validation happens in the service layer (`validate_annotations`), not here.
+fn extract_annotations(body: &Value) -> Result<HashMap<String, String>, AppError> {
+    let annotations_value = match body.get("metadata").and_then(|m| m.get("annotations")) {
+        Some(v) => v,
+        None => return Ok(HashMap::new()),
+    };
+
+    let annotations_obj = annotations_value.as_object().ok_or_else(|| {
+        AppError::InvalidAnnotation("metadata.annotations must be an object".to_string())
+    })?;
+
+    let mut annotations = HashMap::with_capacity(annotations_obj.len());
+    for (key, value) in annotations_obj {
+        let str_value = value.as_str().ok_or_else(|| {
+            AppError::InvalidAnnotation(format!(
+                "annotation value for key '{}' must be a string",
+                key
+            ))
+        })?;
+        annotations.insert(key.clone(), str_value.to_string());
+    }
+    Ok(annotations)
+}
+
 /// Extracts labels from `metadata.labels` in the request body.
 ///
 /// Returns an empty `HashMap` when `metadata.labels` is absent.
@@ -115,8 +145,9 @@ pub async fn create(
     Path(path): Path<ObjectPath>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<StoredObject>), AppError> {
-    // Extract labels from metadata.labels (shared across both paths)
+    // Extract labels and annotations from metadata (shared across both paths)
     let labels = extract_labels(&body)?;
+    let annotations = extract_annotations(&body)?;
 
     // Branch on kind: Schema objects generate their name from payload fields,
     // while regular objects require a client-supplied metadata.name and a spec field
@@ -132,16 +163,30 @@ pub async fn create(
         if let Some(obj) = data.as_object_mut() {
             obj.remove("metadata");
         }
-        (ObjectMeta { name, labels }, data)
+        (
+            ObjectMeta {
+                name,
+                labels,
+                annotations,
+            },
+            data,
+        )
     } else {
         // Validate: only "metadata" and "spec" allowed as top-level fields
         if let Some(obj) = body.as_object() {
-            let unknown: Vec<&String> = obj.keys()
+            let unknown: Vec<&String> = obj
+                .keys()
                 .filter(|k| *k != "metadata" && *k != "spec")
                 .collect();
             if !unknown.is_empty() {
-                let fields = unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-                return Err(AppError::InvalidRequestBody(format!("unknown field(s): {fields}")));
+                let fields = unknown
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(AppError::InvalidRequestBody(format!(
+                    "unknown field(s): {fields}"
+                )));
             }
         }
 
@@ -150,25 +195,34 @@ pub async fn create(
             .get("metadata")
             .and_then(|m| m.get("name"))
             .and_then(|n| n.as_str())
-            .ok_or_else(|| {
-                AppError::InvalidRequestBody("'metadata.name' is required".to_string())
-            })?
+            .ok_or_else(|| AppError::InvalidRequestBody("'metadata.name' is required".to_string()))?
             .to_string();
 
         // Extract and validate spec
-        let spec = body.get("spec").ok_or_else(|| {
-            AppError::InvalidRequestBody("'spec' field is required".to_string())
-        })?;
+        let spec = body
+            .get("spec")
+            .ok_or_else(|| AppError::InvalidRequestBody("'spec' field is required".to_string()))?;
 
         if !spec.is_object() {
-            return Err(AppError::InvalidRequestBody("'spec' must be a JSON object".to_string()));
+            return Err(AppError::InvalidRequestBody(
+                "'spec' must be a JSON object".to_string(),
+            ));
         }
 
         if spec.as_object().is_some_and(|o| o.is_empty()) {
-            return Err(AppError::InvalidRequestBody("'spec' must not be empty".to_string()));
+            return Err(AppError::InvalidRequestBody(
+                "'spec' must not be empty".to_string(),
+            ));
         }
 
-        (ObjectMeta { name, labels }, spec.clone())
+        (
+            ObjectMeta {
+                name,
+                labels,
+                annotations,
+            },
+            spec.clone(),
+        )
     };
 
     let key = ResourceKey {

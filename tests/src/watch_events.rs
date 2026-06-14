@@ -309,6 +309,7 @@ pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<
             metadata: ObjectMeta {
                 name: "cleanup-test".to_string(),
                 labels: std::collections::HashMap::new(),
+                annotations: std::collections::HashMap::new(),
             },
             system: SystemMetadata::initial(),
             spec: serde_json::json!({}),

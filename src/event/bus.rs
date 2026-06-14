@@ -217,6 +217,7 @@ mod tests {
                 metadata: ObjectMeta {
                     name: "test".into(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,

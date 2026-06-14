@@ -1,7 +1,7 @@
 use kapi_tests::{
-    all_test_stores, generation_semantics, list_filtering, object_crud, object_labels,
-    optimistic_concurrency, schema_deletion, schema_validation, status_subresource, watch_events,
-    TestApp,
+    TestApp, all_test_stores, generation_semantics, list_filtering, object_annotations,
+    object_crud, object_labels, optimistic_concurrency, schema_deletion, schema_validation,
+    status_subresource, watch_events,
 };
 
 #[tokio::main]
@@ -92,6 +92,46 @@ async fn main() {
         );
 
         println!();
+        run_test!(
+            "create_object_with_annotations",
+            object_annotations::test_create_object_with_annotations
+        );
+        run_test!(
+            "create_object_without_annotations",
+            object_annotations::test_create_object_without_annotations
+        );
+        run_test!(
+            "update_object_annotations",
+            object_annotations::test_update_object_annotations
+        );
+        run_test!(
+            "create_schema_with_annotations",
+            object_annotations::test_create_schema_with_annotations
+        );
+        run_test!(
+            "invalid_annotation_key_empty",
+            object_annotations::test_invalid_annotation_key_empty
+        );
+        run_test!(
+            "invalid_annotation_key_too_long",
+            object_annotations::test_invalid_annotation_key_too_long
+        );
+        run_test!(
+            "invalid_annotation_value_non_string",
+            object_annotations::test_invalid_annotation_value_non_string
+        );
+        run_test!(
+            "invalid_annotations_format",
+            object_annotations::test_invalid_annotations_format
+        );
+        run_test!(
+            "annotation_size_limit",
+            object_annotations::test_annotation_size_limit
+        );
+        run_test!(
+            "annotation_size_limit_on_update",
+            object_annotations::test_annotation_size_limit_on_update
+        );
         run_test!("watch_schema_added", watch_events::test_watch_schema_added);
         run_test!(
             "watch_object_events",

@@ -1851,6 +1851,305 @@ Final assertion: `generation == 2`, `resourceVersion == 5`
 
 ---
 
+## Test 45: Annotations — create object with annotations, verify in response and GET
+
+**Goal:** Verify that `metadata.annotations` are persisted and returned on create and get.
+
+```bash
+# 1. Create a widget with annotations
+echo "=== Create with annotations ==="
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"metadata\": {
+      \"name\": \"annotated-widget-$TEST_RUN\",
+      \"annotations\": { \"description\": \"my widget\", \"owner\": \"team-platform\" }
+    },
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 10
+    }
+  }" | python3 -m json.tool
+
+# 2. GET the widget and verify annotations
+echo "=== GET annotated widget ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/annotated-widget-$TEST_RUN" | python3 -m json.tool
+```
+
+**Expected results:**
+- Create response contains `"annotations": { "description": "my widget", "owner": "team-platform" }`
+- GET response contains the same annotations
+
+---
+
+## Test 46: Annotations — create object without annotations, verify empty map
+
+**Goal:** Verify that omitting `metadata.annotations` results in `"annotations": {}`.
+
+```bash
+# 1. Create a widget without annotations
+echo "=== Create without annotations ==="
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{\"metadata\":{\"name\":\"no-annotations-widget-$TEST_RUN\"},\"spec\":{\"color\":\"red\",\"size\":5}}" | python3 -m json.tool
+
+# 2. GET and verify empty annotations
+echo "=== GET no-annotations widget ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/no-annotations-widget-$TEST_RUN" | python3 -m json.tool
+```
+
+**Expected results:**
+- Create response contains `"annotations": {}`
+- GET response contains `"annotations": {}`
+
+---
+
+## Test 47: Annotations — update with changed annotations
+
+**Goal:** Verify that updating annotations applies full replacement semantics.
+
+```bash
+# 1. Get the current annotated widget
+echo "=== Fetch current state ==="
+CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/annotated-widget-$TEST_RUN")
+echo "$CURRENT" | python3 -m json.tool
+
+# 2. Update: change "description" and add "owner"
+RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+CREATED=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
+UPDATED=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+
+echo "=== Update with changed annotations ==="
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/annotated-widget-$TEST_RUN" \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"key\": {\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
+    \"metadata\": {
+      \"name\": \"annotated-widget-$TEST_RUN\",
+      \"annotations\": { \"description\": \"new widget\", \"owner\": \"team\" }
+    },
+    \"system\": {\"resourceVersion\":$RV,\"createdAt\":\"$CREATED\",\"updatedAt\":\"$UPDATED\"},
+    \"spec\": {\"color\":\"blue\",\"size\":10}}
+  }" | python3 -m json.tool
+
+# 3. GET and verify annotations changed
+echo "=== GET after update ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/annotated-widget-$TEST_RUN" | python3 -m json.tool
+```
+
+**Expected results:**
+- `"description"` changed from `"my widget"` to `"new widget"`
+- `"owner"` changed from `"team-platform"` to `"team"`
+- `resourceVersion` incremented
+
+---
+
+## Test 48: Annotations — create Schema with annotations
+
+**Goal:** Verify that Schema objects support annotations.
+
+```bash
+# 1. Create a Schema with annotations
+echo "=== Create Schema with annotations ==="
+curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"metadata\": {
+      \"annotations\": { \"team\": \"platform\", \"docs\": \"https://example.com/docs\" }
+    },
+    \"targetGroup\": \"annotations-test-$TEST_RUN.io\",
+    \"targetVersion\": \"v1\",
+    \"targetKind\": \"Gadget\",
+    \"specSchema\": {
+      \"type\": \"object\",
+      \"properties\": {
+        \"name\": { \"type\": \"string\" }
+      }
+    }
+  }" | python3 -m json.tool
+
+# 2. GET the Schema and verify annotations
+echo "=== GET Schema with annotations ==="
+curl -s "http://localhost:8080/apis/kapi.io/v1/Schema/Gadget.annotations-test-$TEST_RUN.io" | python3 -m json.tool
+```
+
+**Expected results:**
+- Create response contains `"annotations": { "team": "platform", "docs": "https://example.com/docs" }`
+- GET response contains the same annotations
+
+---
+
+## Test 49: Annotations — invalid key (empty) returns 400
+
+**Goal:** Verify that empty annotation keys are rejected.
+
+```bash
+# 1. Create with empty annotation key
+echo "=== Empty annotation key ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"metadata\": {
+      \"name\": \"bad-annotation-$TEST_RUN\",
+      \"annotations\": { \"\": \"value\" }
+    },
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 1
+    }
+  }"
+```
+
+**Expected results:**
+- HTTP 400 status
+- Response body contains `"code": "InvalidAnnotation"`
+- Error message mentions empty key
+
+---
+
+## Test 50: Annotations — key exceeds length limit returns 400
+
+**Goal:** Verify that annotation keys exceeding 256 characters are rejected.
+
+```bash
+# 1. Generate a 257-char key
+LONG_KEY=$(python3 -c "print('a' * 257)")
+
+echo "=== Annotation key too long ==="
+curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"metadata\": {
+      \"name\": \"long-key-annotation-$TEST_RUN\",
+      \"annotations\": { \"$LONG_KEY\": \"value\" }
+    },
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 1
+    }
+  }"
+```
+
+**Expected results:**
+- HTTP 400 status
+- Response body contains `"code": "InvalidAnnotation"`
+- Error message mentions maximum length of 256
+
+---
+
+## Test 51: Annotations — list returns annotations for all objects
+
+**Goal:** Verify that list endpoint returns annotations for each object.
+
+```bash
+# 1. List all widgets
+echo "=== List widgets ==="
+curl -s http://localhost:8080/apis/example.io/v1/Widget | python3 -m json.tool
+```
+
+**Expected results:**
+- Each item in `items` array has `metadata.annotations` field
+- `annotated-widget-$TEST_RUN` has updated annotations
+- `no-annotations-widget-$TEST_RUN` has `"annotations": {}`
+
+---
+
+## Test 52: Annotations — SQLite persistence survives restart
+
+**Goal:** Verify that annotations persist across server restarts via SQLite storage.
+
+```bash
+# 1. Stop the current in-memory server
+kill $(lsof -ti :8080) 2>/dev/null || true
+sleep 1
+
+# 2. Start server with SQLite storage
+export KAPI_DB_PATH=/tmp/kapi-persist-annotations-test.db
+rm -f "$KAPI_DB_PATH"
+RUST_LOG=kapi=trace cargo run > /tmp/kapi-server-persist-ann.log 2>&1 &
+sleep 3
+
+# 3. Register schema and create an object with annotations
+curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
+  -H "Content-Type: application/json" \
+  -d '{
+    "targetGroup": "example.io",
+    "targetVersion": "v1",
+    "targetKind": "Widget",
+    "specSchema": {
+      "type": "object",
+      "properties": { "color": { "type": "string" }, "size": { "type": "integer" } },
+      "required": ["color", "size"]
+    }
+  }' > /dev/null
+
+PERSIST_NAME="persist-ann-widget"
+
+# Create with annotations
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"metadata\": {
+      \"name\": \"$PERSIST_NAME\",
+      \"annotations\": { \"description\": \"persistent\", \"build\": \"v1.0.0\" }
+    },
+    \"spec\": {
+      \"color\": \"blue\",
+      \"size\": 10
+    }
+  }" > /dev/null
+
+# 4. Verify annotations before restart
+echo "=== Before restart ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+ann = obj['metadata']['annotations']
+print(f'Annotations: {ann}')
+with open('/tmp/kapi-ann-before.json', 'w') as f:
+    json.dump(ann, f, sort_keys=True)
+"
+
+# 5. Stop the server
+kill $(lsof -ti :8080) 2>/dev/null || true
+sleep 2
+
+# 6. Restart with same database
+RUST_LOG=kapi=trace KAPI_DB_PATH=\"$KAPI_DB_PATH\" cargo run > /tmp/kapi-server-persist-ann.log 2>&1 &
+sleep 3
+
+# 7. Verify annotations survived restart
+echo "=== After restart ==="
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" | python3 -c "
+import sys, json
+obj = json.load(sys.stdin)
+ann = obj['metadata']['annotations']
+print(f'Annotations: {ann}')
+with open('/tmp/kapi-ann-after.json', 'w') as f:
+    json.dump(ann, f, sort_keys=True)
+"
+
+# 8. Compare
+echo "=== Comparison ==="
+python3 -c "
+import json
+with open('/tmp/kapi-ann-before.json') as f:
+    before = json.load(f)
+with open('/tmp/kapi-ann-after.json') as f:
+    after = json.load(f)
+print(f'Before: {before}')
+print(f'After:  {after}')
+assert before == after, f'Annotations differ: {before} vs {after}'
+print('PASS: Annotations survived restart')
+"
+```
+
+**Expected results:**
+- Annotations survive server restart via SQLite
+- Annotations match before and after restart
+
+---
+
 ## Cleanup
 
 ```bash
@@ -1883,6 +2182,14 @@ rm -f /tmp/kapi-persist-test.db /tmp/kapi-test.db
 | 42 | Spec change bumps generation |
 | 43 | Status update does NOT bump generation |
 | 44 | Generation and resourceVersion are independent counters (full lifecycle) |
+| 45 | Annotations — create object with annotations, verify in response and GET |
+| 46 | Annotations — create object without annotations, verify empty map |
+| 47 | Annotations — update with changed annotations |
+| 48 | Annotations — create Schema with annotations |
+| 49 | Annotations — invalid key (empty) returns 400 |
+| 50 | Annotations — key exceeds length limit returns 400 |
+| 51 | Annotations — list returns annotations for all objects |
+| 52 | Annotations — SQLite persistence survives restart |
 
 ---
 

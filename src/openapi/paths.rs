@@ -11,7 +11,7 @@ use crate::error::AppError;
 use crate::object::service::ObjectService;
 use crate::object::types::ListOptions;
 use crate::openapi::components::{
-    build_kind_spec_component, build_kind_list_response_component,
+    build_kind_list_response_component, build_kind_spec_component,
     build_kind_stored_object_component, build_static_components, component_name,
 };
 use crate::schema::schema_key;
@@ -262,6 +262,11 @@ pub(crate) fn schema_create_request_schema() -> Value {
                         "type": "object",
                         "additionalProperties": { "type": "string" },
                         "description": "Key-value labels for organizing and selecting objects"
+                    },
+                    "annotations": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Arbitrary key-value metadata (non-queryable)"
                     }
                 }
             }
@@ -300,7 +305,8 @@ pub(crate) fn build_kind_paths(
     let stored_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}StoredObject") });
     let list_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}ListResponse") });
     let error_ref = json!({ "$ref": "#/components/schemas/AppError" });
-    let status_ref = json!({ "nullable": true, "description": "Status subresource, or null if not set" });
+    let status_ref =
+        json!({ "nullable": true, "description": "Status subresource, or null if not set" });
 
     vec![
         // Collection path: GET (list) + POST (create)
@@ -583,6 +589,11 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
                         "type": "object",
                         "additionalProperties": { "type": "string" },
                         "description": "Key-value labels for organizing and selecting objects"
+                    },
+                    "annotations": {
+                        "type": "object",
+                        "additionalProperties": { "type": "string" },
+                        "description": "Arbitrary key-value metadata (non-queryable)"
                     }
                 },
                 "required": ["name"]
@@ -598,7 +609,9 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
 ///
 /// The wire format is `{ status: ...userDataProperties }`.
 fn build_status_update_request_schema(schema_data: &crate::object::types::SchemaData) -> Value {
-    let status_schema = schema_data.status_schema.clone()
+    let status_schema = schema_data
+        .status_schema
+        .clone()
         .unwrap_or_else(|| json!({ "type": "object" }));
 
     json!({

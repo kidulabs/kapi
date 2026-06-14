@@ -41,7 +41,7 @@ pub async fn get_openapi_handler(State(state): State<AppState>) -> Result<Json<V
 #[cfg(test)]
 mod tests {
     use super::components::{
-        build_kind_spec_component, build_kind_list_response_component,
+        build_kind_list_response_component, build_kind_spec_component,
         build_kind_stored_object_component, build_static_components, component_name,
     };
     use super::paths::{build_kind_paths, build_openapi_spec, build_static_paths};
@@ -442,6 +442,7 @@ mod tests {
                 crate::object::types::ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data,
             )
@@ -491,6 +492,7 @@ mod tests {
                 crate::object::types::ObjectMeta {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
+                    annotations: HashMap::new(),
                 },
                 schema_data.clone(),
             )

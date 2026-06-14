@@ -20,6 +20,7 @@ use kapi::store::sqlite::SQLiteStore;
 
 pub mod generation_semantics;
 pub mod list_filtering;
+pub mod object_annotations;
 pub mod object_crud;
 pub mod object_labels;
 pub mod optimistic_concurrency;
