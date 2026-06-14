@@ -32,44 +32,29 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
     let client = app.client();
 
     // Register schema with status support
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // 1. Create an object and verify generation == 1
     let resp = client
         .post(
             "/apis/example.io/v1/Widget",
-            widget_with_labels(
-                "gen-widget",
-                "blue",
-                10,
-                serde_json::json!({"app": "nginx"}),
-            ),
+            widget_with_labels("gen-widget", "blue", 10, serde_json::json!({"app": "nginx"})),
         )
         .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
-    let generation_val = created["system"]["generation"]
-        .as_u64()
-        .ok_or("missing generation on created object")?;
-    assert_eq!(
-        generation_val, 1,
-        "generation should start at 1 on create, got {generation_val}"
-    );
+    let generation_val =
+        created["system"]["generation"].as_u64().ok_or("missing generation on created object")?;
+    assert_eq!(generation_val, 1, "generation should start at 1 on create, got {generation_val}");
 
     let rv = created["system"]["resourceVersion"]
         .as_u64()
         .ok_or("missing resourceVersion on created object")?;
-    let created_at = created["system"]["createdAt"]
-        .as_str()
-        .ok_or("missing createdAt")?
-        .to_string();
-    let updated_at = created["system"]["updatedAt"]
-        .as_str()
-        .ok_or("missing updatedAt")?
-        .to_string();
+    let created_at =
+        created["system"]["createdAt"].as_str().ok_or("missing createdAt")?.to_string();
+    let updated_at =
+        created["system"]["updatedAt"].as_str().ok_or("missing updatedAt")?.to_string();
 
     // 2. Update with same spec but different labels — generation should NOT change
     let update_body = serde_json::json!({
@@ -78,14 +63,11 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client
-        .put("/apis/example.io/v1/Widget/gen-widget", update_body)
-        .await;
+    let resp = client.put("/apis/example.io/v1/Widget/gen-widget", update_body).await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
-    let gen_after_labels = updated["system"]["generation"]
-        .as_u64()
-        .ok_or("missing generation after label update")?;
+    let gen_after_labels =
+        updated["system"]["generation"].as_u64().ok_or("missing generation after label update")?;
     assert_eq!(
         gen_after_labels, 1,
         "generation should stay at 1 after metadata-only update, got {gen_after_labels}"
@@ -106,14 +88,11 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "system": { "resourceVersion": rv2, "createdAt": created_at, "updatedAt": updated_at2 },
         "spec": { "color": "red", "size": 20 }
     });
-    let resp = client
-        .put("/apis/example.io/v1/Widget/gen-widget", update_body)
-        .await;
+    let resp = client.put("/apis/example.io/v1/Widget/gen-widget", update_body).await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
-    let gen_after_spec = updated["system"]["generation"]
-        .as_u64()
-        .ok_or("missing generation after spec update")?;
+    let gen_after_spec =
+        updated["system"]["generation"].as_u64().ok_or("missing generation after spec update")?;
     assert_eq!(
         gen_after_spec, 2,
         "generation should bump to 2 after spec change, got {gen_after_spec}"
@@ -140,9 +119,8 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         ));
     }
     let updated: Value = parse_body(resp).await;
-    let gen_after_status = updated["system"]["generation"]
-        .as_u64()
-        .ok_or("missing generation after status update")?;
+    let gen_after_status =
+        updated["system"]["generation"].as_u64().ok_or("missing generation after status update")?;
     assert_eq!(
         gen_after_status, 2,
         "generation should stay at 2 after status update, got {gen_after_status}"
@@ -163,9 +141,7 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "system": { "resourceVersion": rv4, "createdAt": created_at, "updatedAt": updated_at4 },
         "spec": { "color": "red", "size": 20 }
     });
-    let resp = client
-        .put("/apis/example.io/v1/Widget/gen-widget", update_body)
-        .await;
+    let resp = client.put("/apis/example.io/v1/Widget/gen-widget", update_body).await;
     if resp.status() != StatusCode::OK {
         let status = resp.status();
         let body: Value = parse_body(resp).await;
@@ -188,10 +164,7 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
     // Verify resourceVersion incremented on every update
     assert!(rv4 > rv3, "resourceVersion should bump after status update");
     assert!(
-        updated["system"]["resourceVersion"]
-            .as_u64()
-            .ok_or("missing resourceVersion")?
-            > rv4,
+        updated["system"]["resourceVersion"].as_u64().ok_or("missing resourceVersion")? > rv4,
         "resourceVersion should bump after second label update"
     );
 

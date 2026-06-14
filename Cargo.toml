@@ -32,3 +32,4 @@ regex = "1.12.3"
 [dev-dependencies]
 http-body-util = "0.1"
 tempfile = "3"
+cargo-husky = { version = "1.5", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-for-all"] }

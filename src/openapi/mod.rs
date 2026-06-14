@@ -62,10 +62,7 @@ mod tests {
     fn component_name_same_kind_different_group_no_collision() {
         assert_eq!(component_name("Widget.example.io"), "WidgetExampleIo");
         assert_eq!(component_name("Widget.other.io"), "WidgetOtherIo");
-        assert_ne!(
-            component_name("Widget.example.io"),
-            component_name("Widget.other.io"),
-        );
+        assert_ne!(component_name("Widget.example.io"), component_name("Widget.other.io"),);
     }
 
     #[test]
@@ -94,10 +91,7 @@ mod tests {
     #[test]
     fn build_static_components_stored_object_shape() {
         let components = build_static_components();
-        let stored = components
-            .iter()
-            .find(|(n, _)| n == "StoredObject")
-            .unwrap();
+        let stored = components.iter().find(|(n, _)| n == "StoredObject").unwrap();
         let obj = stored.1.as_object().unwrap();
         assert_eq!(obj["type"], "object");
         let props = obj["properties"].as_object().unwrap();
@@ -107,10 +101,7 @@ mod tests {
         assert!(props.contains_key("spec"));
         assert_eq!(props["key"]["$ref"], "#/components/schemas/ResourceKey");
         assert_eq!(props["metadata"]["$ref"], "#/components/schemas/ObjectMeta");
-        assert_eq!(
-            props["system"]["$ref"],
-            "#/components/schemas/SystemMetadata"
-        );
+        assert_eq!(props["system"]["$ref"], "#/components/schemas/SystemMetadata");
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "key"));
         assert!(required.iter().any(|r| r == "system"));
@@ -134,10 +125,7 @@ mod tests {
     #[test]
     fn build_static_components_invalid_field_selector_shape() {
         let components = build_static_components();
-        let ifs = components
-            .iter()
-            .find(|(n, _)| n == "InvalidFieldSelector")
-            .unwrap();
+        let ifs = components.iter().find(|(n, _)| n == "InvalidFieldSelector").unwrap();
         let obj = ifs.1.as_object().unwrap();
         assert_eq!(obj["type"], "object");
         let props = obj["properties"].as_object().unwrap();
@@ -149,18 +137,11 @@ mod tests {
     #[test]
     fn build_static_components_watch_event_type_enum() {
         let components = build_static_components();
-        let wet = components
-            .iter()
-            .find(|(n, _)| n == "WatchEventType")
-            .unwrap();
+        let wet = components.iter().find(|(n, _)| n == "WatchEventType").unwrap();
         let obj = wet.1.as_object().unwrap();
         assert_eq!(obj["type"], "string");
-        let variants: Vec<&str> = obj["enum"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|v| v.as_str().unwrap())
-            .collect();
+        let variants: Vec<&str> =
+            obj["enum"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
         assert!(variants.contains(&"Added"));
         assert!(variants.contains(&"Modified"));
         assert!(variants.contains(&"Deleted"));
@@ -202,14 +183,8 @@ mod tests {
         let props = obj["properties"].as_object().unwrap();
         assert_eq!(props["key"]["$ref"], "#/components/schemas/ResourceKey");
         assert_eq!(props["metadata"]["$ref"], "#/components/schemas/ObjectMeta");
-        assert_eq!(
-            props["system"]["$ref"],
-            "#/components/schemas/SystemMetadata"
-        );
-        assert_eq!(
-            props["spec"]["$ref"],
-            "#/components/schemas/WidgetExampleIo"
-        );
+        assert_eq!(props["system"]["$ref"], "#/components/schemas/SystemMetadata");
+        assert_eq!(props["spec"]["$ref"], "#/components/schemas/WidgetExampleIo");
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "key"));
         assert!(required.iter().any(|r| r == "metadata"));
@@ -225,10 +200,7 @@ mod tests {
         assert_eq!(obj["type"], "object");
         let items = &obj["properties"]["items"];
         assert_eq!(items["type"], "array");
-        assert_eq!(
-            items["items"]["$ref"],
-            "#/components/schemas/WidgetExampleIoStoredObject"
-        );
+        assert_eq!(items["items"]["$ref"], "#/components/schemas/WidgetExampleIoStoredObject");
         let required = obj["required"].as_array().unwrap();
         assert!(required.iter().any(|r| r == "items"));
         assert!(obj["properties"]["continueToken"].as_object().is_some());
@@ -255,10 +227,8 @@ mod tests {
     #[test]
     fn build_static_paths_post_has_request_body_with_metadata() {
         let paths = build_static_paths();
-        let (_path, collection) = paths
-            .iter()
-            .find(|(p, _)| p == "/apis/kapi.io/v1/Schema")
-            .unwrap();
+        let (_path, collection) =
+            paths.iter().find(|(p, _)| p == "/apis/kapi.io/v1/Schema").unwrap();
         let rb = &collection["post"]["requestBody"];
         assert_eq!(rb["required"], true);
         let schema = &rb["content"]["application/json"]["schema"];
@@ -275,10 +245,8 @@ mod tests {
     #[test]
     fn build_static_paths_post_has_error_responses() {
         let paths = build_static_paths();
-        let (_path, collection) = paths
-            .iter()
-            .find(|(p, _)| p == "/apis/kapi.io/v1/Schema")
-            .unwrap();
+        let (_path, collection) =
+            paths.iter().find(|(p, _)| p == "/apis/kapi.io/v1/Schema").unwrap();
         let responses = &collection["post"]["responses"];
         assert!(responses.get("201").is_some());
         assert!(responses.get("404").is_some());
@@ -319,10 +287,8 @@ mod tests {
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
-        let (_path, collection) = paths
-            .iter()
-            .find(|(p, _)| p == "/apis/example.io/v1/Widget")
-            .unwrap();
+        let (_path, collection) =
+            paths.iter().find(|(p, _)| p == "/apis/example.io/v1/Widget").unwrap();
         let params = collection["get"]["parameters"].as_array().unwrap();
         let watch = params.iter().find(|p| p["name"] == "watch").unwrap();
         assert_eq!(watch["in"], "query");
@@ -340,15 +306,10 @@ mod tests {
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
-        let (_path, collection) = paths
-            .iter()
-            .find(|(p, _)| p == "/apis/example.io/v1/Widget")
-            .unwrap();
+        let (_path, collection) =
+            paths.iter().find(|(p, _)| p == "/apis/example.io/v1/Widget").unwrap();
         let params = collection["get"]["parameters"].as_array().unwrap();
-        let field_selector = params
-            .iter()
-            .find(|p| p["name"] == "fieldSelector")
-            .unwrap();
+        let field_selector = params.iter().find(|p| p["name"] == "fieldSelector").unwrap();
         assert_eq!(field_selector["in"], "query");
         assert_eq!(field_selector["schema"]["type"], "string");
         assert_eq!(field_selector["required"], false);
@@ -364,10 +325,8 @@ mod tests {
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
-        let (_path, collection) = paths
-            .iter()
-            .find(|(p, _)| p == "/apis/example.io/v1/Widget")
-            .unwrap();
+        let (_path, collection) =
+            paths.iter().find(|(p, _)| p == "/apis/example.io/v1/Widget").unwrap();
         let responses = &collection["get"]["responses"];
         assert!(responses.get("400").is_some(), "missing 400 response");
         let resp = &responses["400"];
@@ -387,10 +346,8 @@ mod tests {
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
-        let (_path, collection) = paths
-            .iter()
-            .find(|(p, _)| p == "/apis/example.io/v1/Widget")
-            .unwrap();
+        let (_path, collection) =
+            paths.iter().find(|(p, _)| p == "/apis/example.io/v1/Widget").unwrap();
         let responses = &collection["post"]["responses"];
         assert!(responses.get("201").is_some());
         assert!(responses.get("404").is_some());
@@ -408,17 +365,11 @@ mod tests {
             status_schema: None,
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
-        let (_path, item) = paths
-            .iter()
-            .find(|(p, _)| p == "/apis/example.io/v1/Widget/{name}")
-            .unwrap();
+        let (_path, item) =
+            paths.iter().find(|(p, _)| p == "/apis/example.io/v1/Widget/{name}").unwrap();
         let params = item["get"]["parameters"].as_array().unwrap();
         let names: Vec<&str> = params.iter().map(|p| p["name"].as_str().unwrap()).collect();
-        assert_eq!(
-            names,
-            vec!["name"],
-            "only name param should be present, GVK is in the URL"
-        );
+        assert_eq!(names, vec!["name"], "only name param should be present, GVK is in the URL");
     }
 
     #[tokio::test]
@@ -451,27 +402,12 @@ mod tests {
 
         let spec = build_openapi_spec(&service).await.unwrap();
         let paths = spec["paths"].as_object().unwrap();
-        assert!(
-            paths.contains_key("/apis/example.io/v1/Widget"),
-            "missing collection path"
-        );
-        assert!(
-            paths.contains_key("/apis/example.io/v1/Widget/{name}"),
-            "missing item path"
-        );
+        assert!(paths.contains_key("/apis/example.io/v1/Widget"), "missing collection path");
+        assert!(paths.contains_key("/apis/example.io/v1/Widget/{name}"), "missing item path");
         let schemas = spec["components"]["schemas"].as_object().unwrap();
-        assert!(
-            schemas.contains_key("WidgetExampleIo"),
-            "missing spec component"
-        );
-        assert!(
-            schemas.contains_key("WidgetExampleIoStoredObject"),
-            "missing stored component"
-        );
-        assert!(
-            schemas.contains_key("WidgetExampleIoListResponse"),
-            "missing list component"
-        );
+        assert!(schemas.contains_key("WidgetExampleIo"), "missing spec component");
+        assert!(schemas.contains_key("WidgetExampleIoStoredObject"), "missing stored component");
+        assert!(schemas.contains_key("WidgetExampleIoListResponse"), "missing list component");
     }
 
     #[tokio::test]
@@ -507,10 +443,7 @@ mod tests {
         );
 
         // Delete schema → build spec → verify paths removed
-        service
-            .delete(schema_key, "Widget.example.io".to_string())
-            .await
-            .unwrap();
+        service.delete(schema_key, "Widget.example.io".to_string()).await.unwrap();
         let spec_after_delete = build_openapi_spec(&service).await.unwrap();
         assert!(
             !spec_after_delete["paths"]

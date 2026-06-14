@@ -53,9 +53,7 @@ pub async fn test_missing_required_fields_rejected(app: &TestApp) -> Result<(), 
         }
     });
 
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", missing_target_kind)
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", missing_target_kind).await;
     assert_status(&resp, StatusCode::UNPROCESSABLE_ENTITY);
 
     Ok(())

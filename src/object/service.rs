@@ -27,9 +27,7 @@ use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 /// with optional `/` prefix separator (prefix: max 253 chars, DNS subdomain format).
 fn validate_label_key(key: &str) -> Result<(), AppError> {
     if key.is_empty() {
-        return Err(AppError::InvalidLabel(
-            "label key must not be empty".to_string(),
-        ));
+        return Err(AppError::InvalidLabel("label key must not be empty".to_string()));
     }
     if key.len() > 256 {
         return Err(AppError::InvalidLabel(format!(
@@ -124,9 +122,7 @@ fn validate_labels(labels: &HashMap<String, String>) -> Result<(), AppError> {
 /// Validates an annotation key: non-empty, max 256 chars, no character restrictions.
 fn validate_annotation_key(key: &str) -> Result<(), AppError> {
     if key.is_empty() {
-        return Err(AppError::InvalidAnnotation(
-            "annotation key must not be empty".to_string(),
-        ));
+        return Err(AppError::InvalidAnnotation("annotation key must not be empty".to_string()));
     }
     if key.len() > 256 {
         return Err(AppError::InvalidAnnotation(format!(
@@ -145,17 +141,16 @@ fn validate_annotations(annotations: &HashMap<String, String>) -> Result<(), App
     for key in annotations.keys() {
         validate_annotation_key(key)?;
     }
-    
+
     // Check total serialized size
-    let serialized_size = serde_json::to_string(annotations)
-        .map_err(|e| AppError::Internal(e.into()))?
-        .len();
+    let serialized_size =
+        serde_json::to_string(annotations).map_err(|e| AppError::Internal(e.into()))?.len();
     if serialized_size > 256 * 1024 {
         return Err(AppError::InvalidAnnotation(format!(
             "total annotations size {serialized_size} bytes exceeds maximum of 256KB"
         )));
     }
-    
+
     Ok(())
 }
 
@@ -184,11 +179,7 @@ impl ObjectService {
         meta_validator: Arc<dyn SchemaValidator>,
     ) -> Self {
         let schema_registry = SchemaRegistry::new(store.clone(), meta_validator);
-        Self {
-            store,
-            event_bus,
-            schema_registry,
-        }
+        Self { store, event_bus, schema_registry }
     }
 
     /// Creates an object (Schema or regular object) with validation.
@@ -266,8 +257,7 @@ impl ObjectService {
         } else {
             // Regular object path: delete via transaction and publish
             let deleted =
-                self.store
-                    .transaction(&key, &name, Box::new(|_existing| TransactionOp::Delete))?;
+                self.store.transaction(&key, &name, Box::new(|_existing| TransactionOp::Delete))?;
             self.publish_event(&key, WatchEventType::Deleted, &deleted);
             Ok(deleted)
         }
@@ -392,13 +382,7 @@ impl ObjectService {
 
     /// Publishes a watch event via the event bus.
     fn publish_event(&self, key: &ResourceKey, event_type: WatchEventType, object: &StoredObject) {
-        self.event_bus.publish(
-            key,
-            WatchEvent {
-                event_type,
-                object: object.clone(),
-            },
-        );
+        self.event_bus.publish(key, WatchEvent { event_type, object: object.clone() });
     }
 
     async fn validate_and_create_schema(
@@ -423,8 +407,7 @@ impl ObjectService {
             .await?;
         self.schema_registry.insert(&meta.name, compiled);
         if let Some(status_validator) = status_compiled {
-            self.schema_registry
-                .insert_status(&meta.name, status_validator);
+            self.schema_registry.insert_status(&meta.name, status_validator);
         }
         self.publish_event(&key, WatchEventType::Added, &stored);
         Ok(stored)
@@ -494,11 +477,9 @@ impl ObjectService {
                 })
             }),
         )?;
-        self.schema_registry
-            .insert(&updated.metadata.name, compiled);
+        self.schema_registry.insert(&updated.metadata.name, compiled);
         if let Some(status_validator) = status_compiled {
-            self.schema_registry
-                .insert_status(&updated.metadata.name, status_validator);
+            self.schema_registry.insert_status(&updated.metadata.name, status_validator);
         }
         self.publish_event(&updated.key, WatchEventType::Modified, &updated);
         Ok(updated)
@@ -568,15 +549,12 @@ impl ObjectService {
 
         // Check if any objects of the target kind exist
         if self.store.exists(&target_key).await? {
-            return Err(AppError::SchemaHasObjects {
-                kind: target_key.kind,
-            });
+            return Err(AppError::SchemaHasObjects { kind: target_key.kind });
         }
 
         // Step 4: Delete the schema via transaction
         let deleted =
-            self.store
-                .transaction(&key, &name, Box::new(|_existing| TransactionOp::Delete))?;
+            self.store.transaction(&key, &name, Box::new(|_existing| TransactionOp::Delete))?;
 
         // Step 5: Evict from cache
         self.schema_registry.evict(&name);
@@ -666,18 +644,10 @@ mod tests {
         assert_eq!(stored.metadata.name, "Widget.example.io");
 
         // Verify cached
-        assert!(
-            service
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
 
         // Verify stored in store
-        let retrieved = service
-            .get(schema_key, "Widget.example.io".to_string())
-            .await
-            .unwrap();
+        let retrieved = service.get(schema_key, "Widget.example.io".to_string()).await.unwrap();
         assert_eq!(retrieved.metadata.name, "Widget.example.io");
     }
 
@@ -878,26 +848,14 @@ mod tests {
             .unwrap();
 
         // Verify cached
-        assert!(
-            service
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
 
         // Delete the schema
-        let result = service
-            .delete(schema_key, "Widget.example.io".to_string())
-            .await;
+        let result = service.delete(schema_key, "Widget.example.io".to_string()).await;
         assert!(result.is_ok());
 
         // Verify cache evicted
-        assert!(
-            !service
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        assert!(!service.schema_registry.cache.contains_key("Widget.example.io"));
     }
 
     // T27: Delete Schema with existing objects → SchemaHasObjects, nothing deleted
@@ -927,9 +885,7 @@ mod tests {
 
         // Try to delete the schema
         let schema_key = schema_key();
-        let result = service
-            .delete(schema_key, "Widget.example.io".to_string())
-            .await;
+        let result = service.delete(schema_key, "Widget.example.io".to_string()).await;
         assert!(matches!(result, Err(AppError::SchemaHasObjects { kind }) if kind == "Widget"));
     }
 
@@ -1024,23 +980,10 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(
-            service
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
 
-        service
-            .delete(schema_key, "Widget.example.io".to_string())
-            .await
-            .unwrap();
-        assert!(
-            !service
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        service.delete(schema_key, "Widget.example.io".to_string()).await.unwrap();
+        assert!(!service.schema_registry.cache.contains_key("Widget.example.io"));
     }
 
     // Schema create with missing targetKind returns InvalidSchema error
@@ -1152,12 +1095,7 @@ mod tests {
 
         // Service B: same store, fresh cache (simulating restart)
         let service_b = ObjectService::new(store, event_bus, meta_validator);
-        assert!(
-            !service_b
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io"));
 
         let result = service_b
             .create(
@@ -1171,12 +1109,7 @@ mod tests {
             )
             .await;
         assert!(result.is_ok());
-        assert!(
-            service_b
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io"));
     }
 
     // T32: Cache miss triggers compilation, subsequent requests use cached validator
@@ -1225,12 +1158,7 @@ mod tests {
 
         // Service B starts with empty cache
         let service_b = ObjectService::new(store, event_bus, meta_validator);
-        assert!(
-            !service_b
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io"));
 
         // First creation triggers lazy compilation
         let first = service_b
@@ -1245,12 +1173,7 @@ mod tests {
             )
             .await;
         assert!(first.is_ok());
-        assert!(
-            service_b
-                .schema_registry
-                .cache
-                .contains_key("Widget.example.io")
-        );
+        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io"));
 
         // Second creation uses cached validator
         let second = service_b
@@ -1520,11 +1443,7 @@ mod tests {
         assert!(created.status.is_none());
 
         let updated = service
-            .update_status(
-                widget_key.clone(),
-                "my-widget".to_string(),
-                json!({"phase": "Running"}),
-            )
+            .update_status(widget_key.clone(), "my-widget".to_string(), json!({"phase": "Running"}))
             .await
             .unwrap();
         assert!(updated.status.is_some());
@@ -1556,11 +1475,7 @@ mod tests {
             .unwrap();
 
         let err = service
-            .update_status(
-                widget_key.clone(),
-                "my-widget".to_string(),
-                json!({"phase": "Running"}),
-            )
+            .update_status(widget_key.clone(), "my-widget".to_string(), json!({"phase": "Running"}))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::StatusSubresourceNotEnabled { .. }));
@@ -1591,11 +1506,7 @@ mod tests {
 
         // phase should be string, not integer
         let err = service
-            .update_status(
-                widget_key.clone(),
-                "my-widget".to_string(),
-                json!({"phase": 123}),
-            )
+            .update_status(widget_key.clone(), "my-widget".to_string(), json!({"phase": 123}))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::SchemaValidation(_)));
@@ -1647,26 +1558,16 @@ mod tests {
             .unwrap();
 
         // Initially None
-        let status = service
-            .get_status(widget_key.clone(), "my-widget".to_string())
-            .await
-            .unwrap();
+        let status = service.get_status(widget_key.clone(), "my-widget".to_string()).await.unwrap();
         assert!(status.is_none());
 
         // After update
         service
-            .update_status(
-                widget_key.clone(),
-                "my-widget".to_string(),
-                json!({"phase": "Running"}),
-            )
+            .update_status(widget_key.clone(), "my-widget".to_string(), json!({"phase": "Running"}))
             .await
             .unwrap();
 
-        let status = service
-            .get_status(widget_key.clone(), "my-widget".to_string())
-            .await
-            .unwrap();
+        let status = service.get_status(widget_key.clone(), "my-widget".to_string()).await.unwrap();
         assert!(status.is_some());
         assert_eq!(status.unwrap(), json!({"phase": "Running"}));
     }
@@ -1694,10 +1595,8 @@ mod tests {
             .await
             .unwrap();
 
-        let err = service
-            .get_status(widget_key.clone(), "my-widget".to_string())
-            .await
-            .unwrap_err();
+        let err =
+            service.get_status(widget_key.clone(), "my-widget".to_string()).await.unwrap_err();
         assert!(matches!(err, AppError::StatusSubresourceNotEnabled { .. }));
     }
 
@@ -1792,10 +1691,7 @@ mod tests {
         let mut update_obj = created;
         update_obj.system.resource_version = rv;
         let result = service.update(update_obj).await.unwrap();
-        assert_eq!(
-            result.system.created_at, created_at,
-            "created_at should be preserved"
-        );
+        assert_eq!(result.system.created_at, created_at, "created_at should be preserved");
     }
 
     #[tokio::test]
@@ -1828,10 +1724,7 @@ mod tests {
         update_obj.spec = json!({"color": "red", "size": 20});
 
         let result = service.update(update_obj).await.unwrap();
-        assert_eq!(
-            result.system.generation, 2,
-            "generation should bump to 2 on spec change"
-        );
+        assert_eq!(result.system.generation, 2, "generation should bump to 2 on spec change");
     }
 
     #[tokio::test]
@@ -1862,10 +1755,7 @@ mod tests {
         // Update with same spec, different labels
         let mut update_obj = created;
         update_obj.system.resource_version = v1;
-        update_obj
-            .metadata
-            .labels
-            .insert("env".to_string(), "prod".to_string());
+        update_obj.metadata.labels.insert("env".to_string(), "prod".to_string());
 
         let result = service.update(update_obj).await.unwrap();
         assert_eq!(

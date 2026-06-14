@@ -11,16 +11,12 @@ pub async fn test_list_with_field_selector(app: &TestApp) -> Result<(), String> 
 
     // Create multiple widgets
     for name in ["foo", "bar", "baz"] {
-        let resp = client
-            .post("/apis/example.io/v1/Widget", widget(name, "blue", 10))
-            .await;
+        let resp = client.post("/apis/example.io/v1/Widget", widget(name, "blue", 10)).await;
         assert_status(&resp, StatusCode::CREATED);
     }
 
     // List with fieldSelector=metadata.name=foo
-    let resp = client
-        .get("/apis/example.io/v1/Widget?fieldSelector=metadata.name=foo")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget?fieldSelector=metadata.name=foo").await;
     assert_status(&resp, StatusCode::OK);
     let body: Value = parse_body(resp).await;
     let items = body["items"].as_array().unwrap();
@@ -60,9 +56,7 @@ pub async fn test_list_with_label_selector(app: &TestApp) -> Result<(), String> 
     assert_status(&resp, StatusCode::CREATED);
 
     // List with labelSelector=app=nginx
-    let resp = client
-        .get("/apis/example.io/v1/Widget?labelSelector=app=nginx")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget?labelSelector=app=nginx").await;
     assert_status(&resp, StatusCode::OK);
     let body: Value = parse_body(resp).await;
     let items = body["items"].as_array().unwrap();
@@ -93,12 +87,8 @@ pub async fn test_list_with_both_selectors(app: &TestApp) -> Result<(), String> 
         .await;
     assert_status(&resp, StatusCode::CREATED);
 
-    let resp = client
-        .post(
-            "/apis/example.io/v1/Widget",
-            widget("target-nolabel", "green", 30),
-        )
-        .await;
+    let resp =
+        client.post("/apis/example.io/v1/Widget", widget("target-nolabel", "green", 30)).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // List with both selectors
@@ -122,11 +112,8 @@ pub async fn test_list_filter_with_pagination(app: &TestApp) -> Result<(), Strin
 
     // Create 10 widgets, only 2 have the label
     for i in 0..10 {
-        let labels = if i < 2 {
-            serde_json::json!({"app": "nginx"})
-        } else {
-            serde_json::json!({})
-        };
+        let labels =
+            if i < 2 { serde_json::json!({"app": "nginx"}) } else { serde_json::json!({}) };
         let resp = client
             .post(
                 "/apis/example.io/v1/Widget",
@@ -137,17 +124,12 @@ pub async fn test_list_filter_with_pagination(app: &TestApp) -> Result<(), Strin
     }
 
     // Filter to 2, limit 10 → should return 2
-    let resp = client
-        .get("/apis/example.io/v1/Widget?labelSelector=app=nginx&limit=10")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget?labelSelector=app=nginx&limit=10").await;
     assert_status(&resp, StatusCode::OK);
     let body: Value = parse_body(resp).await;
     let items = body["items"].as_array().unwrap();
     assert_eq!(items.len(), 2, "expected 2 items, got {}", items.len());
-    assert!(
-        body["continueToken"].is_null(),
-        "expected no continue token"
-    );
+    assert!(body["continueToken"].is_null(), "expected no continue token");
 
     Ok(())
 }
@@ -156,15 +138,12 @@ pub async fn test_list_filter_no_matches(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
 
-    let resp = client
-        .post("/apis/example.io/v1/Widget", widget("existing", "blue", 10))
-        .await;
+    let resp = client.post("/apis/example.io/v1/Widget", widget("existing", "blue", 10)).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Filter that matches nothing
-    let resp = client
-        .get("/apis/example.io/v1/Widget?fieldSelector=metadata.name=nonexistent")
-        .await;
+    let resp =
+        client.get("/apis/example.io/v1/Widget?fieldSelector=metadata.name=nonexistent").await;
     assert_status(&resp, StatusCode::OK);
     let body: Value = parse_body(resp).await;
     let items = body["items"].as_array().unwrap();
@@ -191,12 +170,7 @@ pub async fn test_watch_with_both_selectors_matching(app: &TestApp) -> Result<()
     let resp = client
         .post(
             "/apis/example.io/v1/Widget",
-            widget_with_labels(
-                "watch-target",
-                "blue",
-                10,
-                serde_json::json!({"app": "nginx"}),
-            ),
+            widget_with_labels("watch-target", "blue", 10, serde_json::json!({"app": "nginx"})),
         )
         .await;
     assert_status(&resp, StatusCode::CREATED);
@@ -207,10 +181,7 @@ pub async fn test_watch_with_both_selectors_matching(app: &TestApp) -> Result<()
         .map_err(|_| "timeout waiting for watch event")?
         .ok_or("channel closed")?;
 
-    assert!(
-        matches!(event.event_type, WatchEventType::Added),
-        "expected Added event type"
-    );
+    assert!(matches!(event.event_type, WatchEventType::Added), "expected Added event type");
     assert_eq!(event.object.metadata.name, "watch-target");
 
     Ok(())
@@ -233,12 +204,7 @@ pub async fn test_watch_with_both_selectors_not_matching(app: &TestApp) -> Resul
     let resp = client
         .post(
             "/apis/example.io/v1/Widget",
-            widget_with_labels(
-                "watch-target",
-                "blue",
-                10,
-                serde_json::json!({"app": "apache"}),
-            ),
+            widget_with_labels("watch-target", "blue", 10, serde_json::json!({"app": "apache"})),
         )
         .await;
     assert_status(&resp, StatusCode::CREATED);
@@ -257,9 +223,8 @@ pub async fn test_list_invalid_field_selector(app: &TestApp) -> Result<(), Strin
     register_widget_schema(&client).await;
 
     // Invalid field selector (unsupported field)
-    let resp = client
-        .get("/apis/example.io/v1/Widget?fieldSelector=metadata.namespace=default")
-        .await;
+    let resp =
+        client.get("/apis/example.io/v1/Widget?fieldSelector=metadata.namespace=default").await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
 
     Ok(())
@@ -270,9 +235,7 @@ pub async fn test_list_invalid_label_selector(app: &TestApp) -> Result<(), Strin
     register_widget_schema(&client).await;
 
     // Invalid label selector (empty value in equality)
-    let resp = client
-        .get("/apis/example.io/v1/Widget?labelSelector=app=")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget?labelSelector=app=").await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
 
     Ok(())

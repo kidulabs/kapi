@@ -15,11 +15,7 @@ use crate::schema::{JsonSchemaValidator, SchemaValidator, schema_key};
 use crate::store::{ObjectStore, ResourceKey};
 
 /// Result of schema validation and compilation: parsed data, spec validator, optional status validator.
-type CompileResult = (
-    SchemaData,
-    Arc<dyn SchemaValidator>,
-    Option<Arc<dyn SchemaValidator>>,
-);
+type CompileResult = (SchemaData, Arc<dyn SchemaValidator>, Option<Arc<dyn SchemaValidator>>);
 
 /// Manages schema validation, compilation, and caching.
 ///
@@ -38,11 +34,7 @@ impl SchemaRegistry {
     ///
     /// The cache starts empty and is populated lazily on cache misses.
     pub fn new(store: Arc<dyn ObjectStore>, meta_validator: Arc<dyn SchemaValidator>) -> Self {
-        Self {
-            store,
-            meta_validator,
-            cache: DashMap::new(),
-        }
+        Self { store, meta_validator, cache: DashMap::new() }
     }
 
     /// Validates `spec` against the meta-schema, parses it into `SchemaData`,
@@ -63,12 +55,8 @@ impl SchemaRegistry {
     pub fn validate_and_compile(&self, spec: &Value) -> Result<CompileResult, AppError> {
         // Validate against meta-schema
         if !self.meta_validator.is_valid(spec) {
-            let errors: Vec<String> = self
-                .meta_validator
-                .validate(spec)
-                .into_iter()
-                .map(|e| e.message)
-                .collect();
+            let errors: Vec<String> =
+                self.meta_validator.validate(spec).into_iter().map(|e| e.message).collect();
             return Err(AppError::InvalidSchema(errors.join("; ")));
         }
 
@@ -123,14 +111,9 @@ impl SchemaRegistry {
         let schema_key = schema_key();
         let schema_name = cache_key.clone();
 
-        let schema_obj = self
-            .store
-            .get(&schema_key, &schema_name)
-            .await
-            .map_err(|_| AppError::NotFound {
-                what: "schema".to_string(),
-                identifier: schema_name.clone(),
-            })?;
+        let schema_obj = self.store.get(&schema_key, &schema_name).await.map_err(|_| {
+            AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
+        })?;
 
         // Parse and compile
         let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
@@ -191,26 +174,18 @@ impl SchemaRegistry {
         let schema_key = schema_key();
         let schema_name = format!("{}.{}", key.kind, key.group);
 
-        let schema_obj = self
-            .store
-            .get(&schema_key, &schema_name)
-            .await
-            .map_err(|_| AppError::NotFound {
-                what: "schema".to_string(),
-                identifier: schema_name.clone(),
-            })?;
+        let schema_obj = self.store.get(&schema_key, &schema_name).await.map_err(|_| {
+            AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
+        })?;
 
         // Parse SchemaData
         let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         // Check if status_schema is present
-        let status_schema =
-            schema_data
-                .status_schema
-                .ok_or_else(|| AppError::StatusSubresourceNotEnabled {
-                    kind: key.kind.clone(),
-                })?;
+        let status_schema = schema_data
+            .status_schema
+            .ok_or_else(|| AppError::StatusSubresourceNotEnabled { kind: key.kind.clone() })?;
 
         // Compile status_schema
         let compiled = JsonSchemaValidator::compile(&status_schema)
@@ -342,9 +317,7 @@ mod tests {
         // Prime the cache directly
         let dummy_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        registry
-            .cache
-            .insert("Widget.example.io".to_string(), dummy_validator.clone());
+        registry.cache.insert("Widget.example.io".to_string(), dummy_validator.clone());
 
         let result = registry.get_validator(&key).await;
         assert!(result.is_ok());
@@ -488,10 +461,7 @@ mod tests {
         // Prime the cache with a status validator
         let dummy_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        registry.cache.insert(
-            "Widget.example.io.status".to_string(),
-            dummy_validator.clone(),
-        );
+        registry.cache.insert("Widget.example.io.status".to_string(), dummy_validator.clone());
 
         let result = registry.get_status_validator(&key).await;
         assert!(result.is_ok());
@@ -571,10 +541,7 @@ mod tests {
             .expect("store create should succeed");
 
         let result = registry.get_status_validator(&key).await;
-        assert!(matches!(
-            result,
-            Err(AppError::StatusSubresourceNotEnabled { .. })
-        ));
+        assert!(matches!(result, Err(AppError::StatusSubresourceNotEnabled { .. })));
     }
 
     // --- insert_status tests ---

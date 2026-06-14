@@ -57,10 +57,7 @@ const DEFAULT_WATCHER_CAPACITY: usize = 256;
 impl EventBus {
     /// Creates a new `EventBus` with the given per-watcher channel capacity.
     pub fn new(watcher_capacity: usize) -> Self {
-        Self {
-            watchers: DashMap::new(),
-            watcher_capacity,
-        }
+        Self { watchers: DashMap::new(), watcher_capacity }
     }
 
     /// Creates a new `EventBus` with the given per-watcher channel capacity.
@@ -202,11 +199,7 @@ mod tests {
     use tokio_stream::StreamExt;
 
     fn make_key() -> ResourceKey {
-        ResourceKey {
-            group: "kapi.io".into(),
-            version: "v1".into(),
-            kind: SCHEMA_KIND.into(),
-        }
+        ResourceKey { group: "kapi.io".into(), version: "v1".into(), kind: SCHEMA_KIND.into() }
     }
 
     fn make_event() -> WatchEvent {
@@ -249,13 +242,7 @@ mod tests {
         bus.publish(&key, event);
 
         let received = stream.next().await;
-        assert!(matches!(
-            received,
-            Some(WatchEvent {
-                event_type: WatchEventType::Added,
-                ..
-            })
-        ));
+        assert!(matches!(received, Some(WatchEvent { event_type: WatchEventType::Added, .. })));
     }
 
     // Multiple subscribers with WatchFilter::All all receive the same event.
@@ -271,20 +258,8 @@ mod tests {
 
         let e1 = stream1.next().await;
         let e2 = stream2.next().await;
-        assert!(matches!(
-            e1,
-            Some(WatchEvent {
-                event_type: WatchEventType::Added,
-                ..
-            })
-        ));
-        assert!(matches!(
-            e2,
-            Some(WatchEvent {
-                event_type: WatchEventType::Added,
-                ..
-            })
-        ));
+        assert!(matches!(e1, Some(WatchEvent { event_type: WatchEventType::Added, .. })));
+        assert!(matches!(e2, Some(WatchEvent { event_type: WatchEventType::Added, .. })));
     }
 
     // Watchers with different filters: matching watchers receive, non-matching don't.
@@ -294,10 +269,8 @@ mod tests {
         let key = make_key();
 
         let mut all_stream = bus.subscribe(&key, WatchFilter::All);
-        let mut filtered = bus.subscribe(
-            &key,
-            WatchFilter::FieldSelector(FieldSelector::NameEquals("other".into())),
-        );
+        let mut filtered = bus
+            .subscribe(&key, WatchFilter::FieldSelector(FieldSelector::NameEquals("other".into())));
 
         let event = make_event(); // name = "test"
         bus.publish(&key, event);
@@ -347,13 +320,7 @@ mod tests {
         bus.publish(&key, make_event());
 
         let received = stream2.next().await;
-        assert!(matches!(
-            received,
-            Some(WatchEvent {
-                event_type: WatchEventType::Added,
-                ..
-            })
-        ));
+        assert!(matches!(received, Some(WatchEvent { event_type: WatchEventType::Added, .. })));
     }
 
     // Publishing to a key with no watchers is a no-op.

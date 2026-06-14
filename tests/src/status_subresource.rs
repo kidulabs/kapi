@@ -31,9 +31,7 @@ pub async fn test_status_subresource_update(app: &TestApp) -> Result<(), String>
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -71,9 +69,7 @@ pub async fn test_status_subresource_update(app: &TestApp) -> Result<(), String>
     assert_eq!(updated["status"]["message"], "All systems go");
 
     // Get status via /status endpoint
-    let resp = client
-        .get("/apis/example.io/v1/Widget/test-widget/status")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget/test-widget/status").await;
     assert_status(&resp, StatusCode::OK);
     let status: Value = parse_body(resp).await;
     // Status is returned as inline JSON value (no `value` wrapper)
@@ -87,9 +83,7 @@ pub async fn test_status_subresource_not_enabled(app: &TestApp) -> Result<(), St
     let client = app.client();
 
     // Register schema WITHOUT statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", crate::widget_schema())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", crate::widget_schema()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -108,9 +102,7 @@ pub async fn test_status_subresource_not_enabled(app: &TestApp) -> Result<(), St
     assert_status(&resp, StatusCode::CREATED);
 
     // GET /status should return 404
-    let resp = client
-        .get("/apis/example.io/v1/Widget/test-widget/status")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget/test-widget/status").await;
     assert_status(&resp, StatusCode::NOT_FOUND);
 
     // PUT /status should return 404
@@ -132,9 +124,7 @@ pub async fn test_status_subresource_invalid_data(app: &TestApp) -> Result<(), S
     let client = app.client();
 
     // Register schema with statusSchema (phase must be string)
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -171,9 +161,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -231,9 +219,7 @@ pub async fn test_create_rejects_unknown_top_level_fields(app: &TestApp) -> Resu
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object with "status" as unknown top-level field — should be rejected
@@ -266,9 +252,7 @@ pub async fn test_status_update_nonexistent_object(app: &TestApp) -> Result<(), 
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // PUT /status for object that does not exist should return 404 NotFound
@@ -296,9 +280,7 @@ pub async fn test_status_update_publishes_status_modified_event(
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -360,9 +342,7 @@ pub async fn test_status_update_preserves_spec(app: &TestApp) -> Result<(), Stri
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -392,16 +372,11 @@ pub async fn test_status_update_preserves_spec(app: &TestApp) -> Result<(), Stri
     assert_status(&resp, StatusCode::OK);
 
     // Get the object and verify spec is unchanged
-    let resp = client
-        .get("/apis/example.io/v1/Widget/spec-preserve-widget")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget/spec-preserve-widget").await;
     assert_status(&resp, StatusCode::OK);
     let obj: Value = parse_body(resp).await;
 
-    assert_eq!(
-        obj["spec"]["color"], "blue",
-        "spec.color should be unchanged"
-    );
+    assert_eq!(obj["spec"]["color"], "blue", "spec.color should be unchanged");
     assert_eq!(obj["spec"]["size"], 10, "spec.size should be unchanged");
     assert_eq!(obj["status"]["phase"], "Running", "status should be set");
 
@@ -413,9 +388,7 @@ pub async fn test_status_update_bumps_resource_version(app: &TestApp) -> Result<
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -496,9 +469,7 @@ pub async fn test_get_status_returns_null_when_not_set(app: &TestApp) -> Result<
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object (status is null)
@@ -517,16 +488,10 @@ pub async fn test_get_status_returns_null_when_not_set(app: &TestApp) -> Result<
     assert_status(&resp, StatusCode::CREATED);
 
     // GET /status should return null (status not yet set)
-    let resp = client
-        .get("/apis/example.io/v1/Widget/null-status-widget/status")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget/null-status-widget/status").await;
     assert_status(&resp, StatusCode::OK);
     let status: Value = parse_body(resp).await;
-    assert!(
-        status.is_null(),
-        "status should be null when not yet set, got: {}",
-        status
-    );
+    assert!(status.is_null(), "status should be null when not yet set, got: {}", status);
 
     Ok(())
 }
@@ -585,9 +550,7 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
     let client = app.client();
 
     // Register schema with statusSchema that allows multiple fields
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -628,9 +591,7 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
     assert_status(&resp, StatusCode::OK);
 
     // Verify message is gone (replaced, not merged)
-    let resp = client
-        .get("/apis/example.io/v1/Widget/replace-widget/status")
-        .await;
+    let resp = client.get("/apis/example.io/v1/Widget/replace-widget/status").await;
     assert_status(&resp, StatusCode::OK);
     let status: Value = parse_body(resp).await;
     assert_eq!(status["phase"], "Completed");
@@ -654,9 +615,7 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(
     let client = app.client();
 
     // Register schema with statusSchema
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema_with_status())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema_with_status()).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create object
@@ -675,14 +634,8 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
-    let created_at = created["system"]["createdAt"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
-    let updated_at = created["system"]["updatedAt"]
-        .as_str()
-        .unwrap_or("")
-        .to_string();
+    let created_at = created["system"]["createdAt"].as_str().unwrap_or("").to_string();
+    let updated_at = created["system"]["updatedAt"].as_str().unwrap_or("").to_string();
 
     // Start watching
     let mut events = watch_events(&client, "/apis/example.io/v1/Widget?watch=true").await;
@@ -695,9 +648,7 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "red", "size": 20 }
     });
-    let resp = client
-        .put("/apis/example.io/v1/Widget/spec-event-widget", update_body)
-        .await;
+    let resp = client.put("/apis/example.io/v1/Widget/spec-event-widget", update_body).await;
     assert_status(&resp, StatusCode::OK);
 
     // Should receive Modified event (not StatusModified)

@@ -160,12 +160,7 @@ impl SystemMetadata {
     /// layer is responsible for all metadata initialization.
     pub fn initial() -> Self {
         let now = Utc::now();
-        Self {
-            resource_version: 1,
-            generation: 1,
-            created_at: now,
-            updated_at: now,
-        }
+        Self { resource_version: 1, generation: 1, created_at: now, updated_at: now }
     }
 }
 
@@ -262,10 +257,7 @@ mod tests {
 
     #[test]
     fn label_requirement_equals_matches() {
-        let req = LabelRequirement::Equals {
-            key: "app".into(),
-            value: "nginx".into(),
-        };
+        let req = LabelRequirement::Equals { key: "app".into(), value: "nginx".into() };
         let mut labels = HashMap::new();
         labels.insert("app".into(), "nginx".into());
         labels.insert("env".into(), "prod".into());
@@ -274,10 +266,7 @@ mod tests {
 
     #[test]
     fn label_requirement_equals_different_value() {
-        let req = LabelRequirement::Equals {
-            key: "app".into(),
-            value: "nginx".into(),
-        };
+        let req = LabelRequirement::Equals { key: "app".into(), value: "nginx".into() };
         let mut labels = HashMap::new();
         labels.insert("app".into(), "apache".into());
         assert!(!req.matches(&labels));
@@ -285,10 +274,7 @@ mod tests {
 
     #[test]
     fn label_requirement_equals_key_missing() {
-        let req = LabelRequirement::Equals {
-            key: "app".into(),
-            value: "nginx".into(),
-        };
+        let req = LabelRequirement::Equals { key: "app".into(), value: "nginx".into() };
         let mut labels = HashMap::new();
         labels.insert("env".into(), "prod".into());
         assert!(!req.matches(&labels));
@@ -296,10 +282,7 @@ mod tests {
 
     #[test]
     fn label_requirement_not_equals_different_value() {
-        let req = LabelRequirement::NotEquals {
-            key: "env".into(),
-            value: "prod".into(),
-        };
+        let req = LabelRequirement::NotEquals { key: "env".into(), value: "prod".into() };
         let mut labels = HashMap::new();
         labels.insert("env".into(), "staging".into());
         assert!(req.matches(&labels));
@@ -307,10 +290,7 @@ mod tests {
 
     #[test]
     fn label_requirement_not_equals_same_value() {
-        let req = LabelRequirement::NotEquals {
-            key: "env".into(),
-            value: "prod".into(),
-        };
+        let req = LabelRequirement::NotEquals { key: "env".into(), value: "prod".into() };
         let mut labels = HashMap::new();
         labels.insert("env".into(), "prod".into());
         assert!(!req.matches(&labels));
@@ -318,10 +298,7 @@ mod tests {
 
     #[test]
     fn label_requirement_not_equals_key_missing() {
-        let req = LabelRequirement::NotEquals {
-            key: "env".into(),
-            value: "prod".into(),
-        };
+        let req = LabelRequirement::NotEquals { key: "env".into(), value: "prod".into() };
         let mut labels = HashMap::new();
         labels.insert("app".into(), "nginx".into());
         assert!(req.matches(&labels));
@@ -353,9 +330,7 @@ mod tests {
 
     #[test]
     fn label_requirement_not_exists_key_missing() {
-        let req = LabelRequirement::NotExists {
-            key: "experimental".into(),
-        };
+        let req = LabelRequirement::NotExists { key: "experimental".into() };
         let mut labels = HashMap::new();
         labels.insert("app".into(), "nginx".into());
         assert!(req.matches(&labels));
@@ -363,9 +338,7 @@ mod tests {
 
     #[test]
     fn label_requirement_not_exists_key_present() {
-        let req = LabelRequirement::NotExists {
-            key: "experimental".into(),
-        };
+        let req = LabelRequirement::NotExists { key: "experimental".into() };
         let mut labels = HashMap::new();
         labels.insert("experimental".into(), "true".into());
         assert!(!req.matches(&labels));
@@ -375,9 +348,7 @@ mod tests {
 
     #[test]
     fn label_selector_empty_matches_all() {
-        let selector = LabelSelector {
-            requirements: vec![],
-        };
+        let selector = LabelSelector { requirements: vec![] };
         let labels = HashMap::new();
         assert!(selector.matches(&labels));
 
@@ -407,10 +378,7 @@ mod tests {
     fn label_selector_multiple_requirements_and_semantics() {
         let selector = LabelSelector {
             requirements: vec![
-                LabelRequirement::Equals {
-                    key: "app".into(),
-                    value: "nginx".into(),
-                },
+                LabelRequirement::Equals { key: "app".into(), value: "nginx".into() },
                 LabelRequirement::Exists { key: "env".into() },
             ],
         };
@@ -445,11 +413,7 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta {
-                    name: "test".into(),
-                    labels,
-                    annotations: HashMap::new(),
-                },
+                metadata: ObjectMeta { name: "test".into(), labels, annotations: HashMap::new() },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
@@ -482,11 +446,7 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta {
-                    name: "test".into(),
-                    labels,
-                    annotations: HashMap::new(),
-                },
+                metadata: ObjectMeta { name: "test".into(), labels, annotations: HashMap::new() },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
@@ -522,11 +482,7 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta {
-                    name: "target".into(),
-                    labels,
-                    annotations: HashMap::new(),
-                },
+                metadata: ObjectMeta { name: "target".into(), labels, annotations: HashMap::new() },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
@@ -574,11 +530,7 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta {
-                    name: "target".into(),
-                    labels,
-                    annotations: HashMap::new(),
-                },
+                metadata: ObjectMeta { name: "target".into(), labels, annotations: HashMap::new() },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
@@ -621,11 +573,7 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta {
-                    name: "target".into(),
-                    labels,
-                    annotations: HashMap::new(),
-                },
+                metadata: ObjectMeta { name: "target".into(), labels, annotations: HashMap::new() },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,

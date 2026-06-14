@@ -16,7 +16,7 @@ TEST_RUN=$(date +%s)
 # Clean up from previous runs
 kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 1
-rm -f /tmp/watch-*.log /tmp/kapi-server.log /tmp/kapi-test.db
+rm -f /tmp/watch-*.log /tmp/kapi-server.log /tmp/kapi-test.db ./kapi.db
 
 # Start server with trace logging
 RUST_LOG=kapi=trace cargo run > /tmp/kapi-server.log 2>&1 &
@@ -541,17 +541,17 @@ curl -s http://localhost:8080/apis/example.io/v1/Widget | python3 -m json.tool
 **Goal:** Verify that labels persist across server restarts via SQLite storage.
 
 ```bash
-# NOTE: The server now uses the KAPI_DB_PATH env var for database path.
+# NOTE: The server uses the KAPI_DB_PATH env var for database path.
 # If unset, it defaults to ./kapi.db. Set it to a temp file for this test.
+# Use inline env var (not export) to avoid leaking KAPI_DB_PATH to later tests.
 
 # 1. Stop the current in-memory server
 kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 1
 
 # 2. Start server with SQLite storage
-export KAPI_DB_PATH=/tmp/kapi-persist-test.db
-rm -f "$KAPI_DB_PATH"
-RUST_LOG=kapi=trace cargo run > /tmp/kapi-server-persist.log 2>&1 &
+rm -f /tmp/kapi-persist-test.db
+RUST_LOG=kapi=trace KAPI_DB_PATH=/tmp/kapi-persist-test.db cargo run > /tmp/kapi-server-persist.log 2>&1 &
 sleep 3
 
 # 3. Register schema and create an object with labels
@@ -619,7 +619,7 @@ kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 2
 
 # 6. Restart the server with the same database
-RUST_LOG=kapi=trace KAPI_DB_PATH="$KAPI_DB_PATH" cargo run > /tmp/kapi-server-persist.log 2>&1 &
+RUST_LOG=kapi=trace KAPI_DB_PATH=/tmp/kapi-persist-test.db cargo run > /tmp/kapi-server-persist.log 2>&1 &
 sleep 3
 
 # 7. Verify labels survived restart
@@ -1080,13 +1080,13 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget?fieldSelector=metadata.
 
 ## Test 25: List with filter and pagination
 
-**Goal:** Verify that filtering happens before pagination (correct page sizes).
+**Goal:** Verify that filtering happens before pagination (correct page sizes). Uses a unique label (`pag-test-run`) to avoid counting objects from earlier tests.
 
 ```bash
 # 1. Create 10 widgets, only 3 have the target label
 for i in $(seq 1 10); do
   if [ $i -le 3 ]; then
-    labels='{"app":"nginx"}'
+    labels='{"pag-test-run":"true"}'
   else
     labels='{}'
   fi
@@ -1097,7 +1097,7 @@ done
 
 # 2. Filter to 3, limit 10 → should return 3 (not 10)
 echo "=== Filter + pagination ==="
-curl -s "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app=nginx&limit=10" | python3 -c "
+curl -s "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=pag-test-run=true&limit=10" | python3 -c "
 import sys, json
 body = json.load(sys.stdin)
 items = body['items']
@@ -1400,7 +1400,7 @@ print('PASS: spec unchanged, status set')
 # 1. Create object and capture resourceVersion
 CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"rv-bump-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"}}")
+  -d "{\"metadata\":{\"name\":\"rv-bump-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":1}}")
 INITIAL_RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
 echo "Initial resourceVersion: $INITIAL_RV"
 
@@ -1434,7 +1434,7 @@ print(f'PASS: resourceVersion bumped from {initial} to {after}')
 echo "=== Create with unknown field ==="
 curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"create-with-status-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"},\"status\":{\"phase\":\"Pre-set\"}}"
+  -d "{\"metadata\":{\"name\":\"create-with-status-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":1},\"status\":{\"phase\":\"Pre-set\"}}"
 ```
 
 **Expected results:**
@@ -1452,7 +1452,7 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/ex
 # 1. Create object
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"replace-status-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"}}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"replace-status-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":1}}" > /dev/null
 
 # 2. Set status with both phase and message
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/replace-status-$TEST_RUN/status" \
@@ -1489,7 +1489,7 @@ print('PASS: status replaced, not merged')
 # 1. Create object
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
-  -d "{\"metadata\":{\"name\":\"status-event-$TEST_RUN\"},\"spec\":{\"color\":\"blue\"}}" > /dev/null
+  -d "{\"metadata\":{\"name\":\"status-event-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":1}}" > /dev/null
 
 # 2. Start watching BEFORE status update
 curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \

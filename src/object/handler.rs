@@ -163,30 +163,15 @@ pub async fn create(
         if let Some(obj) = data.as_object_mut() {
             obj.remove("metadata");
         }
-        (
-            ObjectMeta {
-                name,
-                labels,
-                annotations,
-            },
-            data,
-        )
+        (ObjectMeta { name, labels, annotations }, data)
     } else {
         // Validate: only "metadata" and "spec" allowed as top-level fields
         if let Some(obj) = body.as_object() {
-            let unknown: Vec<&String> = obj
-                .keys()
-                .filter(|k| *k != "metadata" && *k != "spec")
-                .collect();
+            let unknown: Vec<&String> =
+                obj.keys().filter(|k| *k != "metadata" && *k != "spec").collect();
             if !unknown.is_empty() {
-                let fields = unknown
-                    .iter()
-                    .map(|s| s.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Err(AppError::InvalidRequestBody(format!(
-                    "unknown field(s): {fields}"
-                )));
+                let fields = unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
+                return Err(AppError::InvalidRequestBody(format!("unknown field(s): {fields}")));
             }
         }
 
@@ -204,32 +189,17 @@ pub async fn create(
             .ok_or_else(|| AppError::InvalidRequestBody("'spec' field is required".to_string()))?;
 
         if !spec.is_object() {
-            return Err(AppError::InvalidRequestBody(
-                "'spec' must be a JSON object".to_string(),
-            ));
+            return Err(AppError::InvalidRequestBody("'spec' must be a JSON object".to_string()));
         }
 
         if spec.as_object().is_some_and(|o| o.is_empty()) {
-            return Err(AppError::InvalidRequestBody(
-                "'spec' must not be empty".to_string(),
-            ));
+            return Err(AppError::InvalidRequestBody("'spec' must not be empty".to_string()));
         }
 
-        (
-            ObjectMeta {
-                name,
-                labels,
-                annotations,
-            },
-            spec.clone(),
-        )
+        (ObjectMeta { name, labels, annotations }, spec.clone())
     };
 
-    let key = ResourceKey {
-        group: path.group,
-        version: path.version,
-        kind: path.kind,
-    };
+    let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
 
     let stored = state.object_service().create(key, meta, data).await?;
     Ok((StatusCode::CREATED, Json(stored)))
@@ -243,11 +213,7 @@ pub async fn get(
     State(state): State<AppState>,
     Path(path): Path<ObjectNamePath>,
 ) -> Result<Json<StoredObject>, AppError> {
-    let key = ResourceKey {
-        group: path.group,
-        version: path.version,
-        kind: path.kind,
-    };
+    let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
 
     let stored = state.object_service().get(key, path.name).await?;
     Ok(Json(stored))
@@ -262,11 +228,7 @@ pub async fn list(
     Path(path): Path<ObjectPath>,
     Query(query): Query<ListQuery>,
 ) -> Result<axum::response::Response, AppError> {
-    let key = ResourceKey {
-        group: path.group,
-        version: path.version,
-        kind: path.kind,
-    };
+    let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
 
     // Parse fieldSelector if present
     let field_filter = match &query.field_selector {
@@ -320,9 +282,9 @@ pub fn parse_field_selector(raw: &str) -> Result<WatchFilter, AppError> {
         ))
     })?;
     match field {
-        "metadata.name" => Ok(WatchFilter::FieldSelector(FieldSelector::NameEquals(
-            value.to_string(),
-        ))),
+        "metadata.name" => {
+            Ok(WatchFilter::FieldSelector(FieldSelector::NameEquals(value.to_string())))
+        }
         _ => Err(AppError::InvalidFieldSelector(format!(
             "unsupported field '{field}': only 'metadata.name' is supported"
         ))),
@@ -342,9 +304,7 @@ pub fn parse_field_selector(raw: &str) -> Result<WatchFilter, AppError> {
 /// Empty string returns a `LabelSelector` with no requirements (matches all).
 pub fn parse_label_selector(raw: &str) -> Result<WatchFilter, AppError> {
     if raw.is_empty() {
-        return Ok(WatchFilter::LabelSelector(LabelSelector {
-            requirements: vec![],
-        }));
+        return Ok(WatchFilter::LabelSelector(LabelSelector { requirements: vec![] }));
     }
 
     let requirements: Result<Vec<LabelRequirement>, AppError> = raw
@@ -360,9 +320,7 @@ pub fn parse_label_selector(raw: &str) -> Result<WatchFilter, AppError> {
         })
         .collect();
 
-    Ok(WatchFilter::LabelSelector(LabelSelector {
-        requirements: requirements?,
-    }))
+    Ok(WatchFilter::LabelSelector(LabelSelector { requirements: requirements? }))
 }
 
 /// Parses a single label requirement string into a `LabelRequirement`.
@@ -377,10 +335,7 @@ fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, AppError> 
                 "empty value in inequality selector: '{segment}'"
             )));
         }
-        return Ok(LabelRequirement::NotEquals {
-            key: key.to_string(),
-            value: value.to_string(),
-        });
+        return Ok(LabelRequirement::NotEquals { key: key.to_string(), value: value.to_string() });
     }
 
     // Check for equality
@@ -393,36 +348,27 @@ fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, AppError> 
                 "empty value in equality selector: '{segment}'"
             )));
         }
-        return Ok(LabelRequirement::Equals {
-            key: key.to_string(),
-            value: value.to_string(),
-        });
+        return Ok(LabelRequirement::Equals { key: key.to_string(), value: value.to_string() });
     }
 
     // Check for non-existence (!key)
     if let Some(key) = segment.strip_prefix('!') {
         let key = key.trim();
         validate_label_key(key)?;
-        return Ok(LabelRequirement::NotExists {
-            key: key.to_string(),
-        });
+        return Ok(LabelRequirement::NotExists { key: key.to_string() });
     }
 
     // Existence (key only)
     let key = segment.trim();
     validate_label_key(key)?;
-    Ok(LabelRequirement::Exists {
-        key: key.to_string(),
-    })
+    Ok(LabelRequirement::Exists { key: key.to_string() })
 }
 
 /// Validates a label key format.
 /// Label keys must not contain spaces, commas, equals signs, or exclamation marks.
 fn validate_label_key(key: &str) -> Result<(), AppError> {
     if key.is_empty() {
-        return Err(AppError::InvalidLabelSelector(
-            "empty label key".to_string(),
-        ));
+        return Err(AppError::InvalidLabelSelector("empty label key".to_string()));
     }
     if key.contains(|c: char| c.is_whitespace()) {
         return Err(AppError::InvalidLabelSelector(format!(
@@ -481,9 +427,7 @@ pub async fn update(
     };
 
     if body.key != url_key {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "URL key does not match body key"
-        )));
+        return Err(AppError::Internal(anyhow::anyhow!("URL key does not match body key")));
     }
 
     if body.metadata.name != path.name {
@@ -510,11 +454,7 @@ pub async fn delete(
     State(state): State<AppState>,
     Path(path): Path<ObjectNamePath>,
 ) -> Result<Json<StoredObject>, AppError> {
-    let key = ResourceKey {
-        group: path.group,
-        version: path.version,
-        kind: path.kind,
-    };
+    let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
 
     let deleted = state.object_service().delete(key, path.name).await?;
     Ok(Json(deleted))
@@ -529,11 +469,7 @@ pub async fn get_status(
     State(state): State<AppState>,
     Path(path): Path<ObjectNamePath>,
 ) -> Result<Json<Option<Value>>, AppError> {
-    let key = ResourceKey {
-        group: path.group,
-        version: path.version,
-        kind: path.kind,
-    };
+    let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
 
     let status = state.object_service().get_status(key, path.name).await?;
     Ok(Json(status))
@@ -549,22 +485,12 @@ pub async fn update_status(
     Path(path): Path<ObjectNamePath>,
     Json(body): Json<Value>,
 ) -> Result<Json<StoredObject>, AppError> {
-    let key = ResourceKey {
-        group: path.group,
-        version: path.version,
-        kind: path.kind,
-    };
+    let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
 
     // Extract status field from body
-    let status = body
-        .get("status")
-        .cloned()
-        .unwrap_or(Value::Object(serde_json::Map::new()));
+    let status = body.get("status").cloned().unwrap_or(Value::Object(serde_json::Map::new()));
 
-    let updated = state
-        .object_service()
-        .update_status(key, path.name, status)
-        .await?;
+    let updated = state.object_service().update_status(key, path.name, status).await?;
     Ok(Json(updated))
 }
 
@@ -703,18 +629,9 @@ mod tests {
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
             assert_eq!(selector.requirements.len(), 3);
-            assert!(matches!(
-                &selector.requirements[0],
-                LabelRequirement::Equals { .. }
-            ));
-            assert!(matches!(
-                &selector.requirements[1],
-                LabelRequirement::NotExists { .. }
-            ));
-            assert!(matches!(
-                &selector.requirements[2],
-                LabelRequirement::Exists { .. }
-            ));
+            assert!(matches!(&selector.requirements[0], LabelRequirement::Equals { .. }));
+            assert!(matches!(&selector.requirements[1], LabelRequirement::NotExists { .. }));
+            assert!(matches!(&selector.requirements[2], LabelRequirement::Exists { .. }));
         } else {
             panic!("expected LabelSelector filter");
         }

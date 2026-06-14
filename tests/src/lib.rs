@@ -39,25 +39,15 @@ impl TestApp {
     pub fn with_store(store: Arc<dyn ObjectStore>) -> Self {
         let event_bus: Arc<dyn EventPublisher> = Arc::new(EventBus::default());
 
-        let config = AppConfig {
-            port: 0,
-            store: store.clone(),
-            event_bus: event_bus.clone(),
-        };
+        let config = AppConfig { port: 0, store: store.clone(), event_bus: event_bus.clone() };
 
         let router = kapi::create_app(&config).expect("failed to build app");
 
-        Self {
-            router,
-            store,
-            event_bus,
-        }
+        Self { router, store, event_bus }
     }
 
     pub fn client(&self) -> TestClient {
-        TestClient {
-            router: self.router.clone(),
-        }
+        TestClient { router: self.router.clone() }
     }
 }
 
@@ -68,10 +58,7 @@ pub struct TestStore {
 
 pub fn all_test_stores() -> Vec<TestStore> {
     vec![
-        TestStore {
-            name: "memory",
-            factory: Box::new(|| Arc::new(InMemoryStore::new())),
-        },
+        TestStore { name: "memory", factory: Box::new(|| Arc::new(InMemoryStore::new())) },
         TestStore {
             name: "sqlite",
             factory: Box::new(|| {
@@ -89,11 +76,7 @@ pub struct TestClient {
 
 impl TestClient {
     pub async fn get(&self, uri: &str) -> axum::response::Response<Body> {
-        let req = Request::builder()
-            .method(Method::GET)
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().method(Method::GET).uri(uri).body(Body::empty()).unwrap();
         self.router.clone().oneshot(req).await.unwrap()
     }
 
@@ -118,22 +101,14 @@ impl TestClient {
     }
 
     pub async fn delete(&self, uri: &str) -> axum::response::Response<Body> {
-        let req = Request::builder()
-            .method(Method::DELETE)
-            .uri(uri)
-            .body(Body::empty())
-            .unwrap();
+        let req = Request::builder().method(Method::DELETE).uri(uri).body(Body::empty()).unwrap();
         self.router.clone().oneshot(req).await.unwrap()
     }
 }
 
 pub async fn parse_body<T: DeserializeOwned>(response: axum::response::Response<Body>) -> T {
     let body = response.into_body();
-    let bytes = body
-        .collect()
-        .await
-        .expect("failed to read body")
-        .to_bytes();
+    let bytes = body.collect().await.expect("failed to read body").to_bytes();
     serde_json::from_slice(&bytes).expect("failed to parse JSON body")
 }
 
@@ -256,8 +231,6 @@ pub async fn watch_events(client: &TestClient, uri: &str) -> mpsc::Receiver<Watc
 }
 
 pub async fn register_widget_schema(client: &TestClient) {
-    let resp = client
-        .post("/apis/kapi.io/v1/Schema", widget_schema())
-        .await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema()).await;
     assert_status(&resp, StatusCode::CREATED);
 }

@@ -45,11 +45,7 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
     let schema_list = service
         .list(
             schema_resource_key(),
-            ListOptions {
-                limit: None,
-                continue_token: None,
-                ..Default::default()
-            },
+            ListOptions { limit: None, continue_token: None, ..Default::default() },
         )
         .await?;
 
@@ -609,10 +605,8 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
 ///
 /// The wire format is `{ status: ...userDataProperties }`.
 fn build_status_update_request_schema(schema_data: &crate::object::types::SchemaData) -> Value {
-    let status_schema = schema_data
-        .status_schema
-        .clone()
-        .unwrap_or_else(|| json!({ "type": "object" }));
+    let status_schema =
+        schema_data.status_schema.clone().unwrap_or_else(|| json!({ "type": "object" }));
 
     json!({
         "type": "object",

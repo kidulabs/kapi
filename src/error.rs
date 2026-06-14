@@ -133,10 +133,7 @@ impl IntoResponse for AppError {
                 json!({ "message": msg }),
             ),
             // StoredSchemaCompilationFailed maps to HTTP 500 Internal Server Error
-            AppError::StoredSchemaCompilationFailed {
-                schema_name,
-                reason,
-            } => (
+            AppError::StoredSchemaCompilationFailed { schema_name, reason } => (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "StoredSchemaCompilationFailed",
                 format!("stored schema '{schema_name}' compilation failed: {reason}"),

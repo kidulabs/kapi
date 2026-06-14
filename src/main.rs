@@ -17,10 +17,7 @@ async fn main() -> anyhow::Result<()> {
     let store = Arc::new(SQLiteStore::new(&db_path)?);
 
     let config = kapi::AppConfig {
-        port: env::var("PORT")
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(8080),
+        port: env::var("PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(8080),
         store,
         event_bus: Arc::new(EventBus::default()),
     };

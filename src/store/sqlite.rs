@@ -37,9 +37,7 @@ impl SQLiteStore {
         }
 
         let conn = Connection::open(path).map_err(|e| AppError::Internal(e.into()))?;
-        let store = Self {
-            conn: Arc::new(Mutex::new(conn)),
-        };
+        let store = Self { conn: Arc::new(Mutex::new(conn)) };
         store.init_schema()?;
         Ok(store)
     }
@@ -72,8 +70,7 @@ impl SQLiteStore {
         ).map_err(|e| AppError::Internal(e.into()))?;
 
         // Enable foreign key support (required for ON DELETE CASCADE)
-        conn.execute("PRAGMA foreign_keys = ON", [])
-            .map_err(|e| AppError::Internal(e.into()))?;
+        conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| AppError::Internal(e.into()))?;
 
         conn.execute(
             "CREATE TABLE IF NOT EXISTS labels (
@@ -129,16 +126,8 @@ impl SQLiteStore {
         let updated_at =
             DateTime::parse_from_rfc3339(&updated_at).map_err(|e| AppError::Internal(e.into()))?;
         Ok(StoredObject {
-            key: ResourceKey {
-                group,
-                version,
-                kind,
-            },
-            metadata: ObjectMeta {
-                name,
-                labels: HashMap::new(),
-                annotations: annotations_value,
-            },
+            key: ResourceKey { group, version, kind },
+            metadata: ObjectMeta { name, labels: HashMap::new(), annotations: annotations_value },
             system: SystemMetadata {
                 resource_version: resource_version as u64,
                 generation: generation as u64,
@@ -200,9 +189,7 @@ impl SQLiteStore {
             placeholders.join(", ")
         );
 
-        let mut stmt = conn
-            .prepare(&sql)
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Internal(e.into()))?;
 
         let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
         for name in names {
@@ -247,10 +234,7 @@ impl SQLiteStore {
             )
             .map_err(|e| AppError::Internal(e.into()))?;
         let mut obj = stmt
-            .query_row(
-                params![key.group, key.version, key.kind, name],
-                row_to_object,
-            )
+            .query_row(params![key.group, key.version, key.kind, name], row_to_object)
             .optional()
             .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -289,9 +273,7 @@ impl SQLiteStore {
         let created_at = object.system.created_at.to_rfc3339();
         let updated_at = object.system.updated_at.to_rfc3339();
 
-        let tx = conn
-            .unchecked_transaction()
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let tx = conn.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
         tx.execute(
             "INSERT OR REPLACE INTO objects \
@@ -318,12 +300,7 @@ impl SQLiteStore {
         tx.execute(
             "DELETE FROM labels WHERE resource_group = ?1 AND api_version = ?2 \
              AND resource_kind = ?3 AND name = ?4",
-            params![
-                object.key.group,
-                object.key.version,
-                object.key.kind,
-                object.metadata.name,
-            ],
+            params![object.key.group, object.key.version, object.key.kind, object.metadata.name,],
         )
         .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -813,10 +790,7 @@ mod tests {
         let key = test_key();
         let data = json!({"color": "blue", "size": 10});
 
-        let created = store
-            .create(test_obj(key.clone(), "my-widget", data.clone()))
-            .await
-            .unwrap();
+        let created = store.create(test_obj(key.clone(), "my-widget", data.clone())).await.unwrap();
         assert_eq!(created.metadata.name, "my-widget");
         assert_eq!(created.spec, data);
         assert_eq!(created.key, key);
@@ -825,10 +799,7 @@ mod tests {
         let retrieved = store.get(&key, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
         assert_eq!(retrieved.spec, created.spec);
-        assert_eq!(
-            retrieved.system.resource_version,
-            created.system.resource_version
-        );
+        assert_eq!(retrieved.system.resource_version, created.system.resource_version);
     }
 
     #[tokio::test]
@@ -836,15 +807,10 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store
-            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "my-widget", json!({"x": 1}))).await.unwrap();
 
-        let err = store
-            .create(test_obj(key.clone(), "my-widget", json!({"x": 2})))
-            .await
-            .unwrap_err();
+        let err =
+            store.create(test_obj(key.clone(), "my-widget", json!({"x": 2}))).await.unwrap_err();
         assert!(matches!(err, AppError::AlreadyExists { .. }));
     }
 
@@ -862,28 +828,12 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store
-            .create(test_obj(key.clone(), "c", json!({})))
-            .await
-            .unwrap();
-        store
-            .create(test_obj(key.clone(), "a", json!({})))
-            .await
-            .unwrap();
-        store
-            .create(test_obj(key.clone(), "b", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "c", json!({}))).await.unwrap();
+        store.create(test_obj(key.clone(), "a", json!({}))).await.unwrap();
+        store.create(test_obj(key.clone(), "b", json!({}))).await.unwrap();
 
         let res = store
-            .list(
-                &key,
-                ListOptions {
-                    limit: None,
-                    continue_token: None,
-                    ..Default::default()
-                },
-            )
+            .list(&key, ListOptions { limit: None, continue_token: None, ..Default::default() })
             .await
             .unwrap();
         let names: Vec<&str> = res.items.iter().map(|o| o.metadata.name.as_str()).collect();
@@ -897,21 +847,11 @@ mod tests {
         let key = test_key();
 
         for i in 0..5 {
-            store
-                .create(test_obj(key.clone(), &format!("item-{i}"), json!({})))
-                .await
-                .unwrap();
+            store.create(test_obj(key.clone(), &format!("item-{i}"), json!({}))).await.unwrap();
         }
 
         let res = store
-            .list(
-                &key,
-                ListOptions {
-                    limit: Some(2),
-                    continue_token: None,
-                    ..Default::default()
-                },
-            )
+            .list(&key, ListOptions { limit: Some(2), continue_token: None, ..Default::default() })
             .await
             .unwrap();
         assert_eq!(res.items.len(), 2);
@@ -926,21 +866,11 @@ mod tests {
         let key = test_key();
 
         for i in 0..5 {
-            store
-                .create(test_obj(key.clone(), &format!("item-{i}"), json!({})))
-                .await
-                .unwrap();
+            store.create(test_obj(key.clone(), &format!("item-{i}"), json!({}))).await.unwrap();
         }
 
         let first = store
-            .list(
-                &key,
-                ListOptions {
-                    limit: Some(2),
-                    continue_token: None,
-                    ..Default::default()
-                },
-            )
+            .list(&key, ListOptions { limit: Some(2), continue_token: None, ..Default::default() })
             .await
             .unwrap();
         let token = first.continue_token.unwrap();
@@ -948,11 +878,7 @@ mod tests {
         let second = store
             .list(
                 &key,
-                ListOptions {
-                    limit: Some(2),
-                    continue_token: Some(token),
-                    ..Default::default()
-                },
+                ListOptions { limit: Some(2), continue_token: Some(token), ..Default::default() },
             )
             .await
             .unwrap();
@@ -966,10 +892,8 @@ mod tests {
     async fn update_correct_version_succeeds() {
         let (store, _dir) = temp_store();
         let key = test_key();
-        let created = store
-            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
-            .await
-            .unwrap();
+        let created =
+            store.create(test_obj(key.clone(), "my-widget", json!({"x": 1}))).await.unwrap();
         let v1 = created.system.resource_version;
 
         let updated = store
@@ -1005,14 +929,11 @@ mod tests {
     async fn delete_returns_object_and_get_not_found() {
         let (store, _dir) = temp_store();
         let key = test_key();
-        let created = store
-            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
-            .await
-            .unwrap();
+        let created =
+            store.create(test_obj(key.clone(), "my-widget", json!({"x": 1}))).await.unwrap();
 
-        let deleted = store
-            .transaction(&key, "my-widget", Box::new(|_| TransactionOp::Delete))
-            .unwrap();
+        let deleted =
+            store.transaction(&key, "my-widget", Box::new(|_| TransactionOp::Delete)).unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
 
         let err = store.get(&key, "my-widget").await.unwrap_err();
@@ -1036,14 +957,7 @@ mod tests {
         let key = test_key();
 
         let res = store
-            .list(
-                &key,
-                ListOptions {
-                    limit: None,
-                    continue_token: None,
-                    ..Default::default()
-                },
-            )
+            .list(&key, ListOptions { limit: None, continue_token: None, ..Default::default() })
             .await
             .unwrap();
         assert!(res.items.is_empty());
@@ -1060,11 +974,7 @@ mod tests {
             let store = SQLiteStore::new(db_path.to_str().unwrap()).unwrap();
             let key = test_key();
             store
-                .create(test_obj(
-                    key.clone(),
-                    "persistent",
-                    json!({"data": "hello"}),
-                ))
+                .create(test_obj(key.clone(), "persistent", json!({"data": "hello"})))
                 .await
                 .unwrap();
         }
@@ -1084,18 +994,9 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store
-            .create(test_obj(key.clone(), "foo", json!({})))
-            .await
-            .unwrap();
-        store
-            .create(test_obj(key.clone(), "bar", json!({})))
-            .await
-            .unwrap();
-        store
-            .create(test_obj(key.clone(), "baz", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "foo", json!({}))).await.unwrap();
+        store.create(test_obj(key.clone(), "bar", json!({}))).await.unwrap();
+        store.create(test_obj(key.clone(), "baz", json!({}))).await.unwrap();
 
         let res = store
             .list(
@@ -1128,10 +1029,7 @@ mod tests {
         obj.metadata.labels = labels_apache;
         store.create(obj).await.unwrap();
 
-        store
-            .create(test_obj(key.clone(), "web-3", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "web-3", json!({}))).await.unwrap();
 
         let res = store
             .list(
@@ -1169,10 +1067,7 @@ mod tests {
         obj.metadata.labels = labels2;
         store.create(obj).await.unwrap();
 
-        store
-            .create(test_obj(key.clone(), "no-env-app", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "no-env-app", json!({}))).await.unwrap();
 
         let res = store
             .list(
@@ -1204,19 +1099,14 @@ mod tests {
         obj.metadata.labels = labels;
         store.create(obj).await.unwrap();
 
-        store
-            .create(test_obj(key.clone(), "cpu-node", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "cpu-node", json!({}))).await.unwrap();
 
         let res = store
             .list(
                 &key,
                 ListOptions {
                     label_selector: Some(LabelSelector {
-                        requirements: vec![LabelRequirement::Exists {
-                            key: "gpu".to_string(),
-                        }],
+                        requirements: vec![LabelRequirement::Exists { key: "gpu".to_string() }],
                     }),
                     ..Default::default()
                 },
@@ -1238,10 +1128,7 @@ mod tests {
         obj.metadata.labels = labels;
         store.create(obj).await.unwrap();
 
-        store
-            .create(test_obj(key.clone(), "stable-app", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "stable-app", json!({}))).await.unwrap();
 
         let res = store
             .list(
@@ -1278,10 +1165,7 @@ mod tests {
         obj.metadata.labels = labels2;
         store.create(obj).await.unwrap();
 
-        store
-            .create(test_obj(key.clone(), "target-nolabel", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "target-nolabel", json!({}))).await.unwrap();
 
         let res = store
             .list(
@@ -1312,9 +1196,7 @@ mod tests {
         for i in 0..50 {
             let mut obj = test_obj(key.clone(), &format!("obj-{i:02}"), json!({}));
             if i < 3 {
-                obj.metadata
-                    .labels
-                    .insert("app".to_string(), "nginx".to_string());
+                obj.metadata.labels.insert("app".to_string(), "nginx".to_string());
             }
             store.create(obj).await.unwrap();
         }
@@ -1345,10 +1227,7 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store
-            .create(test_obj(key.clone(), "foo", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "foo", json!({}))).await.unwrap();
 
         let res = store
             .list(
@@ -1415,10 +1294,7 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store
-            .create(test_obj(key.clone(), "exists-test", json!({"x": 1})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "exists-test", json!({"x": 1}))).await.unwrap();
 
         assert!(store.exists(&key).await.unwrap());
     }
@@ -1436,10 +1312,7 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store
-            .create(test_obj(key.clone(), "test", json!({})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "test", json!({}))).await.unwrap();
 
         let other_key = ResourceKey {
             group: "other.io".to_string(),
@@ -1498,10 +1371,7 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        store
-            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue"})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "my-widget", json!({"color": "blue"}))).await.unwrap();
 
         store
             .transaction(
@@ -1534,10 +1404,8 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        let created = store
-            .create(test_obj(key.clone(), "my-widget", json!({"x": 1})))
-            .await
-            .unwrap();
+        let created =
+            store.create(test_obj(key.clone(), "my-widget", json!({"x": 1}))).await.unwrap();
         let v1 = created.system.resource_version;
 
         let updated = store
@@ -1562,11 +1430,7 @@ mod tests {
         let key = test_key();
 
         store
-            .create(test_obj(
-                key.clone(),
-                "my-widget",
-                json!({"color": "blue", "size": 10}),
-            ))
+            .create(test_obj(key.clone(), "my-widget", json!({"color": "blue", "size": 10})))
             .await
             .unwrap();
 
@@ -1590,10 +1454,7 @@ mod tests {
     async fn transaction_apply_succeeds() {
         let (store, _dir) = temp_store();
         let key = test_key();
-        let created = store
-            .create(test_obj(key.clone(), "test", json!({"x": 1})))
-            .await
-            .unwrap();
+        let created = store.create(test_obj(key.clone(), "test", json!({"x": 1}))).await.unwrap();
         let v1 = created.system.resource_version;
 
         let result = store
@@ -1618,10 +1479,7 @@ mod tests {
     async fn transaction_abort_does_not_modify() {
         let (store, _dir) = temp_store();
         let key = test_key();
-        let created = store
-            .create(test_obj(key.clone(), "test", json!({"x": 1})))
-            .await
-            .unwrap();
+        let created = store.create(test_obj(key.clone(), "test", json!({"x": 1}))).await.unwrap();
         let v1 = created.system.resource_version;
 
         let err = store
@@ -1643,14 +1501,9 @@ mod tests {
     async fn transaction_delete_removes_object() {
         let (store, _dir) = temp_store();
         let key = test_key();
-        store
-            .create(test_obj(key.clone(), "test", json!({"x": 1})))
-            .await
-            .unwrap();
+        store.create(test_obj(key.clone(), "test", json!({"x": 1}))).await.unwrap();
 
-        store
-            .transaction(&key, "test", Box::new(|_| TransactionOp::Delete))
-            .unwrap();
+        store.transaction(&key, "test", Box::new(|_| TransactionOp::Delete)).unwrap();
 
         let err = store.get(&key, "test").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
