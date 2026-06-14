@@ -54,23 +54,31 @@ The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `
 - **THEN** the resulting `StoredObject` has `status` as `None`
 
 ### Requirement: ObjectMeta groups user-controlled metadata fields
-`ObjectMeta` SHALL contain a `name` field of type `String` and a `labels` field of type `HashMap<String, String>`. Both fields SHALL use `camelCase` serialization via `#[serde(rename_all = "camelCase")]`.
+`ObjectMeta` SHALL contain a `name` field of type `String`, a `labels` field of type `HashMap<String, String>`, and an `annotations` field of type `HashMap<String, String>`. All fields SHALL use `camelCase` serialization via `#[serde(rename_all = "camelCase")]`. The `annotations` field SHALL use `#[serde(default)]` to default to an empty map when absent.
 
-#### Scenario: ObjectMeta serialization with labels
-- **WHEN** an `ObjectMeta` with `name: "my-widget"` and `labels: {"app": "nginx"}` is serialized
-- **THEN** the JSON output SHALL be `{"name": "my-widget", "labels": {"app": "nginx"}}`
+#### Scenario: ObjectMeta serialization with labels and annotations
+- **WHEN** an `ObjectMeta` with `name: "my-widget"`, `labels: {"app": "nginx"}`, and `annotations: {"description": "my widget"}` is serialized
+- **THEN** the JSON output SHALL be `{"name": "my-widget", "labels": {"app": "nginx"}, "annotations": {"description": "my widget"}}`
 
-#### Scenario: ObjectMeta serialization without labels
-- **WHEN** an `ObjectMeta` with `name: "my-widget"` and empty labels is serialized
-- **THEN** the JSON output SHALL be `{"name": "my-widget", "labels": {}}`
+#### Scenario: ObjectMeta serialization without labels or annotations
+- **WHEN** an `ObjectMeta` with `name: "my-widget"` and empty labels and annotations is serialized
+- **THEN** the JSON output SHALL be `{"name": "my-widget", "labels": {}, "annotations": {}}`
 
-#### Scenario: ObjectMeta deserialization with labels
-- **WHEN** JSON `{"name": "my-widget", "labels": {"env": "prod"}}` is deserialized into `ObjectMeta`
-- **THEN** the resulting struct SHALL have `name = "my-widget"` and `labels = {"env": "prod"}`
+#### Scenario: ObjectMeta deserialization with labels and annotations
+- **WHEN** JSON `{"name": "my-widget", "labels": {"env": "prod"}, "annotations": {"owner": "team"}}` is deserialized into `ObjectMeta`
+- **THEN** the resulting struct SHALL have `name = "my-widget"`, `labels = {"env": "prod"}`, and `annotations = {"owner": "team"}`
 
-#### Scenario: ObjectMeta deserialization without labels field
+#### Scenario: ObjectMeta deserialization without labels or annotations fields
 - **WHEN** JSON `{"name": "my-widget"}` is deserialized into `ObjectMeta`
-- **THEN** the resulting struct SHALL have `name = "my-widget"` and `labels` as an empty `HashMap`
+- **THEN** the resulting struct SHALL have `name = "my-widget"`, `labels` as an empty `HashMap`, and `annotations` as an empty `HashMap`
+
+#### Scenario: ObjectMeta deserialization with only labels
+- **WHEN** JSON `{"name": "my-widget", "labels": {"app": "nginx"}}` is deserialized into `ObjectMeta`
+- **THEN** the resulting struct SHALL have `name = "my-widget"`, `labels = {"app": "nginx"}`, and `annotations` as an empty `HashMap`
+
+#### Scenario: ObjectMeta deserialization with only annotations
+- **WHEN** JSON `{"name": "my-widget", "annotations": {"description": "test"}}` is deserialized into `ObjectMeta`
+- **THEN** the resulting struct SHALL have `name = "my-widget"`, `labels` as an empty `HashMap`, and `annotations = {"description": "test"}`
 
 ### Requirement: SystemMetadata groups server-managed lifecycle fields
 The system SHALL define a `SystemMetadata` struct containing `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>`. This struct SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `SystemMetadata` represents the portion of object metadata that the server controls; clients read these values but do not set them on create (they may echo `resourceVersion` on update for optimistic concurrency).
