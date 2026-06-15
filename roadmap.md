@@ -29,7 +29,7 @@
 - [ ] **Webhook-based schema validation** — Explore admission webhooks for custom validation beyond meta-schema
 - [ ] **PATCH endpoint support** — Evaluate adding strategic merge patch support
 - [ ] **Publish Framework** Should publish framework to be moved the storage layer?
-- [ ] **Validations** now label and other validations are scattered all around in service layer, should we push them near the storage? early to web handlers?
+- [x] **Validations** Moved format validation (labels, annotations) to handler edge with `src/validation/` module. Service retains defense-in-depth. Stateful validation (schema lookup, OCC) stays in service.
 
 ## Out of Scope
 

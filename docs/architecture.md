@@ -50,12 +50,15 @@ These layers compose via `ServiceBuilder` and wrap the entire router.
 
 Thin Axum extractors and response builders. Handlers:
 - Extract path parameters (group, version, kind, name)
-- Extract and validate `metadata.labels` from request body
+- Extract and validate `metadata.labels` and `metadata.annotations` from request body
+- Validate input format eagerly — reject invalid labels/annotations before any service I/O
 - Deserialize request bodies (strip `metadata` before sending to store)
 - Call `ObjectService` methods
 - Convert results into HTTP responses
 
-**No business logic** lives in handlers — they are pure translation layers.
+**Format validation** (label regex, annotation size limits) is done at the handler edge.
+**Stateful validation** (schema lookup, JSON Schema validation, OCC checks, deletion guards)
+remains in the service layer, which also re-validates format as defense-in-depth.
 
 ### 3. ObjectService (object/service.rs)
 
@@ -63,7 +66,7 @@ The central orchestrator that coordinates validation, storage, and event publish
 
 - **Schema objects** (kind == "Schema"): validate against meta-schema, compile nested jsonSchema, cache compiled validator
 - **Regular objects**: look up Schema from store, validate against cached compiled schema
-- **All mutations**: validate labels (`ObjectMeta.labels`) before persisting
+- **All mutations**: validate labels and annotations (`ObjectMeta.labels` and `ObjectMeta.annotations`) before persisting (defense-in-depth — handler already validates at edge)
 - **All mutations**: publish WatchEvent to EventBus after successful store operation
 
 `ObjectService` holds:
@@ -99,7 +102,9 @@ src/
 ├── object/
 │   ├── types.rs            # Core types (StoredObject, ObjectMeta, SystemMetadata, etc.)
 │   ├── service.rs          # ObjectService orchestrator + tests
-│   └── handler.rs          # Axum route handlers
+│   └── handler.rs          # Axum route handlers (format validation at edge)
+├── validation/
+│   └── mod.rs              # Stateless format validation (labels, annotations) + tests
 ├── event/
 │   ├── bus.rs              # EventBus + EventPublisher trait + WatchStream + tests
 ├── middleware/
@@ -119,10 +124,13 @@ src/
 ```
 POST /apis/example.io/v1/Widget
   │
-  ▼ Handler: extract group/version/kind/body, extract ObjectMeta + labels, strip metadata
+  ▼ Handler: extract group/version/kind/body, extract ObjectMeta + labels
+  │   ├── validate_labels(meta.labels) → 400 if invalid (fail-fast)
+  │   └── validate_annotations(meta.annotations) → 400 if invalid (fail-fast)
   │
   ▼ ObjectService::create(key, meta, spec)
-  │   ├── validate_labels(meta.labels) → 400 if invalid
+  │   ├── validate_labels(meta.labels) → 400 if invalid (defense-in-depth)
+  │   ├── validate_annotations(meta.annotations) → 400 if invalid (defense-in-depth)
   │   ├── Schema path: SchemaRegistry.validate_and_compile() → cache insert
   │   ├── Object path:  SchemaRegistry.get_validator() → validate against compiled schema
   │   ├── store.create(key, meta, spec) → StoredObject
@@ -138,9 +146,12 @@ PUT /apis/example.io/v1/Widget/my-widget
   │  Body: StoredObject (with system.resourceVersion for OCC)
   │
   ▼ Handler: validate URL key/name match body
+  │   ├── validate_labels(meta.labels) → 400 if invalid (fail-fast)
+  │   └── validate_annotations(meta.annotations) → 400 if invalid (fail-fast)
   │
   ▼ ObjectService::update(stored_object)
-  │   ├── validate_labels(stored_object.metadata.labels) → 400 if invalid
+  │   ├── validate_labels(stored_object.metadata.labels) → 400 if invalid (defense-in-depth)
+  │   ├── validate_annotations(stored_object.metadata.annotations) → 400 if invalid (defense-in-depth)
   │   ├── Validate spec payload against schema
   │   ├── store.update(object) — OCC check on system.resourceVersion
   │   │   └── diff-based label update (read existing → compute delta → apply)
