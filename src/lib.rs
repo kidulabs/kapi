@@ -7,6 +7,7 @@ pub mod openapi;
 pub mod routes;
 pub mod schema;
 pub mod store;
+pub mod validation;
 
 pub use config::AppConfig;
 pub use event::EventPublisher;

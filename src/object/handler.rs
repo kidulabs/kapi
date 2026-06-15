@@ -1,7 +1,8 @@
 //! HTTP handlers for object CRUD operations.
 //!
-//! Handlers are thin — they extract path params, deserialize body, call service, return response.
-//! No business logic in handlers.
+//! Handlers validate input format and deserialization constraints.
+//! They never access the store, event bus, or schema registry, and never
+//! contain conditional mutation logic.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -24,6 +25,7 @@ use crate::object::types::{
 use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
 use crate::store::ResourceKey;
+use crate::validation::{validate_annotations, validate_labels};
 
 /// Path parameters for /apis/{group}/{version}/{kind}
 #[derive(Deserialize)]
@@ -148,6 +150,10 @@ pub async fn create(
     // Extract labels and annotations from metadata (shared across both paths)
     let labels = extract_labels(&body)?;
     let annotations = extract_annotations(&body)?;
+
+    // Fail-fast: validate format before any service invocation
+    validate_labels(&labels)?;
+    validate_annotations(&annotations)?;
 
     // Branch on kind: Schema objects generate their name from payload fields,
     // while regular objects require a client-supplied metadata.name and a spec field
@@ -442,6 +448,10 @@ pub async fn update(
     body.key = url_key;
     body.metadata.name = path.name;
 
+    // Fail-fast: validate format before any service invocation
+    validate_labels(&body.metadata.labels)?;
+    validate_annotations(&body.metadata.annotations)?;
+
     let updated = state.object_service().update(body).await?;
     Ok(Json(updated))
 }
@@ -497,6 +507,192 @@ pub async fn update_status(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use http_body_util::BodyExt;
+    use serde_json::json;
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    use crate::event::EventBus;
+    use crate::event::EventPublisher;
+    use crate::object::service::ObjectService;
+    use crate::routes::build_router;
+    use crate::schema::SchemaValidator;
+    use crate::schema::meta_schema::compile_meta_schema;
+    use crate::store::ObjectStore;
+    use crate::store::memory::InMemoryStore;
+
+    /// Builds a test router with an in-memory store for handler-level tests.
+    fn test_router() -> Router {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let event_bus: Arc<dyn EventPublisher> = Arc::new(EventBus::default());
+        let meta_validator: Arc<dyn SchemaValidator> =
+            Arc::new(compile_meta_schema().expect("meta-schema should compile"));
+        let service = Arc::new(ObjectService::new(store, event_bus, meta_validator));
+        let state = AppState::new(service);
+        build_router(state)
+    }
+
+    /// Sends a request via a cloned router (consuming the clone) and returns response.
+    async fn send_request(
+        router: &Router,
+        method: Method,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let req = match body {
+            Some(b) => Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::to_string(&b).unwrap()))
+                .unwrap(),
+            None => Request::builder().method(method).uri(uri).body(Body::empty()).unwrap(),
+        };
+        let resp = router.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body_bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let body: Value = serde_json::from_slice(&body_bytes).unwrap_or(json!({}));
+        (status, body)
+    }
+
+    /// Registers a Widget schema on the given router (cloned internally).
+    async fn register_schema(router: &Router) {
+        let schema_body = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "specSchema": {
+                "type": "object",
+                "properties": {
+                    "color": { "type": "string" },
+                    "size": { "type": "integer" }
+                },
+                "required": ["color", "size"]
+            }
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/apis/kapi.io/v1/Schema")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&schema_body).unwrap()))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::CREATED, "schema registration should succeed");
+    }
+
+    // --- create handler: fail-fast validation tests ---
+
+    #[tokio::test]
+    async fn create_rejects_invalid_label_key_before_service() {
+        let router = test_router();
+        register_schema(&router).await;
+
+        // Create with invalid label key containing '!'
+        let body = json!({
+            "metadata": {
+                "name": "test-widget",
+                "labels": { "invalid key!": "value" }
+            },
+            "spec": { "color": "red", "size": 1 }
+        });
+        let (status, resp_body) =
+            send_request(&router, Method::POST, "/apis/example.io/v1/Widget", Some(body)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "expected 400 for invalid label key, got {status}: {resp_body}"
+        );
+        // Should be an InvalidLabel error, not a service error
+        let error_msg = resp_body["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("label"),
+            "expected a label-related error message, got: {error_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_rejects_annotations_exceeding_size_limit_before_service() {
+        let router = test_router();
+        register_schema(&router).await;
+
+        // Create with annotations exceeding 256KB
+        let large_value = "x".repeat(256 * 1024); // > 256KB
+        let body = json!({
+            "metadata": {
+                "name": "test-widget",
+                "annotations": { "key": large_value }
+            },
+            "spec": { "color": "red", "size": 1 }
+        });
+        let (status, resp_body) =
+            send_request(&router, Method::POST, "/apis/example.io/v1/Widget", Some(body)).await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "expected 400 for oversized annotations, got {status}: {resp_body}"
+        );
+        let error_msg = resp_body["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("annotation"),
+            "expected an annotation-related error message, got: {error_msg}"
+        );
+    }
+
+    // --- update handler: fail-fast validation tests ---
+
+    #[tokio::test]
+    async fn update_rejects_invalid_label_key_before_service() {
+        let router = test_router();
+        register_schema(&router).await;
+
+        // First create a valid object
+        let create_body = json!({
+            "metadata": { "name": "update-test" },
+            "spec": { "color": "red", "size": 1 }
+        });
+        let (status, create_resp) =
+            send_request(&router, Method::POST, "/apis/example.io/v1/Widget", Some(create_body))
+                .await;
+        assert_eq!(status, StatusCode::CREATED, "create should succeed");
+        let rv = create_resp["system"]["resourceVersion"].as_u64().unwrap_or(0);
+        let created_at = create_resp["system"]["createdAt"].as_str().unwrap_or("").to_string();
+        let updated_at = create_resp["system"]["updatedAt"].as_str().unwrap_or("").to_string();
+
+        // Now update with invalid labels
+        let update_body = json!({
+            "key": { "group": "example.io", "version": "v1", "kind": "Widget" },
+            "metadata": {
+                "name": "update-test",
+                "labels": { "invalid key!": "value" }
+            },
+            "system": {
+                "resourceVersion": rv,
+                "createdAt": created_at,
+                "updatedAt": updated_at
+            },
+            "spec": { "color": "blue", "size": 2 }
+        });
+        let (status, resp_body) = send_request(
+            &router,
+            Method::PUT,
+            "/apis/example.io/v1/Widget/update-test",
+            Some(update_body),
+        )
+        .await;
+        assert_eq!(
+            status,
+            StatusCode::BAD_REQUEST,
+            "expected 400 for invalid label in update, got {status}: {resp_body}"
+        );
+        let error_msg = resp_body["error"].as_str().unwrap_or("");
+        assert!(
+            error_msg.contains("label"),
+            "expected a label-related error message, got: {error_msg}"
+        );
+    }
 
     #[test]
     fn parse_field_selector_valid_metadata_name() {

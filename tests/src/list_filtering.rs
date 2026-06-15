@@ -154,17 +154,21 @@ pub async fn test_list_filter_no_matches(app: &TestApp) -> Result<(), String> {
 
 pub async fn test_watch_with_both_selectors_matching(app: &TestApp) -> Result<(), String> {
     use crate::watch_events;
-    use kapi::object::types::WatchEventType;
+    use kapi::object::types::{WatchEvent, WatchEventType};
 
     let client = app.client();
     register_widget_schema(&client).await;
 
-    // Start watch with both selectors
+    // Start watch with both selectors.
+    // NOTE: watch_events spawns a task that calls client.get() to establish the
+    // subscription. A brief yield ensures the runtime polls the spawned task
+    // and the subscription is registered before we publish events.
     let mut rx = watch_events(
         &client,
         "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=watch-target&labelSelector=app=nginx",
     )
     .await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
 
     // Create object matching both selectors
     let resp = client

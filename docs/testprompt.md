@@ -4,6 +4,26 @@ Use these prompts to verify kapi's watch semantics, label validation, and persis
 
 ---
 
+## Test Index
+
+| # | Area | Tests |
+|---|------|-------|
+| Watch basics | fieldSelector, lifecycle, cleanup, concurrent | 1, 2, 3, 4 |
+| Field selectors | watch + list, validation | 1, 22, 24, 27, 28 |
+| Label selectors (watch) | equality, AND, !key, !=, empty, mixed | 15, 16, 17, 18, 20, 21, 27 |
+| Label selectors (list) | filter, combined, validation | 23, 24, 25, 26, 27, 29 |
+| Label selector validation | 400s on both watch and list | 19 |
+| Labels | create / default / update / Schema / matrix / list | 5, 6, 7, 8, 9, 13 |
+| Annotations | create / default / update / Schema / matrix / list | 45, 46, 47, 48, 49, 51 |
+| List filtering & pagination | fieldSelector, labelSelector, combined, filter+limit, empty | 22, 23, 24, 25, 26 |
+| Persistence (SQLite) | labels + annotations across restart | 14 |
+| Status subresource | create/update/get, validation, 404, replace, events | 30, 31, 32, 33, 34, 35, 36, 37, 38, 39 |
+| Generation | start, metadata-only, spec, status, independence | 40, 41, 42, 43, 44 |
+
+> **Note:** Some tests are deliberately split to keep operator semantics readable (e.g. one test per `labelSelector` operator). Matrix-style validation tests (label/annotation) merge what would otherwise be near-identical boilerplate.
+
+---
+
 ## Prerequisites & Setup
 
 ```bash
@@ -16,9 +36,10 @@ TEST_RUN=$(date +%s)
 # Clean up from previous runs
 kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 1
-rm -f /tmp/watch-*.log /tmp/kapi-server.log /tmp/kapi-test.db ./kapi.db
+rm -f /tmp/watch-*.log /tmp/kapi-server*.log /tmp/kapi-test.db /tmp/kapi-persist-*.db ./kapi.db
+unset KAPI_DB_PATH
 
-# Start server with trace logging
+# Start server with trace logging (in-memory store; SQLite is started by Test 14)
 RUST_LOG=kapi=trace cargo run > /tmp/kapi-server.log 2>&1 &
 sleep 3
 
@@ -26,7 +47,82 @@ sleep 3
 curl -s http://localhost:8080/apis/kapi.io/v1/Schema
 ```
 
-> **Re-run safety**: Each test uses `$TEST_RUN` as a suffix in object names (e.g. `target-widget-$TEST_RUN`) so you can re-run the entire suite without restarting the server. Tests that share objects across runs (Test 14, persistence) use the `$TEST_RUN` from the initial run or hard-coded names with explicit cleanup.
+> **Re-run safety**: Each test uses `$TEST_RUN` as a suffix in object names (e.g. `target-widget-$TEST_RUN`) so you can re-run the entire suite without restarting the server. Test 14 (SQLite persistence) uses hard-coded object names by design — it must be re-runnable against the same database file. Clean its objects in the Cleanup section before re-running.
+
+---
+
+## Shared Helpers
+
+The tests below reference these bash functions. Define them once in your shell after running the Setup section, or paste the block into a sourced script.
+
+```bash
+# Register the Widget schema (example.io/v1) — idempotent
+register_widget_schema() {
+  curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
+    -H "Content-Type: application/json" \
+    -d '{
+      "targetGroup": "example.io",
+      "targetVersion": "v1",
+      "targetKind": "Widget",
+      "specSchema": {
+        "type": "object",
+        "properties": {
+          "color": { "type": "string" },
+          "size":  { "type": "integer" }
+        },
+        "required": ["color", "size"]
+      }
+    }' > /dev/null
+}
+
+# Register the Widget schema WITH a statusSchema (for status subresource tests)
+register_widget_schema_with_status() {
+  curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
+    -H "Content-Type: application/json" \
+    -d '{
+      "targetGroup": "example.io",
+      "targetVersion": "v1",
+      "targetKind": "Widget",
+      "specSchema": {
+        "type": "object",
+        "properties": {
+          "color": { "type": "string" },
+          "size":  { "type": "integer" }
+        },
+        "required": ["color", "size"]
+      },
+      "statusSchema": {
+        "type": "object",
+        "properties": {
+          "phase":   { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    }' > /dev/null
+}
+
+# Start a watch, capture output to <logfile>, return the PID via stdout.
+# Usage: WATCH_PID=$(start_watch '?watch=true&labelSelector=app=nginx' /tmp/x.log)
+start_watch() {
+  local query="$1" logfile="$2"
+  curl -s -N "http://localhost:8080/apis/example.io/v1/Widget${query}" \
+    > "$logfile" 2>&1 &
+  echo $!
+}
+
+# Extract resourceVersion, createdAt, updatedAt from GET <name>.
+# Sets globals: GET_RV, GET_CREATED, GET_UPDATED.
+get_system_fields() {
+  local name="$1"
+  local body
+  body=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/${name}")
+  GET_RV=$(echo "$body"      | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+  GET_CREATED=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
+  GET_UPDATED=$(echo "$body" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+}
+```
+
+> **Note on `system` fields**: The server uses `resourceVersion` for optimistic concurrency and may ignore `createdAt`/`updatedAt` round-tripped from the client. The tests pass them back anyway to mirror how a real client would behave. If a future server change enforces them, the helpers above are the single place to update.
 
 ---
 
@@ -35,34 +131,11 @@ curl -s http://localhost:8080/apis/kapi.io/v1/Schema
 **Goal:** Verify that `?fieldSelector=metadata.name=<value>` only delivers events for the specified name.
 
 ```bash
-# 1. Register the Widget schema
-curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
-  -H "Content-Type: application/json" \
-  -d '{
-    "targetGroup": "example.io",
-    "targetVersion": "v1",
-    "targetKind": "Widget",
-    "specSchema": {
-      "type": "object",
-      "properties": {
-        "color": { "type": "string" },
-        "size": { "type": "integer" }
-      },
-      "required": ["color"]
-    },
-    "statusSchema": {
-      "type": "object",
-      "properties": {
-        "phase": { "type": "string" },
-        "message": { "type": "string" }
-      }
-    }
-  }'
+# 1. Register the Widget schema (with statusSchema for later status tests)
+register_widget_schema_with_status
 
 # 2. Start a watch filtered to "target-widget-$TEST_RUN"
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=target-widget-$TEST_RUN" \
-  > /tmp/watch-fieldselector.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true&fieldSelector=metadata.name=target-widget-$TEST_RUN" /tmp/watch-fieldselector.log)
 sleep 2
 
 # Verify the watch is still alive
@@ -110,9 +183,7 @@ grep -E "(watcher subscribed|event delivered|event filtered|watch stream)" /tmp/
 
 ```bash
 # 1. Start a watch-all
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
-  > /tmp/watch-all.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true" /tmp/watch-all.log)
 sleep 1
 
 # 2. Create a widget (expect Added)
@@ -123,20 +194,14 @@ curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
 sleep 1
 
 # 3. Update the widget (expect Modified)
-# Extract resourceVersion, createdAt, updatedAt from the current object
-RV=$(curl -s http://localhost:8080/apis/example.io/v1/Widget/lifecycle-$TEST_RUN \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED_AT=$(curl -s http://localhost:8080/apis/example.io/v1/Widget/lifecycle-$TEST_RUN \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED_AT=$(curl -s http://localhost:8080/apis/example.io/v1/Widget/lifecycle-$TEST_RUN \
-  | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+get_system_fields "lifecycle-$TEST_RUN"
 
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/lifecycle-$TEST_RUN" \
   -H "Content-Type: application/json" \
   -d "{
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"lifecycle-$TEST_RUN\"},
-    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"system\":{\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\":{\"color\":\"yellow\",\"size\":10}
   }"
 
@@ -156,9 +221,9 @@ echo "=== Client received ==="
 cat /tmp/watch-all.log
 
 echo "=== Event counts ==="
-grep -c '"eventType":"Added"' /tmp/watch-all.log && echo " Added events"
+grep -c '"eventType":"Added"'    /tmp/watch-all.log && echo " Added events"
 grep -c '"eventType":"Modified"' /tmp/watch-all.log && echo " Modified events"
-grep -c '"eventType":"Deleted"' /tmp/watch-all.log && echo " Deleted events"
+grep -c '"eventType":"Deleted"'  /tmp/watch-all.log && echo " Deleted events"
 
 # 7. Verify trace logs
 echo "=== Server trace logs ==="
@@ -178,9 +243,7 @@ grep -E "(watcher subscribed|event delivered|watch stream)" /tmp/kapi-server.log
 
 ```bash
 # 1. Start a watch
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
-  > /tmp/watch-abrupt.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true" /tmp/watch-abrupt.log)
 sleep 1
 
 # 2. Abruptly kill the curl process (simulates network disconnect / SIGKILL)
@@ -212,14 +275,10 @@ grep -E "(watcher channel closed|watcher subscribed|event delivered)" /tmp/kapi-
 
 ```bash
 # 1. Start filtered watch (name=named-$TEST_RUN)
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=named-$TEST_RUN" \
-  > /tmp/watch-named.log 2>&1 &
-NAMED_PID=$!
+NAMED_PID=$(start_watch "?watch=true&fieldSelector=metadata.name=named-$TEST_RUN" /tmp/watch-named.log)
 
 # 2. Start watch-all
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
-  > /tmp/watch-sim-all.log 2>&1 &
-ALL_PID=$!
+ALL_PID=$(start_watch "?watch=true" /tmp/watch-sim-all.log)
 
 sleep 1
 
@@ -259,22 +318,8 @@ cat /tmp/watch-sim-all.log
 **Goal:** Verify that `metadata.labels` are persisted and returned on create and get.
 
 ```bash
-# 1. Register the Widget schema (no-op if already registered)
-curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
-  -H "Content-Type: application/json" \
-  -d '{
-    "targetGroup": "example.io",
-    "targetVersion": "v1",
-    "targetKind": "Widget",
-    "specSchema": {
-      "type": "object",
-      "properties": {
-        "color": { "type": "string" },
-        "size": { "type": "integer" }
-      },
-      "required": ["color", "size"]
-    }
-  }' > /dev/null
+# 1. Register the Widget schema (idempotent)
+register_widget_schema
 
 # 2. Create a widget with labels
 echo "=== Create with labels ==="
@@ -332,13 +377,10 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget/no-labels-widget-$TEST_
 ```bash
 # 1. Get the current labeled widget
 echo "=== Fetch current state ==="
-CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$TEST_RUN")
-echo "$CURRENT" | python3 -m json.tool
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$TEST_RUN" | python3 -m json.tool
 
 # 2. Update: remove "env", change "app" to "httpd", add "tier" -> "frontend"
-RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+get_system_fields "labeled-widget-$TEST_RUN"
 
 echo "=== Update with changed labels ==="
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$TEST_RUN" \
@@ -349,7 +391,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/labeled-widget-$
       \"name\": \"labeled-widget-$TEST_RUN\",
       \"labels\": { \"app\": \"httpd\", \"app.kubernetes.io/version\": \"v1.2.3\", \"tier\": \"frontend\" }
     },
-    \"system\": {\"resourceVersion\":$RV,\"createdAt\":\"$CREATED\",\"updatedAt\":\"$UPDATED\"},
+    \"system\": {\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\": {\"color\":\"blue\",\"size\":10}}
   }" | python3 -m json.tool
 
@@ -403,119 +445,47 @@ curl -s "http://localhost:8080/apis/kapi.io/v1/Schema/Gadget.test-$TEST_RUN.io" 
 
 ---
 
-## Test 9: Labels — invalid key format returns 400
+## Test 9: Label validation matrix — invalid key, value, and length limits
 
-**Goal:** Verify that invalid label key characters are rejected.
-
-```bash
-# 1. Create with invalid key (contains space and !)
-echo "=== Invalid label key ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"metadata\": {
-      \"name\": \"bad-key-widget-$TEST_RUN\",
-      \"labels\": { \"invalid key!\": \"value\" }
-    },
-    \"spec\": {
-      \"color\": \"blue\",
-      \"size\": 1
-    }
-  }"
-```
-
-**Expected results:**
-- HTTP 400 status
-- Response body contains `"code": "InvalidLabel"`
-- Error message mentions invalid characters
-
----
-
-## Test 10: Labels — invalid value format returns 400
-
-**Goal:** Verify that invalid label value characters are rejected.
+**Goal:** Verify that malformed `metadata.labels` are rejected with HTTP 400 and `code: InvalidLabel`. Each case asserts a different validation rule.
 
 ```bash
-# 1. Create with invalid value (contains space and !)
-echo "=== Invalid label value ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"metadata\": {
-      \"name\": \"bad-value-widget-$TEST_RUN\",
-      \"labels\": { \"app\": \"invalid value!\" }
-    },
-    \"spec\": {
-      \"color\": \"blue\",
-      \"size\": 1
-    }
-  }"
-```
+# 1. Register the Widget schema (idempotent)
+register_widget_schema
 
-**Expected results:**
-- HTTP 400 status
-- Response body contains `"code": "InvalidLabel"`
-- Error message mentions invalid characters in value
-
----
-
-## Test 11: Labels — key exceeds length limit returns 400
-
-**Goal:** Verify that label keys exceeding 256 characters are rejected.
-
-```bash
-# 1. Generate a 257-char key
+# 2. Run the four cases
 LONG_KEY=$(python3 -c "print('a' * 257)")
-
-echo "=== Label key too long ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"metadata\": {
-      \"name\": \"long-key-widget-$TEST_RUN\",
-      \"labels\": { \"$LONG_KEY\": \"value\" }
-    },
-    \"spec\": {
-      \"color\": \"blue\",
-      \"size\": 1
-    }
-  }"
-```
-
-**Expected results:**
-- HTTP 400 status
-- Response body contains `"code": "InvalidLabel"`
-- Error message mentions maximum length of 256
-
----
-
-## Test 12: Labels — value exceeds length limit returns 400
-
-**Goal:** Verify that label values exceeding 256 characters are rejected.
-
-```bash
-# 1. Generate a 257-char value
 LONG_VALUE=$(python3 -c "print('a' * 257)")
 
-echo "=== Label value too long ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"metadata\": {
-      \"name\": \"long-value-widget-$TEST_RUN\",
-      \"labels\": { \"app\": \"$LONG_VALUE\" }
-    },
-    \"spec\": {
-      \"color\": \"blue\",
-      \"size\": 1
-    }
-  }"
+# Each entry: <name-suffix>|<labels-json>|<expected-fragment-in-error>
+CASES=(
+  "bad-key|{\"invalid key!\":\"value\"}|invalid"
+  "bad-value|{\"app\":\"invalid value!\"}|invalid"
+  "long-key|$LONG_KEY|256"
+  "long-value|$LONG_VALUE|256"
+)
+
+for case in "${CASES[@]}"; do
+  IFS='|' read -r suffix labels expected <<< "$case"
+  echo "=== Case: $suffix ==="
+  curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"metadata\": { \"name\": \"label-${suffix}-$TEST_RUN\", \"labels\": $labels },
+      \"spec\":     { \"color\": \"blue\", \"size\": 1 }
+    }"
+  echo
+done
 ```
 
-**Expected results:**
+**Expected results (all four cases):**
 - HTTP 400 status
 - Response body contains `"code": "InvalidLabel"`
-- Error message mentions maximum length of 256
+- Error message mentions the relevant rule:
+  - `bad-key` → invalid characters in key
+  - `bad-value` → invalid characters in value
+  - `long-key` → maximum length of 256
+  - `long-value` → maximum length of 256
 
 ---
 
@@ -536,122 +506,131 @@ curl -s http://localhost:8080/apis/example.io/v1/Widget | python3 -m json.tool
 
 ---
 
-## Test 14: SQLite persistence survives restart
+## Test 14: SQLite persistence — labels and annotations survive restart
 
-**Goal:** Verify that labels persist across server restarts via SQLite storage.
+**Goal:** Verify that both `metadata.labels` and `metadata.annotations` are persisted by SQLite and survive a full server restart.
+
+> **Note:** This test starts its own server with `KAPI_DB_PATH` set via inline env (not `export`), so it does not leak state to other tests. Object names are hard-coded (`persist-labels-widget`, `persist-ann-widget`) by design — the database itself is the unit under test. Delete those objects (or `rm` the db file) before re-running.
 
 ```bash
-# NOTE: The server uses the KAPI_DB_PATH env var for database path.
-# If unset, it defaults to ./kapi.db. Set it to a temp file for this test.
-# Use inline env var (not export) to avoid leaking KAPI_DB_PATH to later tests.
-
-# 1. Stop the current in-memory server
+# 1. Stop the in-memory server started in the Setup section
 kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 1
 
-# 2. Start server with SQLite storage
-rm -f /tmp/kapi-persist-test.db
-RUST_LOG=kapi=trace KAPI_DB_PATH=/tmp/kapi-persist-test.db cargo run > /tmp/kapi-server-persist.log 2>&1 &
+# 2. Start a fresh server with SQLite storage
+PERSIST_DB=/tmp/kapi-persist-test.db
+rm -f "$PERSIST_DB"
+RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run > /tmp/kapi-server-persist.log 2>&1 &
 sleep 3
 
-# 3. Register schema and create an object with labels
-curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
-  -H "Content-Type: application/json" \
-  -d '{
-    "targetGroup": "example.io",
-    "targetVersion": "v1",
-    "targetKind": "Widget",
-    "specSchema": {
-      "type": "object",
-      "properties": { "color": { "type": "string" }, "size": { "type": "integer" } },
-      "required": ["color", "size"]
-    }
-  }' > /dev/null
+# 3. Register the Widget schema (idempotent)
+register_widget_schema
 
-PERSIST_NAME="persist-widget"
-
-# Create with labels
+# 4. Create the labels widget, then update its labels
+LABELS_NAME="persist-labels-widget"
 curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
   -d "{
     \"metadata\": {
-      \"name\": \"$PERSIST_NAME\",
+      \"name\": \"$LABELS_NAME\",
       \"labels\": { \"app\": \"nginx\", \"env\": \"prod\", \"app.kubernetes.io/version\": \"v1.2.3\" }
     },
-    \"spec\": {
-      \"color\": \"blue\",
-      \"size\": 10
-    }
+    \"spec\": { \"color\": \"blue\", \"size\": 10 }
   }" > /dev/null
 
-# Update labels (remove env, change app, add tier)
-CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME")
-RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
-
-curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" \
+get_system_fields "$LABELS_NAME"
+curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/$LABELS_NAME" \
   -H "Content-Type: application/json" \
   -d "{
     \"key\": {\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\": {
-      \"name\": \"$PERSIST_NAME\",
+      \"name\": \"$LABELS_NAME\",
       \"labels\": { \"app\": \"httpd\", \"app.kubernetes.io/version\": \"v1.2.3\", \"tier\": \"frontend\" }
     },
-    \"system\": {\"resourceVersion\":$RV,\"createdAt\":\"$CREATED\",\"updatedAt\":\"$UPDATED\"},
+    \"system\": {\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\": {\"color\":\"blue\",\"size\":10}}
   }" > /dev/null
 
-# 4. Verify labels before restart
+# 5. Create the annotations widget
+ANN_NAME="persist-ann-widget"
+curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
+  -H "Content-Type: application/json" \
+  -d "{
+    \"metadata\": {
+      \"name\": \"$ANN_NAME\",
+      \"annotations\": { \"description\": \"persistent\", \"build\": \"v1.0.0\" }
+    },
+    \"spec\": { \"color\": \"blue\", \"size\": 10 }
+  }" > /dev/null
+
+# 6. Snapshot both fields to disk (order-independent comparison later)
 echo "=== Before restart ==="
-curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" | python3 -c "
+for name in "$LABELS_NAME" "$ANN_NAME"; do
+  curl -s "http://localhost:8080/apis/example.io/v1/Widget/$name" | python3 -c "
 import sys, json
 obj = json.load(sys.stdin)
-labels = obj['metadata']['labels']
-print(f'Labels: {labels}')
-# Write labels to a temp file for later comparison
+md = obj['metadata']
+print(f'${name}: labels={md.get(\"labels\", {})}, annotations={md.get(\"annotations\", {})}')
+"
+done
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/$LABELS_NAME" | python3 -c "
+import sys, json
 with open('/tmp/kapi-labels-before.json', 'w') as f:
-    json.dump(labels, f, sort_keys=True)
+    json.dump(json.load(sys.stdin)['metadata']['labels'], f, sort_keys=True)
+"
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/$ANN_NAME" | python3 -c "
+import sys, json
+with open('/tmp/kapi-ann-before.json', 'w') as f:
+    json.dump(json.load(sys.stdin)['metadata']['annotations'], f, sort_keys=True)
 "
 
-# 5. Stop the server
+# 7. Stop the server
 kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 2
 
-# 6. Restart the server with the same database
-RUST_LOG=kapi=trace KAPI_DB_PATH=/tmp/kapi-persist-test.db cargo run > /tmp/kapi-server-persist.log 2>&1 &
+# 8. Restart with the same database
+RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run > /tmp/kapi-server-persist.log 2>&1 &
 sleep 3
 
-# 7. Verify labels survived restart
+# 9. Snapshot again and compare
 echo "=== After restart ==="
-curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" | python3 -c "
+for name in "$LABELS_NAME" "$ANN_NAME"; do
+  curl -s "http://localhost:8080/apis/example.io/v1/Widget/$name" | python3 -c "
 import sys, json
 obj = json.load(sys.stdin)
-labels = obj['metadata']['labels']
-print(f'Labels: {labels}')
+md = obj['metadata']
+print(f'${name}: labels={md.get(\"labels\", {})}, annotations={md.get(\"annotations\", {})}')
+"
+done
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/$LABELS_NAME" | python3 -c "
+import sys, json
 with open('/tmp/kapi-labels-after.json', 'w') as f:
-    json.dump(labels, f, sort_keys=True)
+    json.dump(json.load(sys.stdin)['metadata']['labels'], f, sort_keys=True)
+"
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/$ANN_NAME" | python3 -c "
+import sys, json
+with open('/tmp/kapi-ann-after.json', 'w') as f:
+    json.dump(json.load(sys.stdin)['metadata']['annotations'], f, sort_keys=True)
 "
 
-# 8. Compare labels semantically (order-independent)
+# 10. Compare semantically
 echo "=== Comparison ==="
 python3 -c "
 import json
-with open('/tmp/kapi-labels-before.json') as f:
-    before = json.load(f)
-with open('/tmp/kapi-labels-after.json') as f:
-    after = json.load(f)
-print(f'Before: {before}')
-print(f'After:  {after}')
-assert before == after, f'Labels differ: {before} vs {after}'
-print('PASS: Labels survived restart')
+for field in ['labels', 'ann']:
+    with open(f'/tmp/kapi-{field}-before.json') as f: before = json.load(f)
+    with open(f'/tmp/kapi-{field}-after.json')  as f: after  = json.load(f)
+    print(f'{field}: before={before}')
+    print(f'{field}: after ={after}')
+    assert before == after, f'{field} differ: {before} vs {after}'
+print('PASS: Labels and annotations survived restart')
 "
 ```
 
 **Expected results:**
-- Step 4 (`=== Before restart ===`) shows labels: `app: httpd`, `tier: frontend`, `app.kubernetes.io/version: v1.2.3`
-- Step 7 (`=== After restart ===`) shows the same labels
-- Step 8 (`=== Comparison ===`) prints `PASS: Labels survived restart`
+- Both widgets visible with their final field values before restart
+- After restart, both widgets return identical labels / annotations
+- Final line: `PASS: Labels and annotations survived restart`
 
 ---
 
@@ -660,27 +639,11 @@ print('PASS: Labels survived restart')
 **Goal:** Verify that `?labelSelector=app=nginx` only delivers events for objects with matching labels.
 
 ```bash
-# 1. Register the Widget schema (no-op if already registered)
-curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
-  -H "Content-Type: application/json" \
-  -d '{
-    "targetGroup": "example.io",
-    "targetVersion": "v1",
-    "targetKind": "Widget",
-    "specSchema": {
-      "type": "object",
-      "properties": {
-        "color": { "type": "string" },
-        "size": { "type": "integer" }
-      },
-      "required": ["color", "size"]
-    }
-  }' > /dev/null
+# 1. Register the Widget schema (idempotent)
+register_widget_schema
 
 # 2. Start a watch filtered by label selector
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx" \
-  > /tmp/watch-labelselector.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true&labelSelector=app=nginx" /tmp/watch-labelselector.log)
 sleep 2
 
 # Verify the watch is still alive
@@ -724,9 +687,7 @@ grep -o '"name":"[^"]*"' /tmp/watch-labelselector.log
 
 ```bash
 # 1. Start a watch with AND combinator: app=nginx AND env=prod
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,env=prod" \
-  > /tmp/watch-label-and.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true&labelSelector=app=nginx,env=prod" /tmp/watch-label-and.log)
 sleep 2
 
 # 2. Create widget with only app=nginx (should NOT be delivered — missing env)
@@ -772,9 +733,7 @@ grep -o '"name":"[^"]*"' /tmp/watch-label-and.log
 
 ```bash
 # 1. Start a watch for objects without the "experimental" label
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=!experimental" \
-  > /tmp/watch-label-notexists.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true&labelSelector=!experimental" /tmp/watch-label-notexists.log)
 sleep 2
 
 # 2. Create widget WITH experimental label (should NOT be delivered)
@@ -813,9 +772,7 @@ grep -o '"name":"[^"]*"' /tmp/watch-label-notexists.log
 
 ```bash
 # 1. Start a watch for objects where env is NOT prod
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=env!=prod" \
-  > /tmp/watch-label-notequals.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true&labelSelector=env!=prod" /tmp/watch-label-notequals.log)
 sleep 2
 
 # 2. Create widget with env=prod (should NOT be delivered)
@@ -855,28 +812,35 @@ grep -o '"name":"[^"]*"' /tmp/watch-label-notequals.log
 
 ---
 
-## Test 19: Invalid labelSelector returns 400
+## Test 19: Invalid labelSelector returns 400 — watch and list contexts
 
-**Goal:** Verify that malformed label selectors are rejected with HTTP 400.
+**Goal:** Verify that malformed label selectors are rejected with HTTP 400 in both the watch and list contexts. (Note: a *valid* `labelSelector` on a non-watch list request is allowed and filters results — see Test 23. This test only covers the malformed case.)
 
 ```bash
-# 1. Empty value in equality selector
-echo "=== Empty value ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
-  "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app="
+# Each entry: <case-label>|<selector-fragment>|<expected-error-fragment>
+CASES=(
+  "empty-value-watch|app=|empty value"
+  "empty-segment-watch|app=nginx,,env=prod|empty segment"
+)
 
-# 2. Empty segment (double comma)
-echo "=== Empty segment ==="
+for case in "${CASES[@]}"; do
+  IFS='|' read -r label selector expected <<< "$case"
+  echo "=== Case: $label ==="
+  curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
+    "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=${selector}"
+  echo
+done
+
+# Also verify the list-context (non-watch) variant of empty-value fails the same way
+echo "=== Case: empty-value-list ==="
 curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
-  "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,,env=prod"
+  "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app="
 ```
 
-**Expected results:**
-- Both requests return HTTP 400
+**Expected results (all cases):**
+- HTTP 400 status
 - Response body contains `"code": "InvalidLabelSelector"`
-- Error messages describe the specific issue
-
-> **Note:** `labelSelector` on non-watch list requests is now valid and returns filtered results (not 400). See Test 23.
+- Error message mentions the relevant rule (`empty value`, `empty segment`, etc.)
 
 ---
 
@@ -886,9 +850,7 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
 
 ```bash
 # 1. Start a watch with empty labelSelector
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=" \
-  > /tmp/watch-label-empty.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true&labelSelector=" /tmp/watch-label-empty.log)
 sleep 2
 
 # 2. Create widgets with various labels — all should be delivered
@@ -926,9 +888,7 @@ grep -c '"eventType":"Added"' /tmp/watch-label-empty.log
 
 ```bash
 # 1. Start a watch with mixed operators: app=nginx AND !experimental AND gpu (existence)
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,!experimental,gpu" \
-  > /tmp/watch-label-mixed.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true&labelSelector=app=nginx,!experimental,gpu" /tmp/watch-label-mixed.log)
 sleep 2
 
 # 2. Create widget that matches all three requirements
@@ -973,22 +933,8 @@ grep -o '"name":"[^"]*"' /tmp/watch-label-mixed.log
 **Goal:** Verify that `?fieldSelector=metadata.name=<value>` on a non-watch list request returns only matching objects.
 
 ```bash
-# 1. Register the Widget schema (no-op if already registered)
-curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
-  -H "Content-Type: application/json" \
-  -d '{
-    "targetGroup": "example.io",
-    "targetVersion": "v1",
-    "targetKind": "Widget",
-    "specSchema": {
-      "type": "object",
-      "properties": {
-        "color": { "type": "string" },
-        "size": { "type": "integer" }
-      },
-      "required": ["color", "size"]
-    }
-  }' > /dev/null
+# 1. Register the Widget schema (idempotent)
+register_widget_schema
 
 # 2. Create multiple widgets
 for name in "list-field-foo" "list-field-bar" "list-field-baz"; do
@@ -1140,9 +1086,7 @@ print(f\"Continue token: {body.get('continueToken', 'null')}\")
 
 ```bash
 # 1. Start a watch with both selectors
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=watch-combo-target-$TEST_RUN&labelSelector=app=nginx" \
-  > /tmp/watch-combo.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true&fieldSelector=metadata.name=watch-combo-target-$TEST_RUN&labelSelector=app=nginx" /tmp/watch-combo.log)
 sleep 2
 
 # 2. Create widget matching BOTH selectors (should be delivered)
@@ -1198,22 +1142,6 @@ curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
 **Expected results:**
 - HTTP 400 status
 - Response body contains `"code": "InvalidFieldSelector"`
-
----
-
-## Test 29: Invalid labelSelector on list returns 400
-
-**Goal:** Verify that invalid label selectors on list requests return HTTP 400.
-
-```bash
-echo "=== Invalid labelSelector on list ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" \
-  "http://localhost:8080/apis/example.io/v1/Widget?labelSelector=app="
-```
-
-**Expected results:**
-- HTTP 400 status
-- Response body contains `"code": "InvalidLabelSelector"`
 
 ---
 
@@ -1405,10 +1333,10 @@ INITIAL_RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(
 echo "Initial resourceVersion: $INITIAL_RV"
 
 # 2. Update status
-STATUS_RESP=$(curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/rv-bump-$TEST_RUN/status" \
+STATUS_RV=$(curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/rv-bump-$TEST_RUN/status" \
   -H "Content-Type: application/json" \
-  -d "{\"status\":{\"phase\":\"Running\"}}")
-STATUS_RV=$(echo "$STATUS_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+  -d "{\"status\":{\"phase\":\"Running\"}}" \
+  | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
 echo "After status update resourceVersion: $STATUS_RV"
 
 # 3. Verify bumped
@@ -1492,9 +1420,7 @@ curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -d "{\"metadata\":{\"name\":\"status-event-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":1}}" > /dev/null
 
 # 2. Start watching BEFORE status update
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
-  > /tmp/watch-status-event.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true" /tmp/watch-status-event.log)
 sleep 2
 
 # 3. Update status
@@ -1531,14 +1457,10 @@ grep -o '"eventType":"[^"]*"' /tmp/watch-status-event.log
 CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"name\":\"spec-event-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":10}}")
-RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+get_system_fields "spec-event-$TEST_RUN"
 
 # 2. Start watching
-curl -s -N "http://localhost:8080/apis/example.io/v1/Widget?watch=true" \
-  > /tmp/watch-spec-event.log 2>&1 &
-WATCH_PID=$!
+WATCH_PID=$(start_watch "?watch=true" /tmp/watch-spec-event.log)
 sleep 2
 
 # 3. Update spec (regular PUT)
@@ -1547,7 +1469,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/spec-event-$TEST
   -d "{
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"spec-event-$TEST_RUN\"},
-    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"system\":{\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\":{\"color\":\"red\",\"size\":20}}
   }" > /dev/null
 
@@ -1613,8 +1535,7 @@ CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
   -d "{\"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},\"spec\":{\"color\":\"blue\",\"size\":10}}")
 INITIAL_GEN=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['generation'])")
 INITIAL_RV=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED_AT=$(echo "$CREATE_RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+get_system_fields "gen-meta-$TEST_RUN"
 
 echo "Initial: generation=$INITIAL_GEN, resourceVersion=$INITIAL_RV"
 
@@ -1624,7 +1545,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_R
   -d "{
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},
-    \"system\":{\"resourceVersion\":$INITIAL_RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"system\":{\"resourceVersion\":$INITIAL_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\":{\"color\":\"blue\",\"size\":10}}
   }" > /tmp/gen-meta-update.json
 
@@ -1660,9 +1581,8 @@ print('PASS: generation unchanged, resourceVersion bumped')
 # 1. Get current state
 CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_RUN")
 BEFORE_GEN=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['generation'])")
-BEFORE_RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+BEFORE_RV=$(echo "$CURRENT"  | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
+get_system_fields "gen-meta-$TEST_RUN"
 
 echo "Before: generation=$BEFORE_GEN, resourceVersion=$BEFORE_RV"
 
@@ -1672,7 +1592,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-meta-$TEST_R
   -d "{
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-meta-$TEST_RUN\",\"labels\":{\"env\":\"prod\"}},
-    \"system\":{\"resourceVersion\":$BEFORE_RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"system\":{\"resourceVersion\":$BEFORE_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\":{\"color\":\"red\",\"size\":10}}
   }" > /tmp/gen-spec-update.json
 
@@ -1758,17 +1678,14 @@ print(f'  generation={obj[\"system\"][\"generation\"]}, resourceVersion={obj[\"s
 "
 
 # 2. Update labels only (metadata change)
-CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN")
-RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+get_system_fields "gen-indep-$TEST_RUN"
 
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" \
   -H "Content-Type: application/json" \
   -d "{
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},
-    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"system\":{\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\":{\"color\":\"blue\",\"size\":10}}
   }" > /dev/null
 echo "=== Step 1: UPDATE labels only ==="
@@ -1779,17 +1696,14 @@ print(f'  generation={obj[\"system\"][\"generation\"]}, resourceVersion={obj[\"s
 "
 
 # 3. Update spec
-CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN")
-RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+get_system_fields "gen-indep-$TEST_RUN"
 
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" \
   -H "Content-Type: application/json" \
   -d "{
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"nginx\"}},
-    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"system\":{\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\":{\"color\":\"red\",\"size\":20}}
   }" > /dev/null
 echo "=== Step 2: UPDATE spec ==="
@@ -1811,17 +1725,14 @@ print(f'  generation={obj[\"system\"][\"generation\"]}, resourceVersion={obj[\"s
 "
 
 # 5. Update labels again (metadata change)
-CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN")
-RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED_AT=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+get_system_fields "gen-indep-$TEST_RUN"
 
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/gen-indep-$TEST_RUN" \
   -H "Content-Type: application/json" \
   -d "{
     \"key\":{\"group\":\"example.io\",\"version\":\"v1\",\"kind\":\"Widget\"},
     \"metadata\":{\"name\":\"gen-indep-$TEST_RUN\",\"labels\":{\"app\":\"httpd\",\"env\":\"prod\"}},
-    \"system\":{\"resourceVersion\":$RV,\"createdAt\":\"$CREATED_AT\",\"updatedAt\":\"$UPDATED_AT\"},
+    \"system\":{\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\":{\"color\":\"red\",\"size\":20}}
   }" > /dev/null
 echo "=== Step 4: UPDATE labels again ==="
@@ -1911,13 +1822,10 @@ curl -s "http://localhost:8080/apis/example.io/v1/Widget/no-annotations-widget-$
 ```bash
 # 1. Get the current annotated widget
 echo "=== Fetch current state ==="
-CURRENT=$(curl -s "http://localhost:8080/apis/example.io/v1/Widget/annotated-widget-$TEST_RUN")
-echo "$CURRENT" | python3 -m json.tool
+curl -s "http://localhost:8080/apis/example.io/v1/Widget/annotated-widget-$TEST_RUN" | python3 -m json.tool
 
 # 2. Update: change "description" and add "owner"
-RV=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['resourceVersion'])")
-CREATED=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['createdAt'])")
-UPDATED=$(echo "$CURRENT" | python3 -c "import sys,json; print(json.load(sys.stdin)['system']['updatedAt'])")
+get_system_fields "annotated-widget-$TEST_RUN"
 
 echo "=== Update with changed annotations ==="
 curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/annotated-widget-$TEST_RUN" \
@@ -1928,7 +1836,7 @@ curl -s -X PUT "http://localhost:8080/apis/example.io/v1/Widget/annotated-widget
       \"name\": \"annotated-widget-$TEST_RUN\",
       \"annotations\": { \"description\": \"new widget\", \"owner\": \"team\" }
     },
-    \"system\": {\"resourceVersion\":$RV,\"createdAt\":\"$CREATED\",\"updatedAt\":\"$UPDATED\"},
+    \"system\": {\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},
     \"spec\": {\"color\":\"blue\",\"size\":10}}
   }" | python3 -m json.tool
 
@@ -1979,61 +1887,45 @@ curl -s "http://localhost:8080/apis/kapi.io/v1/Schema/Gadget.annotations-test-$T
 
 ---
 
-## Test 49: Annotations — invalid key (empty) returns 400
+## Test 49: Annotation validation matrix — invalid key, value, and length limits
 
-**Goal:** Verify that empty annotation keys are rejected.
-
-```bash
-# 1. Create with empty annotation key
-echo "=== Empty annotation key ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"metadata\": {
-      \"name\": \"bad-annotation-$TEST_RUN\",
-      \"annotations\": { \"\": \"value\" }
-    },
-    \"spec\": {
-      \"color\": \"blue\",
-      \"size\": 1
-    }
-  }"
-```
-
-**Expected results:**
-- HTTP 400 status
-- Response body contains `"code": "InvalidAnnotation"`
-- Error message mentions empty key
-
----
-
-## Test 50: Annotations — key exceeds length limit returns 400
-
-**Goal:** Verify that annotation keys exceeding 256 characters are rejected.
+**Goal:** Verify that malformed `metadata.annotations` are rejected with HTTP 400 and `code: InvalidAnnotation`. Each case asserts a different validation rule.
 
 ```bash
-# 1. Generate a 257-char key
+# 1. Register the Widget schema (idempotent)
+register_widget_schema
+
+# 2. Run the cases
 LONG_KEY=$(python3 -c "print('a' * 257)")
+LONG_VALUE=$(python3 -c "print('a' * 257)")
 
-echo "=== Annotation key too long ==="
-curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"metadata\": {
-      \"name\": \"long-key-annotation-$TEST_RUN\",
-      \"annotations\": { \"$LONG_KEY\": \"value\" }
-    },
-    \"spec\": {
-      \"color\": \"blue\",
-      \"size\": 1
-    }
-  }"
+# Each entry: <name-suffix>|<annotations-json>|<expected-fragment-in-error>
+CASES=(
+  "empty-key|{\"\":\"value\"}|empty"
+  "long-key|$LONG_KEY|256"
+  "long-value|{\"app\":\"$LONG_VALUE\"}|256"
+)
+
+for case in "${CASES[@]}"; do
+  IFS='|' read -r suffix annotations expected <<< "$case"
+  echo "=== Case: $suffix ==="
+  curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST http://localhost:8080/apis/example.io/v1/Widget \
+    -H "Content-Type: application/json" \
+    -d "{
+      \"metadata\": { \"name\": \"ann-${suffix}-$TEST_RUN\", \"annotations\": $annotations },
+      \"spec\":     { \"color\": \"blue\", \"size\": 1 }
+    }"
+  echo
+done
 ```
 
-**Expected results:**
+**Expected results (all cases):**
 - HTTP 400 status
 - Response body contains `"code": "InvalidAnnotation"`
-- Error message mentions maximum length of 256
+- Error message mentions the relevant rule:
+  - `empty-key` → empty key
+  - `long-key` → maximum length of 256
+  - `long-value` → maximum length of 256
 
 ---
 
@@ -2054,142 +1946,85 @@ curl -s http://localhost:8080/apis/example.io/v1/Widget | python3 -m json.tool
 
 ---
 
-## Test 52: Annotations — SQLite persistence survives restart
-
-**Goal:** Verify that annotations persist across server restarts via SQLite storage.
-
-```bash
-# 1. Stop the current in-memory server
-kill $(lsof -ti :8080) 2>/dev/null || true
-sleep 1
-
-# 2. Start server with SQLite storage
-export KAPI_DB_PATH=/tmp/kapi-persist-annotations-test.db
-rm -f "$KAPI_DB_PATH"
-RUST_LOG=kapi=trace cargo run > /tmp/kapi-server-persist-ann.log 2>&1 &
-sleep 3
-
-# 3. Register schema and create an object with annotations
-curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
-  -H "Content-Type: application/json" \
-  -d '{
-    "targetGroup": "example.io",
-    "targetVersion": "v1",
-    "targetKind": "Widget",
-    "specSchema": {
-      "type": "object",
-      "properties": { "color": { "type": "string" }, "size": { "type": "integer" } },
-      "required": ["color", "size"]
-    }
-  }' > /dev/null
-
-PERSIST_NAME="persist-ann-widget"
-
-# Create with annotations
-curl -s -X POST http://localhost:8080/apis/example.io/v1/Widget \
-  -H "Content-Type: application/json" \
-  -d "{
-    \"metadata\": {
-      \"name\": \"$PERSIST_NAME\",
-      \"annotations\": { \"description\": \"persistent\", \"build\": \"v1.0.0\" }
-    },
-    \"spec\": {
-      \"color\": \"blue\",
-      \"size\": 10
-    }
-  }" > /dev/null
-
-# 4. Verify annotations before restart
-echo "=== Before restart ==="
-curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" | python3 -c "
-import sys, json
-obj = json.load(sys.stdin)
-ann = obj['metadata']['annotations']
-print(f'Annotations: {ann}')
-with open('/tmp/kapi-ann-before.json', 'w') as f:
-    json.dump(ann, f, sort_keys=True)
-"
-
-# 5. Stop the server
-kill $(lsof -ti :8080) 2>/dev/null || true
-sleep 2
-
-# 6. Restart with same database
-RUST_LOG=kapi=trace KAPI_DB_PATH=\"$KAPI_DB_PATH\" cargo run > /tmp/kapi-server-persist-ann.log 2>&1 &
-sleep 3
-
-# 7. Verify annotations survived restart
-echo "=== After restart ==="
-curl -s "http://localhost:8080/apis/example.io/v1/Widget/$PERSIST_NAME" | python3 -c "
-import sys, json
-obj = json.load(sys.stdin)
-ann = obj['metadata']['annotations']
-print(f'Annotations: {ann}')
-with open('/tmp/kapi-ann-after.json', 'w') as f:
-    json.dump(ann, f, sort_keys=True)
-"
-
-# 8. Compare
-echo "=== Comparison ==="
-python3 -c "
-import json
-with open('/tmp/kapi-ann-before.json') as f:
-    before = json.load(f)
-with open('/tmp/kapi-ann-after.json') as f:
-    after = json.load(f)
-print(f'Before: {before}')
-print(f'After:  {after}')
-assert before == after, f'Annotations differ: {before} vs {after}'
-print('PASS: Annotations survived restart')
-"
-```
-
-**Expected results:**
-- Annotations survive server restart via SQLite
-- Annotations match before and after restart
-
----
-
 ## Cleanup
 
 ```bash
 # Stop the server
 kill $(lsof -ti :8080) 2>/dev/null || true
 
+# Clear the KAPI_DB_PATH so the next run starts in-memory by default
+unset KAPI_DB_PATH
+
+# Remove Test 14's hard-coded persistence objects from the database
+# (only needed if you want to re-run Test 14 against the same db file)
+# curl -s -X DELETE http://localhost:8080/apis/example.io/v1/Widget/persist-labels-widget
+# curl -s -X DELETE http://localhost:8080/apis/example.io/v1/Widget/persist-ann-widget
+
 # Clean up temp files
-rm -f /tmp/watch-*.log /tmp/kapi-server.log /tmp/kapi-server-persist.log
-rm -f /tmp/kapi-persist-test.db /tmp/kapi-test.db
+rm -f /tmp/watch-*.log
+rm -f /tmp/kapi-server.log /tmp/kapi-server-persist.log
+rm -f /tmp/kapi-labels-*.json /tmp/kapi-ann-*.json
+rm -f /tmp/kapi-persist-*.db /tmp/kapi-test.db
+rm -f ./kapi.db
 ```
 
 ---
 
-## Status Subresource Test Summary
+## Test Index (full)
 
-| Test | Goal |
-|---|---|
-| 30 | Create object, update status via `/status`, verify status is set (schema includes `statusSchema` from Test 1) |
-| 31 | Schema without statusSchema → GET/PUT `/status` returns 404 `StatusSubresourceNotEnabled` |
-| 32 | Update status with invalid data → 422 `SchemaValidation` |
-| 33 | Update status for non-existent object → 404 `NotFound` |
-| 34 | Status update does not modify spec field |
-| 35 | Status update bumps `resourceVersion` |
-| 36 | Create object with unknown top-level field → rejected with 400 `InvalidRequestBody` |
-| 37 | Status update replaces status completely (not merged) |
-| 38 | Status update publishes `StatusModified` watch event |
-| 39 | Spec update publishes `Modified` event (unchanged behavior) |
-| 40 | Generation starts at 1 on create |
-| 41 | Metadata-only update (labels change) does NOT bump generation |
-| 42 | Spec change bumps generation |
-| 43 | Status update does NOT bump generation |
-| 44 | Generation and resourceVersion are independent counters (full lifecycle) |
+| # | Goal |
+|---|------|
+| 1 | Watch with fieldSelector — matching event delivered, non-matching filtered |
+| 2 | Watch all events — Added, Modified, Deleted |
+| 3 | Abrupt connection cleanup — dead watcher removed on next publish |
+| 4 | Simultaneous watches — fieldSelector + all events |
+| 5 | Labels — create object with labels, verify in response and GET |
+| 6 | Labels — create object without labels, verify empty map |
+| 7 | Labels — update with changed labels (replace semantics) |
+| 8 | Labels — create Schema with labels |
+| 9 | Label validation matrix — invalid key, value, and length limits |
+| 10 | (merged into 9) |
+| 11 | (merged into 9) |
+| 12 | (merged into 9) |
+| 13 | Labels — list returns labels for all objects |
+| 14 | SQLite persistence — labels and annotations survive restart |
+| 15 | Watch with labelSelector equality — matching event delivered |
+| 16 | Watch with labelSelector AND combinator — multiple requirements |
+| 17 | Watch with labelSelector non-existence (!key) |
+| 18 | Watch with labelSelector inequality (key!=value) |
+| 19 | Invalid labelSelector returns 400 — watch and list contexts |
+| 20 | Empty labelSelector matches all events |
+| 21 | Mixed label selector operators |
+| 22 | List with fieldSelector — filtered results |
+| 23 | List with labelSelector — filtered results |
+| 24 | List with both fieldSelector and labelSelector |
+| 25 | List with filter and pagination |
+| 26 | List with filter that matches no objects |
+| 27 | Watch with combined fieldSelector + labelSelector (AND semantics) |
+| 28 | Invalid fieldSelector on list returns 400 |
+| 29 | (merged into 19) |
+| 30 | Status subresource — create object, update status via /status |
+| 31 | Status subresource not enabled — Schema without statusSchema returns 404 |
+| 32 | Status update with invalid data returns 422 |
+| 33 | Status update for non-existent object returns 404 NotFound |
+| 34 | Status update does not modify spec |
+| 35 | Status update bumps resourceVersion |
+| 36 | Create object with unknown top-level field — rejected with 400 |
+| 37 | Status update replaces status (not merged) |
+| 38 | StatusModified watch event published on status update |
+| 39 | Spec update publishes Modified event (not StatusModified) |
+| 40 | Generation — starts at 1 on create |
+| 41 | Generation — metadata-only update does NOT bump generation |
+| 42 | Generation — spec change bumps generation |
+| 43 | Generation — status update does NOT bump generation |
+| 44 | Generation — generation and resourceVersion are independent counters |
 | 45 | Annotations — create object with annotations, verify in response and GET |
 | 46 | Annotations — create object without annotations, verify empty map |
 | 47 | Annotations — update with changed annotations |
 | 48 | Annotations — create Schema with annotations |
-| 49 | Annotations — invalid key (empty) returns 400 |
-| 50 | Annotations — key exceeds length limit returns 400 |
+| 49 | Annotation validation matrix — invalid key, value, and length limits |
+| 50 | (merged into 49) |
 | 51 | Annotations — list returns annotations for all objects |
-| 52 | Annotations — SQLite persistence survives restart |
 
 ---
 
@@ -2204,6 +2039,9 @@ rm -f /tmp/kapi-persist-test.db /tmp/kapi-test.db
 | `event filtered out by watcher filter` | `src/event/bus.rs` | Event did not match watcher's fieldSelector or labelSelector |
 | `watcher buffer full, removing` | `src/event/bus.rs` | Slow consumer removed (channel full) |
 | `watcher channel closed, removing` | `src/event/bus.rs` | Dead watcher removed (client disconnected) |
+| `StatusModified` | `src/event/bus.rs` | Emitted when a `/status` subresource update publishes an event (see Tests 38, 39) |
+
+> The label/annotation validation rules themselves (e.g. `InvalidLabel`, `InvalidAnnotation`) are returned as structured error responses, not as separate log lines. To assert *why* a 400 happened, look at the response body — the tests in this doc grep the body, not the log.
 
 ---
 
@@ -2216,12 +2054,19 @@ For convenience, you can use the test runner script at `/tmp/kapi_test_v2.sh` (g
 export KAPI_BASE="http://localhost:8080"
 export TEST_RUN=$(date +%s)
 
-# Run each test block in order (Tests 1–13 on the same server)
-# Tests 15–21 (label selector watch) can be run after Test 13 on the same server
-# Tests 22–29 (list filtering + combined watch selectors) can be run after Test 21 on the same server
-# Tests 30–39 (status subresource) can be run after Test 29 on the same server
-# Tests 40–44 (generation field) can be run after Test 39 on the same server
-# Test 14 requires a server restart with KAPI_DB_PATH, so run it separately.
+# Phase A — in-memory server (Tests 1–13, 15–44)
+#   1–4   : watch basics (fieldSelector, lifecycle, cleanup, concurrent)
+#   5–13  : labels
+#   15–21 : labelSelector on watch
+#   22–28 : list filtering
+#   19    : labelSelector validation (also covers the former Test 29)
+#   30–39 : status subresource
+#   40–44 : generation
+#   45–51 : annotations
+
+# Phase B — SQLite server (Test 14 only — kills Phase A's server, restarts with KAPI_DB_PATH)
+# Re-run the Setup section's cleanup line, then run Test 14's body, then re-run the Setup to
+# return to the in-memory server for any post-mortem.
 ```
 
 ---
@@ -2235,4 +2080,18 @@ cargo run --package kapi-tests
 cargo test --lib
 ```
 
-These cover additional scenarios including optimistic concurrency, schema deletion, validation edge cases, and full CRUD flows across both store backends.
+These cover additional scenarios that are awkward to express as curl, including optimistic concurrency at the protocol level, schema deletion, validation edge cases, and full CRUD flows across both store backends.
+
+### Coverage overlap (this doc ↔ Rust tests)
+
+| Area | curl tests (this doc) | Rust tests |
+|------|-----------------------|------------|
+| CRUD basics | scattered | yes |
+| Watch semantics | full | partial (event publish) |
+| Label / annotation validation | matrix (9, 49) | yes |
+| fieldSelector / labelSelector | full | partial |
+| Status subresource | full | full |
+| Generation | full | full |
+| Optimistic concurrency (RV mismatch) | implicit (round-trip) | explicit |
+| Schema deletion | — | yes |
+| SQLite store behavior | 14 (round-trip) | full |
