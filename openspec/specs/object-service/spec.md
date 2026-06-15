@@ -19,14 +19,15 @@ The service SHALL be the single owner of system metadata manipulation (resource_
 ### Requirement: create delegates schema work to SchemaRegistry and sets metadata
 The `create(key, meta, spec)` method SHALL:
 1. Validate `meta.labels` using label validation rules (key format, value format, length limits)
-2. If `key.kind == "Schema"`: call `schema_registry.validate_and_compile(&spec)` to validate and compile, then construct a `StoredObject` with `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`, then `store.create()`, then `schema_registry.insert()` to cache, then `event_bus.publish()`
-3. If `key.kind != "Schema"`: call `schema_registry.get_validator(&key)` to obtain the validator, validate `spec` against it, then construct a `StoredObject` with initial metadata, then `store.create()`, then `event_bus.publish()`
+2. Validate `meta.annotations` using annotation validation rules (key format, total size limit)
+3. If `key.kind == "Schema"`: call `schema_registry.validate_and_compile(&spec)` to validate and compile, then construct a `StoredObject` with `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`, then `store.create()`, then `schema_registry.insert()` to cache, then `event_bus.publish()`
+4. If `key.kind != "Schema"`: call `schema_registry.get_validator(&key)` to obtain the validator, validate `spec` against it, then construct a `StoredObject` with initial metadata, then `store.create()`, then `event_bus.publish()`
 
 The service SHALL construct the complete `StoredObject` with all system metadata before calling `store.create()`. The store SHALL persist the object as-is.
 
 The service SHALL set `StoredObject.spec` to the `serde_json::Value` directly. There SHALL be no `SpecData { value: ... }` construction anywhere in the service.
 
-Label validation SHALL occur after schema validation of the spec payload but before store persistence. If label validation fails, an `AppError::InvalidLabel` error SHALL be returned with a descriptive message.
+Label and annotation validation SHALL occur as defense-in-depth: the handler validates eagerly before calling the service, and the service re-validates to ensure non-HTTP callers (tests, future gRPC/CLI) receive the same validation guarantees. If validation fails, an `AppError::InvalidLabel` or `AppError::InvalidAnnotation` error SHALL be returned with a descriptive message.
 
 #### Scenario: Create valid Schema
 - **WHEN** a Schema registration passed meta-schema validation and its jsonSchema compiles
@@ -83,6 +84,10 @@ Label validation SHALL occur after schema validation of the spec payload but bef
 - **WHEN** `create()` is called with an empty labels `HashMap`
 - **THEN** validation SHALL pass and the object SHALL be persisted
 
+#### Scenario: Create with invalid annotations
+- **WHEN** `create()` is called with annotations that violate format rules (empty key, key exceeding 256 chars, or total size exceeding 256KB)
+- **THEN** an `AppError::InvalidAnnotation` error SHALL be returned with a descriptive message
+
 ### Requirement: get delegates to store
 The `get(key, name)` method SHALL delegate to `store.get(key, name)` without additional validation.
 
@@ -104,8 +109,9 @@ The `list(key, opts)` method SHALL delegate to `store.list(key, opts)` without a
 ### Requirement: update delegates schema work to SchemaRegistry and uses centralized metadata
 The `update(object)` method SHALL:
 1. Validate `object.metadata.labels` using label validation rules
-2. If `object.key.kind == "Schema"`: call `schema_registry.validate_and_compile(&spec)`, then use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata, then `schema_registry.insert()`, then `event_bus.publish()`
-3. If `object.key.kind != "Schema"`: call `schema_registry.get_validator(&key)`, validate spec, then use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata, then `event_bus.publish()`
+2. Validate `object.metadata.annotations` using annotation validation rules
+3. If `object.key.kind == "Schema"`: call `schema_registry.validate_and_compile(&spec)`, then use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata, then `schema_registry.insert()`, then `event_bus.publish()`
+4. If `object.key.kind != "Schema"`: call `schema_registry.get_validator(&key)`, validate spec, then use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata, then `event_bus.publish()`
 
 The service SHALL use a centralized metadata wrapper that automatically handles:
 - `resource_version = existing.resource_version + 1`
@@ -115,7 +121,7 @@ The service SHALL use a centralized metadata wrapper that automatically handles:
 
 The service SHALL perform OCC (optimistic concurrency control) check inside the transaction callback: if `object.system.resource_version != existing.system.resource_version`, return `TransactionOp::Abort(AppError::Conflict)`.
 
-Label validation SHALL occur after schema validation but before store persistence. If label validation fails, an `AppError::InvalidLabel` error SHALL be returned and no persistence SHALL occur.
+Label and annotation validation SHALL occur as defense-in-depth: the handler validates eagerly before calling the service, and the service re-validates to ensure non-HTTP callers receive the same validation guarantees. If validation fails, an `AppError::InvalidLabel` or `AppError::InvalidAnnotation` error SHALL be returned and no persistence SHALL occur.
 
 #### Scenario: Update object with schema not in cache but in store
 - **WHEN** updating an object for a kind whose Schema exists in the store but is not in the cache
@@ -144,6 +150,10 @@ Label validation SHALL occur after schema validation but before store persistenc
 #### Scenario: Update with invalid labels
 - **WHEN** `update()` is called with invalid labels
 - **THEN** an `AppError::InvalidLabel` error SHALL be returned and no persistence SHALL occur
+
+#### Scenario: Update with invalid annotations
+- **WHEN** `update()` is called with annotations that violate format rules
+- **THEN** an `AppError::InvalidAnnotation` error SHALL be returned and no persistence SHALL occur
 
 ### Requirement: delete delegates cache eviction to SchemaRegistry
 The `delete(key, name)` method SHALL:
