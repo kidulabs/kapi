@@ -8,7 +8,7 @@
 - [ ] **Field selector variants** — `FieldSelector::NameNotEquals`, `FieldSelector::NameIn` for more expressive field-based filtering
 - [ ] **Zombie watcher cleanup** — Dead watchers (client disconnected) are only cleaned up lazily on next `publish()` for that `ResourceKey`. If no objects of a kind ever exist, watchers accumulate unbounded. Preferred: periodic background cleanup task. Secondary: `Drop` impl on `EventBus` entries.
 - [ ] **Add Finalizer Support** — add finalizer support
-- [ ] Why we are not doing OCC on the status updates.
+- [x] **Status OCC decision** — Status updates are unconditional (no OCC). The status subresource exists to eliminate spec/status write conflicts; OCC on status would reintroduce them. The `generation` field provides staleness detection; controllers should be idempotent. Revisit if controller-runtime ships with multi-controller status writes AND silent clobbering causes demonstrable problems.
 
 ## Deferred Improvements
 
