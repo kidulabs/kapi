@@ -72,6 +72,11 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                         "type": "object",
                         "additionalProperties": { "type": "string" },
                         "description": "Arbitrary key-value metadata (non-queryable)"
+                    },
+                    "finalizers": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Finalizers register interest in an object's cleanup. When non-empty, DELETE marks the object for deletion instead of hard-deleting it."
                     }
                 },
                 "required": ["name"]
@@ -86,7 +91,13 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "resourceVersion": { "type": "integer", "format": "int64" },
                     "generation": { "type": "integer", "format": "int64", "description": "Sequence number representing observed generation of the object's spec. Bumps only when spec changes." },
                     "createdAt": { "type": "string", "format": "date-time" },
-                    "updatedAt": { "type": "string", "format": "date-time" }
+                    "updatedAt": { "type": "string", "format": "date-time" },
+                    "deletionTimestamp": {
+                        "type": "string",
+                        "format": "date-time",
+                        "nullable": true,
+                        "description": "Server-set timestamp indicating the object is being deleted. Only finalizers can be modified while this is set."
+                    }
                 },
                 "required": ["resourceVersion", "generation", "createdAt", "updatedAt"]
             }),
@@ -186,6 +197,42 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "error": { "type": "string" },
                     "code": { "type": "string" },
                     "details": {}
+                },
+                "required": ["error", "code"]
+            }),
+        ),
+        // InvalidFinalizer: invalid finalizer name or too many finalizers
+        (
+            "InvalidFinalizer".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" },
+                    "details": {
+                        "type": "object",
+                        "properties": {
+                            "message": { "type": "string" }
+                        }
+                    }
+                },
+                "required": ["error", "code"]
+            }),
+        ),
+        // ObjectBeingDeleted: object is being deleted, only finalizer modifications allowed
+        (
+            "ObjectBeingDeleted".to_string(),
+            json!({
+                "type": "object",
+                "properties": {
+                    "error": { "type": "string" },
+                    "code": { "type": "string" },
+                    "details": {
+                        "type": "object",
+                        "properties": {
+                            "name": { "type": "string" }
+                        }
+                    }
                 },
                 "required": ["error", "code"]
             }),

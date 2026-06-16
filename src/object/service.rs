@@ -3,7 +3,7 @@
 //! The service is the single entry point for object CRUD operations.
 //! Handlers call the service, never the store directly.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use chrono::Utc;
 
@@ -19,7 +19,7 @@ use crate::object::types::{
 use crate::schema::schema_key;
 use crate::schema::{SCHEMA_KIND, SchemaRegistry, SchemaValidator};
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
-use crate::validation::{validate_annotations, validate_labels};
+use crate::validation::{validate_annotations, validate_finalizers, validate_labels};
 
 /// ObjectService wraps store, event bus, and schema registry.
 ///
@@ -33,6 +33,14 @@ pub struct ObjectService {
     event_bus: Arc<dyn EventPublisher>,
     /// Schema registry for validation, compilation, and caching
     schema_registry: SchemaRegistry,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum DeleteAction {
+    HardDeleted,
+    MarkedForDeletion,
+    IdempotentNoOp,
+    Unknown,
 }
 
 impl ObjectService {
@@ -107,7 +115,7 @@ impl ObjectService {
         }
     }
 
-    /// Deletes an object with Schema deletion guard.
+    /// Deletes an object with Schema deletion guard and finalizer support.
     ///
     /// For Schema objects:
     /// 1. Fetch the Schema
@@ -115,18 +123,54 @@ impl ObjectService {
     /// 3. Check if objects of that kind exist → SchemaHasObjects if any
     /// 4. Delete, cache evict, publish Deleted
     ///
-    /// For regular objects:
-    /// 1. Delete and publish Deleted
+    /// For regular objects with finalizer support:
+    /// 1. If `finalizers` is empty → hard delete, publish Deleted
+    /// 2. If `deletion_timestamp` is already set → idempotent no-op (200, no event)
+    /// 3. Otherwise → set `deletion_timestamp`, publish Modified (mark for deletion)
+    ///
+    /// Controllers watch for objects with `deletion_timestamp` set, perform cleanup,
+    /// then remove their finalizer via UPDATE. When all finalizers are removed,
+    /// the object is hard-deleted (see `validate_and_update_object`).
     pub async fn delete(&self, key: ResourceKey, name: String) -> Result<StoredObject, AppError> {
         if key.kind == SCHEMA_KIND {
             // Schema path: check for existing objects before deletion
             self.delete_schema(key, name).await
         } else {
-            // Regular object path: delete via transaction and publish
-            let deleted =
-                self.store.transaction(&key, &name, Box::new(|_existing| TransactionOp::Delete))?;
-            self.publish_event(&key, WatchEventType::Deleted, &deleted);
-            Ok(deleted)
+            let action = Arc::new(Mutex::new(DeleteAction::Unknown));
+            let action_clone = action.clone();
+            let result = self.store.transaction(
+                &key,
+                &name,
+                Box::new(move |existing| {
+                    if existing.metadata.finalizers.is_empty() {
+                        *action_clone.lock().unwrap() = DeleteAction::HardDeleted;
+                        TransactionOp::Delete
+                    } else if existing.system.deletion_timestamp.is_some() {
+                        *action_clone.lock().unwrap() = DeleteAction::IdempotentNoOp;
+                        TransactionOp::Apply(existing.clone())
+                    } else {
+                        *action_clone.lock().unwrap() = DeleteAction::MarkedForDeletion;
+                        let mut marked = existing.clone();
+                        marked.system.deletion_timestamp = Some(Utc::now());
+                        TransactionOp::Apply(marked)
+                    }
+                }),
+            )?;
+
+            match *action.lock().unwrap() {
+                DeleteAction::HardDeleted => {
+                    self.publish_event(&key, WatchEventType::Deleted, &result);
+                }
+                DeleteAction::MarkedForDeletion => {
+                    self.publish_event(&key, WatchEventType::Modified, &result);
+                }
+                DeleteAction::IdempotentNoOp => {
+                    // No event
+                }
+                DeleteAction::Unknown => unreachable!(),
+            }
+
+            Ok(result)
         }
     }
 
@@ -238,6 +282,8 @@ impl ObjectService {
         new_obj.system.updated_at = Utc::now();
         // Preserve the original creation timestamp
         new_obj.system.created_at = existing.system.created_at;
+        // Preserve deletion_timestamp (server-managed)
+        new_obj.system.deletion_timestamp = existing.system.deletion_timestamp;
         // Bump generation only if spec changed, otherwise preserve it
         if new_obj.spec != existing.spec {
             new_obj.system.generation = existing.system.generation + 1;
@@ -245,6 +291,18 @@ impl ObjectService {
             new_obj.system.generation = existing.system.generation;
         }
         TransactionOp::Apply(new_obj)
+    }
+
+    /// Returns true if only finalizers changed between existing and incoming metadata.
+    ///
+    /// Used during update-during-deletion enforcement: when `deletion_timestamp` is set,
+    /// only finalizer modifications are allowed. This helper verifies that name, labels,
+    /// and annotations are unchanged, and that finalizers differ.
+    fn only_finalizers_changed(existing: &ObjectMeta, incoming: &ObjectMeta) -> bool {
+        existing.name == incoming.name
+            && existing.labels == incoming.labels
+            && existing.annotations == incoming.annotations
+            && existing.finalizers != incoming.finalizers
     }
 
     /// Publishes a watch event via the event bus.
@@ -260,6 +318,7 @@ impl ObjectService {
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
         validate_annotations(&meta.annotations)?;
+        validate_finalizers(&meta.finalizers)?;
         let (_schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
         let stored = self
@@ -289,6 +348,7 @@ impl ObjectService {
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
         validate_annotations(&meta.annotations)?;
+        validate_finalizers(&meta.finalizers)?;
         let validator = self.schema_registry.get_validator(&key).await?;
 
         if !validator.is_valid(&spec) {
@@ -318,6 +378,7 @@ impl ObjectService {
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
         validate_annotations(&object.metadata.annotations)?;
+        validate_finalizers(&object.metadata.finalizers)?;
         let (_schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
 
@@ -360,6 +421,7 @@ impl ObjectService {
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
         validate_annotations(&object.metadata.annotations)?;
+        validate_finalizers(&object.metadata.finalizers)?;
         let validator = self.schema_registry.get_validator(&object.key).await?;
 
         if !validator.is_valid(&spec) {
@@ -370,6 +432,10 @@ impl ObjectService {
         let key = object.key.clone();
         let name = object.metadata.name.clone();
         let incoming_rv = object.system.resource_version;
+        let incoming_metadata = object.metadata.clone();
+        let incoming_spec = object.spec.clone();
+        let was_hard_deleted = Arc::new(Mutex::new(false));
+        let wd = was_hard_deleted.clone();
         let updated = self.store.transaction(
             &key,
             &name,
@@ -381,16 +447,49 @@ impl ObjectService {
                         actual: incoming_rv,
                     });
                 }
-                // Use centralized metadata wrapper
-                Self::apply_with_metadata(existing, |_existing| {
-                    let mut updated = existing.clone();
-                    updated.metadata = object.metadata.clone();
-                    updated.spec = object.spec.clone();
-                    updated
-                })
+
+                // If object is being deleted, only allow finalizer removal (not addition)
+                if existing.system.deletion_timestamp.is_some() {
+                    // Check that only finalizers changed (not spec, labels, annotations)
+                    if !Self::only_finalizers_changed(&existing.metadata, &incoming_metadata) {
+                        return TransactionOp::Abort(AppError::ObjectBeingDeleted {
+                            name: existing.metadata.name.clone(),
+                        });
+                    }
+                    // Check that no new finalizers were added
+                    for f in &incoming_metadata.finalizers {
+                        if !existing.metadata.finalizers.contains(f) {
+                            return TransactionOp::Abort(AppError::ObjectBeingDeleted {
+                                name: existing.metadata.name.clone(),
+                            });
+                        }
+                    }
+                }
+
+                // Build the updated object
+                let mut new_obj = existing.clone();
+                new_obj.metadata = incoming_metadata.clone();
+                new_obj.spec = incoming_spec.clone();
+
+                // Check if this should trigger hard delete (finalizers became empty on deleting object)
+                if existing.system.deletion_timestamp.is_some()
+                    && new_obj.metadata.finalizers.is_empty()
+                {
+                    *wd.lock().unwrap() = true;
+                    return TransactionOp::Delete;
+                }
+
+                // Otherwise, apply metadata management
+                Self::apply_with_metadata(existing, |_| new_obj)
             }),
         )?;
-        self.publish_event(&updated.key, WatchEventType::Modified, &updated);
+
+        if *was_hard_deleted.lock().unwrap() {
+            self.publish_event(&updated.key, WatchEventType::Deleted, &updated);
+        } else {
+            self.publish_event(&updated.key, WatchEventType::Modified, &updated);
+        }
+
         Ok(updated)
     }
 
@@ -476,6 +575,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -502,6 +602,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -535,6 +636,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 invalid_data,
             )
@@ -563,6 +665,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 invalid_schema,
             )
@@ -588,6 +691,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({}),
             )
@@ -616,6 +720,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 invalid_data,
             )
@@ -641,6 +746,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({ "color": "blue", "size": 10 }),
             )
@@ -675,6 +781,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({ "color": "blue", "size": 10 }),
             )
@@ -708,6 +815,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -744,6 +852,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({ "color": "blue", "size": 10 }),
             )
@@ -774,6 +883,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({ "color": "blue", "size": 10 }),
             )
@@ -803,6 +913,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data.clone(),
             )
@@ -817,6 +928,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -842,6 +954,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -873,6 +986,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -900,6 +1014,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -942,6 +1057,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -954,6 +1070,7 @@ mod tests {
                     name: "widget-1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "red"}),
             )
@@ -971,6 +1088,7 @@ mod tests {
                     name: "widget-2".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1017,6 +1135,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -1035,6 +1154,7 @@ mod tests {
                     name: "widget-1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "red", "size": 1}),
             )
@@ -1050,6 +1170,7 @@ mod tests {
                     name: "widget-2".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 2}),
             )
@@ -1080,6 +1201,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 system: SystemMetadata::initial(),
                 spec: invalid_schema,
@@ -1102,6 +1224,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "red"}),
             )
@@ -1278,6 +1401,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -1302,6 +1426,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1335,6 +1460,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1365,6 +1491,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1418,6 +1545,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1456,6 +1584,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue"}),
             )
@@ -1486,6 +1615,7 @@ mod tests {
                     name: "my-widget".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "status": {"phase": "Running"}}),
             )
@@ -1513,6 +1643,7 @@ mod tests {
                     name: "meta-test".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1547,6 +1678,7 @@ mod tests {
                     name: "created-at-test".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1578,6 +1710,7 @@ mod tests {
                     name: "gen-bump-test".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1611,6 +1744,7 @@ mod tests {
                     name: "gen-preserve-test".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 10}),
             )
@@ -1650,6 +1784,7 @@ mod tests {
                     name: "occ-pass".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 1}),
             )
@@ -1682,6 +1817,7 @@ mod tests {
                     name: "occ-fail".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 1}),
             )
@@ -1717,6 +1853,7 @@ mod tests {
                     name: "status-occ".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 json!({"color": "blue", "size": 1}),
             )

@@ -34,6 +34,11 @@ pub enum AppError {
     #[error("invalid annotation: {0}")]
     InvalidAnnotation(String),
 
+    // Finalizer validation failure (format, uniqueness, referenced object existence)
+    // Maps to HTTP 400 Bad Request in into_response
+    #[error("invalid finalizer: {0}")]
+    InvalidFinalizer(String),
+
     // labelSelector query parameter parsing failed (malformed syntax)
     // Maps to HTTP 400 Bad Request in into_response
     #[error("invalid label selector: {0}")]
@@ -51,6 +56,10 @@ pub enum AppError {
     // Attempting to delete a Schema that has existing objects of the target kind
     #[error("schema has objects: kind={kind}")]
     SchemaHasObjects { kind: String },
+
+    // Object is being deleted; only finalizer modifications are permitted
+    #[error("object '{name}' is being deleted; only finalizer modifications are allowed")]
+    ObjectBeingDeleted { name: String },
 
     // Status subresource is not enabled for this kind (no statusSchema defined)
     #[error("status subresource not enabled for kind '{kind}'")]
@@ -152,6 +161,22 @@ impl IntoResponse for AppError {
                 "SchemaHasObjects",
                 format!("schema has objects: kind={kind}"),
                 json!({ "kind": kind }),
+            ),
+            // InvalidFinalizer maps to HTTP 400 Bad Request
+            AppError::InvalidFinalizer(msg) => (
+                StatusCode::BAD_REQUEST,
+                "InvalidFinalizer",
+                format!("invalid finalizer: {msg}"),
+                json!({ "message": msg }),
+            ),
+            // ObjectBeingDeleted maps to HTTP 409 Conflict
+            AppError::ObjectBeingDeleted { name } => (
+                StatusCode::CONFLICT,
+                "ObjectBeingDeleted",
+                format!(
+                    "object '{name}' is being deleted; only finalizer modifications are allowed"
+                ),
+                json!({ "name": name }),
             ),
             AppError::Internal(_err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
