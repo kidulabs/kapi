@@ -124,6 +124,18 @@ pub struct SchemaData {
     pub status_schema: Option<serde_json::Value>,
 }
 
+/// User-controlled metadata for stored objects.
+///
+/// - `name`: Unique identifier within a kind (client-supplied).
+/// - `labels`: Key-value pairs for organizing and selecting objects.
+/// - `annotations`: Key-value pairs for storing arbitrary non-queryable metadata.
+/// - `finalizers`: Strings that register interest in an object's cleanup. When
+///   non-empty, DELETE marks the object for deletion (sets `deletion_timestamp`)
+///   instead of hard-deleting it. Controllers watch for objects with
+///   `deletion_timestamp` set, perform cleanup, then remove their finalizer.
+///   When all finalizers are removed, the object is hard-deleted.
+///   Max 20 finalizers per object. Names must be label-key-shaped
+///   (e.g., `example.io/cleanup`).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ObjectMeta {
@@ -132,6 +144,8 @@ pub struct ObjectMeta {
     pub labels: HashMap<String, String>,
     #[serde(default)]
     pub annotations: HashMap<String, String>,
+    #[serde(default)]
+    pub finalizers: Vec<String>,
 }
 
 /// Server-maintained metadata for stored objects.
@@ -142,6 +156,11 @@ pub struct ObjectMeta {
 /// - `generation`: Counter that bumps only when the `spec` changes. Enables
 ///   controllers to detect spec drift without reacting to metadata-only or
 ///   status-only updates. Starts at 1 on create.
+/// - `deletion_timestamp`: Server-set timestamp indicating the object is being
+///   deleted. Set when DELETE is called on an object with finalizers. While
+///   this is set, only `finalizers` can be modified (all other changes are
+///   rejected with 409 Conflict). When all finalizers are removed, the object
+///   is hard-deleted. `None` for objects not being deleted.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SystemMetadata {
@@ -150,6 +169,8 @@ pub struct SystemMetadata {
     pub generation: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    #[serde(skip_serializing_if = "Option::is_none", default)]
+    pub deletion_timestamp: Option<DateTime<Utc>>,
 }
 
 impl SystemMetadata {
@@ -160,7 +181,13 @@ impl SystemMetadata {
     /// layer is responsible for all metadata initialization.
     pub fn initial() -> Self {
         let now = Utc::now();
-        Self { resource_version: 1, generation: 1, created_at: now, updated_at: now }
+        Self {
+            resource_version: 1,
+            generation: 1,
+            created_at: now,
+            updated_at: now,
+            deletion_timestamp: None,
+        }
     }
 }
 
@@ -194,6 +221,7 @@ mod tests {
                 name: name.to_string(),
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
+                finalizers: Vec::new(),
             },
             system: SystemMetadata::initial(),
             spec,
@@ -214,12 +242,14 @@ mod tests {
                     name: name.into(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
                 },
                 spec: serde_json::json!({}),
                 status: None,
@@ -413,12 +443,18 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta { name: "test".into(), labels, annotations: HashMap::new() },
+                metadata: ObjectMeta {
+                    name: "test".into(),
+                    labels,
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
                 },
                 spec: serde_json::json!({}),
                 status: None,
@@ -446,12 +482,18 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta { name: "test".into(), labels, annotations: HashMap::new() },
+                metadata: ObjectMeta {
+                    name: "test".into(),
+                    labels,
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
                 },
                 spec: serde_json::json!({}),
                 status: None,
@@ -482,12 +524,18 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta { name: "target".into(), labels, annotations: HashMap::new() },
+                metadata: ObjectMeta {
+                    name: "target".into(),
+                    labels,
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
                 },
                 spec: serde_json::json!({}),
                 status: None,
@@ -530,12 +578,18 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta { name: "target".into(), labels, annotations: HashMap::new() },
+                metadata: ObjectMeta {
+                    name: "target".into(),
+                    labels,
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
                 },
                 spec: serde_json::json!({}),
                 status: None,
@@ -573,12 +627,18 @@ mod tests {
                     version: "v1".into(),
                     kind: "Test".into(),
                 },
-                metadata: ObjectMeta { name: "target".into(), labels, annotations: HashMap::new() },
+                metadata: ObjectMeta {
+                    name: "target".into(),
+                    labels,
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
                 system: SystemMetadata {
                     resource_version: 1,
                     generation: 1,
                     created_at: chrono::Utc::now(),
                     updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
                 },
                 spec: serde_json::json!({}),
                 status: None,
@@ -601,12 +661,14 @@ mod tests {
                 name: "test".to_string(),
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
+                finalizers: Vec::new(),
             },
             system: SystemMetadata {
                 resource_version: 1,
                 generation: 1,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
+                deletion_timestamp: None,
             },
             spec: json!({"color": "blue"}),
             status: Some(json!({"phase": "Running"})),
@@ -629,12 +691,14 @@ mod tests {
                 name: "test".to_string(),
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
+                finalizers: Vec::new(),
             },
             system: SystemMetadata {
                 resource_version: 1,
                 generation: 1,
                 created_at: chrono::Utc::now(),
                 updated_at: chrono::Utc::now(),
+                deletion_timestamp: None,
             },
             spec: json!({"color": "blue"}),
             status: None,

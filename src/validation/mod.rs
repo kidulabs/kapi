@@ -161,6 +161,22 @@ pub fn validate_annotations(annotations: &HashMap<String, String>) -> Result<(),
     Ok(())
 }
 
+/// Validates a list of finalizers: max 20, each name must be label-key-shaped.
+pub fn validate_finalizers(finalizers: &[String]) -> Result<(), AppError> {
+    if finalizers.len() > 20 {
+        return Err(AppError::InvalidFinalizer(format!(
+            "too many finalizers: {} (max 20)",
+            finalizers.len()
+        )));
+    }
+    for finalizer in finalizers {
+        validate_label_key(finalizer).map_err(|_| {
+            AppError::InvalidFinalizer(format!("invalid finalizer name: '{finalizer}'"))
+        })?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -298,5 +314,38 @@ mod tests {
         let mut annotations = HashMap::new();
         annotations.insert("key".to_string(), "".to_string());
         assert!(validate_annotations(&annotations).is_ok());
+    }
+
+    // --- validate_finalizers unit tests ---
+
+    #[test]
+    fn validate_finalizers_empty_list() {
+        let finalizers: Vec<String> = vec![];
+        assert!(validate_finalizers(&finalizers).is_ok());
+    }
+
+    #[test]
+    fn validate_finalizers_valid_names() {
+        let finalizers = vec![
+            "example.io/cleanup".to_string(),
+            "kapi.io/finalizer".to_string(),
+            "protection".to_string(),
+        ];
+        assert!(validate_finalizers(&finalizers).is_ok());
+    }
+
+    #[test]
+    fn validate_finalizers_invalid_name() {
+        let finalizers = vec!["invalid name with spaces".to_string()];
+        assert!(matches!(validate_finalizers(&finalizers), Err(AppError::InvalidFinalizer(_))));
+    }
+
+    #[test]
+    fn validate_finalizers_too_many() {
+        let finalizers: Vec<String> = (0..21).map(|i| format!("finalizer-{}", i)).collect();
+        assert!(matches!(
+            validate_finalizers(&finalizers),
+            Err(AppError::InvalidFinalizer(msg)) if msg.contains("max 20")
+        ));
     }
 }

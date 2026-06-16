@@ -54,10 +54,12 @@ impl SQLiteStore {
                 spec               TEXT    NOT NULL,
                 status             TEXT,
                 annotations        TEXT,
+                finalizers         TEXT    NOT NULL DEFAULT '[]',
                 resource_version   INTEGER NOT NULL,
                 generation         INTEGER NOT NULL DEFAULT 1,
                 created_at         TEXT    NOT NULL,
                 updated_at         TEXT    NOT NULL,
+                deletion_timestamp TEXT,
                 PRIMARY KEY (resource_group, api_version, resource_kind, name)
             )",
             [],
@@ -98,6 +100,7 @@ impl SQLiteStore {
     /// Converts raw column values from a query row into a `StoredObject`.
     /// Labels are set to empty — callers must populate them via `query_labels()`.
     /// Annotations are deserialized from JSON; NULL maps to empty HashMap.
+    /// Finalizers are deserialized from JSON array string.
     #[allow(clippy::too_many_arguments)]
     fn deserialize_row(
         group: String,
@@ -107,10 +110,12 @@ impl SQLiteStore {
         spec: String,
         status: Option<String>,
         annotations: Option<String>,
+        finalizers: Option<String>,
         resource_version: i64,
         generation: i64,
         created_at: String,
         updated_at: String,
+        deletion_timestamp: Option<String>,
     ) -> Result<StoredObject, AppError> {
         let spec_value: Value =
             serde_json::from_str(&spec).map_err(|e| AppError::Internal(e.into()))?;
@@ -121,18 +126,36 @@ impl SQLiteStore {
             .map(|a| serde_json::from_str(&a).map_err(|e| AppError::Internal(e.into())))
             .transpose()?
             .unwrap_or_default();
+        let finalizers_value: Vec<String> = match finalizers {
+            Some(f) => serde_json::from_str(&f).map_err(|e| AppError::Internal(e.into()))?,
+            None => Vec::new(),
+        };
         let created_at =
             DateTime::parse_from_rfc3339(&created_at).map_err(|e| AppError::Internal(e.into()))?;
         let updated_at =
             DateTime::parse_from_rfc3339(&updated_at).map_err(|e| AppError::Internal(e.into()))?;
+        let deletion_timestamp_value: Option<DateTime<Utc>> = match deletion_timestamp {
+            Some(ts) => {
+                let parsed =
+                    DateTime::parse_from_rfc3339(&ts).map_err(|e| AppError::Internal(e.into()))?;
+                Some(parsed.with_timezone(&Utc))
+            }
+            None => None,
+        };
         Ok(StoredObject {
             key: ResourceKey { group, version, kind },
-            metadata: ObjectMeta { name, labels: HashMap::new(), annotations: annotations_value },
+            metadata: ObjectMeta {
+                name,
+                labels: HashMap::new(),
+                annotations: annotations_value,
+                finalizers: finalizers_value,
+            },
             system: SystemMetadata {
                 resource_version: resource_version as u64,
                 generation: generation as u64,
                 created_at: created_at.with_timezone(&Utc),
                 updated_at: updated_at.with_timezone(&Utc),
+                deletion_timestamp: deletion_timestamp_value,
             },
             spec: spec_value,
             status: status_value,
@@ -228,7 +251,8 @@ impl SQLiteStore {
         let mut stmt = conn
             .prepare(
                 "SELECT resource_group, api_version, resource_kind, name, spec, status, \
-                 annotations, resource_version, generation, created_at, updated_at \
+                 annotations, finalizers, resource_version, generation, created_at, \
+                 updated_at, deletion_timestamp \
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 \
                  AND resource_kind = ?3 AND name = ?4",
             )
@@ -270,16 +294,21 @@ impl SQLiteStore {
                     .map_err(|e| AppError::Internal(e.into()))?,
             )
         };
+        let finalizers_json = serde_json::to_string(&object.metadata.finalizers)
+            .map_err(|e| AppError::Internal(e.into()))?;
         let created_at = object.system.created_at.to_rfc3339();
         let updated_at = object.system.updated_at.to_rfc3339();
+        let deletion_timestamp =
+            object.system.deletion_timestamp.as_ref().map(|dt| dt.to_rfc3339());
 
         let tx = conn.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
         tx.execute(
             "INSERT OR REPLACE INTO objects \
              (resource_group, api_version, resource_kind, name, spec, status, \
-              annotations, resource_version, generation, created_at, updated_at) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+              annotations, finalizers, resource_version, generation, created_at, \
+              updated_at, deletion_timestamp) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 object.key.group,
                 object.key.version,
@@ -288,10 +317,12 @@ impl SQLiteStore {
                 spec_json,
                 status_json,
                 annotations_json,
+                finalizers_json,
                 object.system.resource_version as i64,
                 object.system.generation as i64,
                 created_at,
                 updated_at,
+                deletion_timestamp,
             ],
         )
         .map_err(|e| AppError::Internal(e.into()))?;
@@ -361,10 +392,12 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
     let spec: String = row.get("spec")?;
     let status: Option<String> = row.get("status")?;
     let annotations: Option<String> = row.get("annotations")?;
+    let finalizers: Option<String> = row.get("finalizers")?;
     let resource_version: i64 = row.get("resource_version")?;
     let generation: i64 = row.get("generation")?;
     let created_at: String = row.get("created_at")?;
     let updated_at: String = row.get("updated_at")?;
+    let deletion_timestamp: Option<String> = row.get("deletion_timestamp")?;
     SQLiteStore::deserialize_row(
         group,
         version,
@@ -373,10 +406,12 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
         spec,
         status,
         annotations,
+        finalizers,
         resource_version,
         generation,
         created_at,
         updated_at,
+        deletion_timestamp,
     )
     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
 }
@@ -406,8 +441,16 @@ impl ObjectStore for SQLiteStore {
                         .map_err(|e| AppError::Internal(e.into()))?,
                 )
             };
+            let finalizers_json =
+                serde_json::to_string(&object.metadata.finalizers)
+                    .map_err(|e| AppError::Internal(e.into()))?;
             let created_at = object.system.created_at.to_rfc3339();
             let updated_at = object.system.updated_at.to_rfc3339();
+            let deletion_timestamp = object
+                .system
+                .deletion_timestamp
+                .as_ref()
+                .map(|dt| dt.to_rfc3339());
 
             let c = conn.lock().unwrap();
 
@@ -415,13 +458,13 @@ impl ObjectStore for SQLiteStore {
             let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
             let result = tx.execute(
-                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, annotations, resource_version, generation, created_at, updated_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, annotations, finalizers, resource_version, generation, created_at, updated_at, deletion_timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 params![
                     object.key.group, object.key.version, object.key.kind, object.metadata.name,
-                    spec_json, status_json, annotations_json,
+                    spec_json, status_json, annotations_json, finalizers_json,
                     object.system.resource_version as i64, object.system.generation as i64,
-                    created_at, updated_at
+                    created_at, updated_at, deletion_timestamp
                 ],
             );
 
@@ -513,7 +556,7 @@ impl ObjectStore for SQLiteStore {
         tokio::task::spawn_blocking(move || {
             let c = conn.lock().unwrap();
             let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, annotations, resource_version, generation, created_at, updated_at
+                "SELECT resource_group, api_version, resource_kind, name, spec, status, annotations, finalizers, resource_version, generation, created_at, updated_at, deletion_timestamp
                  FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
             ).map_err(|e| AppError::Internal(e.into()))?;
             let mut obj = stmt
@@ -658,7 +701,8 @@ impl ObjectStore for SQLiteStore {
 
             let sql = format!(
                 "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.spec, o.status, \
-                 o.annotations, o.resource_version, o.generation, o.created_at, o.updated_at \
+                 o.annotations, o.finalizers, o.resource_version, o.generation, o.created_at, \
+                 o.updated_at, o.deletion_timestamp \
                  FROM objects o \
                  WHERE {where_sql} \
                  ORDER BY o.name ASC \
@@ -760,6 +804,7 @@ mod tests {
                 name: name.to_string(),
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
+                finalizers: Vec::new(),
             },
             system: SystemMetadata::initial(),
             spec,

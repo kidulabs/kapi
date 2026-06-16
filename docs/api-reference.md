@@ -251,6 +251,23 @@ DELETE /apis/{group}/{version}/{kind}/{name}
 
 **Errors:** `404`
 
+#### Finalizer Support
+
+When an object has `metadata.finalizers` (a list of strings), DELETE behaves differently:
+
+- **Empty finalizers** → object is hard-deleted immediately, `Deleted` event published
+- **Non-empty finalizers** → object is marked for deletion (`system.deletionTimestamp` is set), `Modified` event published, object still exists
+- **Already deleting** (`deletionTimestamp` already set) → idempotent 200, no event
+
+Controllers watch for objects with `deletionTimestamp` set, perform cleanup, then remove their finalizer via UPDATE. When all finalizers are removed, the object is hard-deleted.
+
+**Constraints while `deletionTimestamp` is set:**
+- Only `metadata.finalizers` can be modified (all other changes → 409 `ObjectBeingDeleted`)
+- Cannot add new finalizers (only removal allowed)
+- Cannot create a new object with the same name (→ 409 `AlreadyExists`)
+
+**Finalizer validation:** Max 20 finalizers per object. Names must be label-key-shaped (e.g., `example.io/cleanup`). Invalid names → 400 `InvalidFinalizer`.
+
 ---
 
 ## Watch (SSE)
@@ -563,10 +580,12 @@ All errors follow this format:
 | 404 | `StatusSubresourceNotEnabled` | Status subresource accessed for kind without statusSchema |
 | 409 | `Conflict` | OCC version mismatch or duplicate |
 | 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
+| 409 | `ObjectBeingDeleted` | Object is being deleted; only finalizer modifications are allowed |
 | 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field or malformed syntax) |
 | 400 | `InvalidLabelSelector` | Invalid labelSelector query parameter (malformed syntax, empty value) |
 | 400 | `InvalidAnnotation` | Annotation key is empty, exceeds 256 chars, or total size exceeds 256KB |
 | 400 | `InvalidLabel` | Label key or value violates format or length rules |
+| 400 | `InvalidFinalizer` | Finalizer name is invalid or too many finalizers (max 20) |
 | 400 | `InvalidRequestBody` | Request body validation failed (missing spec, unknown fields, empty spec) |
 | 422 | `SchemaValidation` | Object data doesn't match schema |
 | 422 | `InvalidSchema` | Schema registration failed validation |

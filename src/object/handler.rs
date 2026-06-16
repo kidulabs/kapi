@@ -25,7 +25,7 @@ use crate::object::types::{
 use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
 use crate::store::ResourceKey;
-use crate::validation::{validate_annotations, validate_labels};
+use crate::validation::{validate_annotations, validate_finalizers, validate_labels};
 
 /// Path parameters for /apis/{group}/{version}/{kind}
 #[derive(Deserialize)]
@@ -126,6 +126,30 @@ fn extract_labels(body: &Value) -> Result<HashMap<String, String>, AppError> {
     Ok(labels)
 }
 
+/// Extracts finalizers from `metadata.finalizers` in the request body.
+///
+/// Returns an empty `Vec` when `metadata.finalizers` is absent.
+/// Returns an error when `metadata.finalizers` is present but not an array of strings.
+fn extract_finalizers(body: &Value) -> Result<Vec<String>, AppError> {
+    let finalizers_value = match body.get("metadata").and_then(|m| m.get("finalizers")) {
+        Some(v) => v,
+        None => return Ok(Vec::new()),
+    };
+
+    let finalizers_arr = finalizers_value.as_array().ok_or_else(|| {
+        AppError::InvalidFinalizer("metadata.finalizers must be an array".to_string())
+    })?;
+
+    let mut finalizers = Vec::with_capacity(finalizers_arr.len());
+    for value in finalizers_arr {
+        let str_value = value
+            .as_str()
+            .ok_or_else(|| AppError::InvalidFinalizer("finalizer must be a string".to_string()))?;
+        finalizers.push(str_value.to_string());
+    }
+    Ok(finalizers)
+}
+
 /// Creates a new object.
 ///
 /// Extracts group, version, kind from path, deserializes body as JSON,
@@ -147,13 +171,15 @@ pub async fn create(
     Path(path): Path<ObjectPath>,
     Json(body): Json<Value>,
 ) -> Result<(StatusCode, Json<StoredObject>), AppError> {
-    // Extract labels and annotations from metadata (shared across both paths)
+    // Extract labels, annotations, and finalizers from metadata (shared across both paths)
     let labels = extract_labels(&body)?;
     let annotations = extract_annotations(&body)?;
+    let finalizers = extract_finalizers(&body)?;
 
     // Fail-fast: validate format before any service invocation
     validate_labels(&labels)?;
     validate_annotations(&annotations)?;
+    validate_finalizers(&finalizers)?;
 
     // Branch on kind: Schema objects generate their name from payload fields,
     // while regular objects require a client-supplied metadata.name and a spec field
@@ -169,7 +195,7 @@ pub async fn create(
         if let Some(obj) = data.as_object_mut() {
             obj.remove("metadata");
         }
-        (ObjectMeta { name, labels, annotations }, data)
+        (ObjectMeta { name, labels, annotations, finalizers }, data)
     } else {
         // Validate: only "metadata" and "spec" allowed as top-level fields
         if let Some(obj) = body.as_object() {
@@ -202,7 +228,7 @@ pub async fn create(
             return Err(AppError::InvalidRequestBody("'spec' must not be empty".to_string()));
         }
 
-        (ObjectMeta { name, labels, annotations }, spec.clone())
+        (ObjectMeta { name, labels, annotations, finalizers }, spec.clone())
     };
 
     let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
@@ -451,6 +477,7 @@ pub async fn update(
     // Fail-fast: validate format before any service invocation
     validate_labels(&body.metadata.labels)?;
     validate_annotations(&body.metadata.annotations)?;
+    validate_finalizers(&body.metadata.finalizers)?;
 
     let updated = state.object_service().update(body).await?;
     Ok(Json(updated))

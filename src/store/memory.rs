@@ -153,6 +153,7 @@ mod tests {
                 name: name.to_string(),
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
+                finalizers: Vec::new(),
             },
             system: SystemMetadata::initial(),
             spec,

@@ -79,6 +79,8 @@ mod tests {
             "WatchEventType",
             "ValidationError",
             "InvalidFieldSelector",
+            "InvalidFinalizer",
+            "ObjectBeingDeleted",
             "AppError",
             "SchemaData",
         ];
@@ -394,6 +396,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data,
             )
@@ -429,6 +432,7 @@ mod tests {
                     name: "Widget.example.io".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
+                    finalizers: Vec::new(),
                 },
                 schema_data.clone(),
             )

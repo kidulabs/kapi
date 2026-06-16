@@ -1,5 +1,5 @@
 use kapi_tests::{
-    TestApp, all_test_stores, generation_semantics, list_filtering, object_annotations,
+    TestApp, all_test_stores, finalizers, generation_semantics, list_filtering, object_annotations,
     object_crud, object_labels, optimistic_concurrency, schema_deletion, schema_validation,
     status_subresource, watch_events,
 };
@@ -172,6 +172,64 @@ async fn main() {
         println!();
 
         run_test!("generation_semantics", generation_semantics::test_generation_semantics);
+
+        println!();
+
+        // Finalizer tests
+        println!();
+        run_test!(
+            "delete_without_finalizers_hard_deletes",
+            finalizers::test_delete_without_finalizers_hard_deletes
+        );
+        run_test!(
+            "delete_with_finalizers_marks_for_deletion",
+            finalizers::test_delete_with_finalizers_marks_for_deletion
+        );
+        run_test!(
+            "delete_idempotent_on_already_deleting",
+            finalizers::test_delete_idempotent_on_already_deleting
+        );
+        run_test!(
+            "update_spec_on_deleting_object_rejected",
+            finalizers::test_update_spec_on_deleting_object_rejected
+        );
+        run_test!(
+            "update_labels_on_deleting_object_rejected",
+            finalizers::test_update_labels_on_deleting_object_rejected
+        );
+        run_test!(
+            "update_finalizers_on_deleting_object_allowed",
+            finalizers::test_update_finalizers_on_deleting_object_allowed
+        );
+        run_test!(
+            "update_finalizers_to_empty_triggers_hard_delete",
+            finalizers::test_update_finalizers_to_empty_triggers_hard_delete
+        );
+        run_test!(
+            "update_adds_finalizer_on_deleting_object_rejected",
+            finalizers::test_update_adds_finalizer_on_deleting_object_rejected
+        );
+        run_test!("create_with_valid_finalizers", finalizers::test_create_with_valid_finalizers);
+        run_test!(
+            "create_with_invalid_finalizer_name",
+            finalizers::test_create_with_invalid_finalizer_name
+        );
+        run_test!(
+            "create_with_too_many_finalizers",
+            finalizers::test_create_with_too_many_finalizers
+        );
+        run_test!(
+            "create_same_name_after_delete_with_finalizers",
+            finalizers::test_create_same_name_after_delete_with_finalizers
+        );
+        run_test!(
+            "backward_compat_deserialize_without_finalizers",
+            finalizers::test_backward_compat_deserialize_without_finalizers
+        );
+        run_test!(
+            "backward_compat_deserialize_without_deletion_timestamp",
+            finalizers::test_backward_compat_deserialize_without_deletion_timestamp
+        );
 
         println!();
 

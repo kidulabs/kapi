@@ -262,6 +262,7 @@ pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<
                 name: "cleanup-test".to_string(),
                 labels: std::collections::HashMap::new(),
                 annotations: std::collections::HashMap::new(),
+                finalizers: Vec::new(),
             },
             system: SystemMetadata::initial(),
             spec: serde_json::json!({}),
