@@ -308,6 +308,7 @@ pub struct StoredObject {
     pub metadata: ObjectMeta,
     pub system: SystemMetadata,
     pub spec: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<serde_json::Value>,
 }
 

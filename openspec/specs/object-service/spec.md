@@ -6,41 +6,32 @@ Define the `ObjectService` that orchestrates validation, storage, and event publ
 The system SHALL define an `ObjectService` struct containing:
 - `store: Arc<dyn ObjectStore>` — the storage backend
 - `event_bus: Arc<dyn EventPublisher>` — the per-kind event bus for watch notifications
-- `schema_registry: SchemaRegistry` — schema compilation, caching, and lookup collaborator
+- `schema_registry: SchemaRegistry` — schema compilation, caching, and lookup collaborator (received from SchemaService or constructed independently)
 
-The service SHALL be the single owner of system metadata manipulation (resource_version, generation, timestamps). The store SHALL NOT modify these fields. The service SHALL operate on `spec` and `status` as `serde_json::Value` directly, with no `SpecData` envelope construction or unwrapping.
+The service SHALL be the single owner of system metadata manipulation (resource_version, generation, timestamps) for regular objects. The store SHALL NOT modify these fields. The service SHALL operate on `spec` and `status` as `serde_json::Value` directly, with no `SpecData` envelope construction or unwrapping.
+
+The ObjectService SHALL NOT handle Schema lifecycle operations (Schema create, update, delete). Those are the responsibility of SchemaService.
 
 #### Scenario: Service construction with SchemaRegistry
-- **WHEN** `ObjectService::new(store, event_bus, meta_validator)` is called
-- **THEN** the service constructs a `SchemaRegistry` internally from `store` and `meta_validator`
-- **AND** the registry's cache starts empty
-- **AND** no store query is performed during construction
+- **WHEN** `ObjectService::new(store, event_bus, schema_registry)` is called
+- **THEN** the service SHALL be constructed with the provided SchemaRegistry
+- **AND** the registry's cache SHALL be shared with SchemaService
 
-### Requirement: create delegates schema work to SchemaRegistry and sets metadata
+### Requirement: create validates spec against schema and sets metadata
 The `create(key, meta, spec)` method SHALL:
 1. Validate `meta.labels` using label validation rules (key format, value format, length limits)
 2. Validate `meta.annotations` using annotation validation rules (key format, total size limit)
-3. If `key.kind == "Schema"`: call `schema_registry.validate_and_compile(&spec)` to validate and compile, then construct a `StoredObject` with `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`, then `store.create()`, then `schema_registry.insert()` to cache, then `event_bus.publish()`
-4. If `key.kind != "Schema"`: call `schema_registry.get_validator(&key)` to obtain the validator, validate `spec` against it, then construct a `StoredObject` with initial metadata, then `store.create()`, then `event_bus.publish()`
+3. Call `schema_registry.get_validator(&key)` to obtain the validator for the object's kind
+4. Validate `spec` against the compiled schema validator
+5. Construct a `StoredObject` with `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`
+6. Call `store.create()` to persist
+7. Call `event_bus.publish()` with an `Added` event
 
 The service SHALL construct the complete `StoredObject` with all system metadata before calling `store.create()`. The store SHALL persist the object as-is.
 
 The service SHALL set `StoredObject.spec` to the `serde_json::Value` directly. There SHALL be no `SpecData { value: ... }` construction anywhere in the service.
 
-Label and annotation validation SHALL occur as defense-in-depth: the handler validates eagerly before calling the service, and the service re-validates to ensure non-HTTP callers (tests, future gRPC/CLI) receive the same validation guarantees. If validation fails, an `AppError::InvalidLabel` or `AppError::InvalidAnnotation` error SHALL be returned with a descriptive message.
-
-#### Scenario: Create valid Schema
-- **WHEN** a Schema registration passed meta-schema validation and its jsonSchema compiles
-- **THEN** the service SHALL construct a `StoredObject` with `resource_version = 1`, `generation = 1`, and current timestamps, with `spec` set to the validated `Value` directly
-- **AND** the schema is stored with the generated name, the compiled validator is cached under that name, and an `Added` event is published
-
-#### Scenario: Create Schema with invalid meta-schema
-- **WHEN** a Schema registration fails meta-schema validation
-- **THEN** the error is `InvalidSchema` and nothing is stored or published
-
-#### Scenario: Create Schema with uncompileable jsonSchema
-- **WHEN** a Schema registration passes meta-schema validation but `jsonSchema` fails compilation
-- **THEN** the error is `InvalidSchema` and nothing is stored or published
+Label and annotation validation SHALL occur in the service to ensure non-HTTP callers (tests, future gRPC/CLI) receive the same validation guarantees. If validation fails, an `AppError::InvalidLabel` or `AppError::InvalidAnnotation` error SHALL be returned with a descriptive message.
 
 #### Scenario: Create object with initial metadata
 - **WHEN** creating a regular object
@@ -106,12 +97,13 @@ The `list(key, opts)` method SHALL delegate to `store.list(key, opts)` without a
 - **WHEN** `list` is called with limit and continue token
 - **THEN** the paginated `ListResponse` is returned
 
-### Requirement: update delegates schema work to SchemaRegistry and uses centralized metadata
+### Requirement: update validates spec and uses centralized metadata
 The `update(object)` method SHALL:
 1. Validate `object.metadata.labels` using label validation rules
 2. Validate `object.metadata.annotations` using annotation validation rules
-3. If `object.key.kind == "Schema"`: call `schema_registry.validate_and_compile(&spec)`, then use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata, then `schema_registry.insert()`, then `event_bus.publish()`
-4. If `object.key.kind != "Schema"`: call `schema_registry.get_validator(&key)`, validate spec, then use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata, then `event_bus.publish()`
+3. Call `schema_registry.get_validator(&key)` to obtain the validator
+4. Validate spec against the compiled schema validator
+5. Use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata
 
 The service SHALL use a centralized metadata wrapper that automatically handles:
 - `resource_version = existing.resource_version + 1`
@@ -121,7 +113,7 @@ The service SHALL use a centralized metadata wrapper that automatically handles:
 
 The service SHALL perform OCC (optimistic concurrency control) check inside the transaction callback: if `object.system.resource_version != existing.system.resource_version`, return `TransactionOp::Abort(AppError::Conflict)`.
 
-Label and annotation validation SHALL occur as defense-in-depth: the handler validates eagerly before calling the service, and the service re-validates to ensure non-HTTP callers receive the same validation guarantees. If validation fails, an `AppError::InvalidLabel` or `AppError::InvalidAnnotation` error SHALL be returned and no persistence SHALL occur.
+Label and annotation validation SHALL occur in the service to ensure non-HTTP callers receive the same validation guarantees. If validation fails, an `AppError::InvalidLabel` or `AppError::InvalidAnnotation` error SHALL be returned and no persistence SHALL occur.
 
 #### Scenario: Update object with schema not in cache but in store
 - **WHEN** updating an object for a kind whose Schema exists in the store but is not in the cache
@@ -155,38 +147,26 @@ Label and annotation validation SHALL occur as defense-in-depth: the handler val
 - **WHEN** `update()` is called with annotations that violate format rules
 - **THEN** an `AppError::InvalidAnnotation` error SHALL be returned and no persistence SHALL occur
 
-### Requirement: delete delegates cache eviction to SchemaRegistry
-The `delete(key, name)` method SHALL:
-1. If `key.kind == "Schema"`: fetch the Schema, extract target kind, check if objects of that kind exist using `store.exists()`; if so, return `SchemaHasObjects`. Then `store.delete()`, then `schema_registry.evict()`, then `event_bus.publish()`
-2. If `key.kind != "Schema"`: `store.delete()`, then `event_bus.publish()`
+### Requirement: delete handles finalizer lifecycle for regular objects
+The `delete(key, name)` method SHALL handle the finalizer-based deletion lifecycle for regular (non-Schema) objects:
+1. Fetch the existing object from the store
+2. If `finalizers` is empty: hard-delete via `store.transaction()` with `TransactionOp::Delete`, publish `Deleted` event
+3. If `finalizers` is non-empty and `deletion_timestamp` is None: mark for deletion via `store.transaction()`, set `deletion_timestamp`, publish `Modified` event
+4. If `deletion_timestamp` is already set: return the object without changes, no event published (idempotent)
 
-#### Scenario: Delete Schema with no objects
-- **WHEN** deleting a Schema and no objects of the target kind exist
-- **THEN** the Schema is deleted, the cache entry is removed via `schema_registry.evict()`, a `Deleted` event is published, and the deleted object is returned
+The ObjectService SHALL NOT handle Schema deletion. Schema deletion is the responsibility of SchemaService.
 
-#### Scenario: Delete Schema with existing objects
-- **WHEN** deleting a Schema and objects of the target kind exist
-- **THEN** the error is `SchemaHasObjects { kind }` and nothing is deleted, evicted, or published
+#### Scenario: Delete regular object without finalizers
+- **WHEN** deleting a non-Schema object with empty finalizers
+- **THEN** the object SHALL be hard-deleted, a `Deleted` event SHALL be published, and the deleted object SHALL be returned
 
-#### Scenario: Delete regular object
-- **WHEN** deleting a non-Schema object
-- **THEN** the object is deleted, a `Deleted` event is published, and the deleted object is returned
+#### Scenario: Delete regular object with finalizers marks for deletion
+- **WHEN** deleting a non-Schema object with non-empty finalizers
+- **THEN** the object SHALL remain in storage with `system.deletionTimestamp` set, a `Modified` event SHALL be published
 
-### Requirement: Schema cache uses schema name as key
-The `SchemaRegistry` cache SHALL be keyed by the Schema's `name` field (e.g., `"Widget.example.io"`). `ObjectService` SHALL pass the schema name to `schema_registry.insert()` and `schema_registry.evict()`.
-
-#### Scenario: Cache insertion on Schema create
-- **WHEN** a Schema is created with name `"Widget.example.io"`
-- **THEN** `schema_registry.insert("Widget.example.io", compiled)` is called after successful store persistence
-
-#### Scenario: Cache lookup for object validation
-- **WHEN** validating an object of kind `Widget` in group `example.io`
-- **THEN** `schema_registry.get_validator()` queries the cache with key `"Widget.example.io"`
-
-#### Scenario: Cache eviction on Schema delete
-- **WHEN** a Schema with name `"Widget.example.io"` is deleted
-- **THEN** `schema_registry.evict("Widget.example.io")` is called after successful store deletion
-
+#### Scenario: Idempotent delete on already-deleting object
+- **WHEN** deleting an object that already has `deletionTimestamp` set
+- **THEN** the object SHALL remain unchanged, no event SHALL be published, and the response SHALL be 200 OK with the object
 ### Requirement: Service provides subscribe() with WatchFilter for SSE watch
 The system SHALL provide an `ObjectService::subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream` method that delegates to the internal `EventPublisher::subscribe(key, filter)`.
 
@@ -197,29 +177,6 @@ The system SHALL provide an `ObjectService::subscribe(&self, key: &ResourceKey, 
 #### Scenario: Subscribe with WatchFilter::FieldSelector returns a filtered WatchStream
 - **WHEN** `object_service.subscribe(&key, WatchFilter::FieldSelector(FieldSelector::NameEquals("my-widget".into())))` is called
 - **THEN** a `WatchStream` is returned that delivers only events matching the filter
-
-### Requirement: Schema compilation uses JsonSchemaValidator via SchemaRegistry
-The system SHALL compile user schemas via `SchemaRegistry::validate_and_compile()`, which internally uses `JsonSchemaValidator::compile()`. `ObjectService` SHALL NOT directly call `JsonSchemaValidator::compile()`.
-
-#### Scenario: Schema compiled via SchemaRegistry
-- **WHEN** a Schema registration payload passes meta-schema validation
-- **THEN** `schema_registry.validate_and_compile()` calls `JsonSchemaValidator::compile()` internally
-- **AND** the resulting `Arc<dyn SchemaValidator>` is cached via `schema_registry.insert()`
-
-### Requirement: Schema registration compiles status validator
-When a Schema is created or updated with a `statusSchema` field, the `ObjectService` SHALL compile the `statusSchema` into a validator and cache it alongside the spec validator in the `SchemaRegistry`. The cache key for the status validator SHALL be `{kind}.{group}.status`.
-
-#### Scenario: Schema with statusSchema is registered
-- **WHEN** a Schema is created with `statusSchema` defined
-- **THEN** both the spec validator and status validator are compiled and cached
-
-#### Scenario: Schema without statusSchema is registered
-- **WHEN** a Schema is created without `statusSchema`
-- **THEN** only the spec validator is compiled and cached
-
-#### Scenario: Schema with invalid statusSchema fails registration
-- **WHEN** a Schema is created with a `statusSchema` that fails JSON Schema compilation
-- **THEN** the error is `AppError::InvalidSchema` and nothing is stored or cached
 
 ### Requirement: ObjectService create ignores status field
 The `create` method SHALL ignore any `status` field present in the request body. Objects are always created with `status: None`.

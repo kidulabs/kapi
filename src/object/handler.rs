@@ -21,8 +21,7 @@ use std::collections::HashMap;
 
 use crate::error::AppError;
 use crate::object::types::{
-    ContinueToken, FieldSelector, LabelRequirement, LabelSelector, ListOptions, ObjectMeta,
-    StoredObject, WatchFilter,
+    ContinueToken, FieldSelector, LabelSelector, ListOptions, ObjectMeta, StoredObject, WatchFilter,
 };
 use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
@@ -442,6 +441,7 @@ mod tests {
     use crate::event::EventPublisher;
     use crate::object::schema_service::SchemaService;
     use crate::object::service::ObjectService;
+    use crate::object::types::LabelRequirement;
     use crate::routes::build_router;
     use crate::schema::SchemaValidator;
     use crate::schema::meta_schema::compile_meta_schema;

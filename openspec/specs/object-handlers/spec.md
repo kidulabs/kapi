@@ -3,7 +3,9 @@
 Define the Axum HTTP handlers and route wiring that expose the object CRUD API and SSE watch endpoint. Handlers are thin — they extract parameters, call the service, and return responses.
 ## Requirements
 ### Requirement: Create handler accepts POST to /apis/{group}/{version}/{kind}
-The create handler SHALL extract `group`, `version`, and `kind` from the path and deserialize the request body as `serde_json::Value`. For Schema objects (`kind == "Schema"`), the handler SHALL extract `targetKind` and `targetGroup` from the body, generate the name as `{targetKind}.{targetGroup}`, construct an `ObjectMeta` with that name and any `labels` from `metadata.labels`, and call `ObjectService::create(key, meta, data)`. If `targetKind` or `targetGroup` is missing or not a string, the handler SHALL return `AppError::InvalidSchema`. For non-Schema objects, the handler SHALL extract the object `name` from the body's `metadata.name` field and `labels` from `metadata.labels` (defaulting to empty if absent), extract the `spec` field from the body, construct an `ObjectMeta` with those values, and call `ObjectService::create(key, meta, spec)`. The handler SHALL validate that the request body contains only `metadata` and `spec` as top-level fields; any other field SHALL return `AppError::InvalidRequestBody`. The handler SHALL validate that `spec` is present and is a JSON object; if missing or not an object, the handler SHALL return `AppError::InvalidRequestBody`. The handler SHALL validate that `spec` is non-empty; if `spec` is an empty object `{}`, the handler SHALL return `AppError::InvalidRequestBody`. If `metadata.labels` is present but not an object type, the handler SHALL return an appropriate error response.
+The create handler SHALL extract `group`, `version`, and `kind` from the path. For Schema objects (`kind == "Schema"`), the handler SHALL extract `targetKind` and `targetGroup` from the body, generate the name as `{targetKind}.{targetGroup}`, construct an `ObjectMeta` with that name and any `labels` from `metadata.labels`, and call `SchemaService::create(key, meta, spec)`. If `targetKind` or `targetGroup` is missing or not a string, the handler SHALL return `AppError::InvalidSchema`. For non-Schema objects, the handler SHALL extract the object `name` from the body's `metadata.name` field and `labels` from `metadata.labels` (defaulting to empty if absent), extract the `spec` field from the body, construct an `ObjectMeta` with those values, and call `ObjectService::create(key, meta, spec)`. The handler SHALL validate that the request body contains only `metadata` and `spec` as top-level fields; any other field SHALL return `AppError::InvalidRequestBody`. The handler SHALL validate that `spec` is present and is a JSON object; if missing or not an object, the handler SHALL return `AppError::InvalidRequestBody`. The handler SHALL validate that `spec` is non-empty; if `spec` is an empty object `{}`, the handler SHALL return `AppError::InvalidRequestBody`. If `metadata.labels` is present but not an object type, the handler SHALL return an appropriate error response.
+
+The handler SHALL NOT perform label, annotation, or finalizer format validation. Format validation is the responsibility of the service layer.
 
 #### Scenario: Successful Schema create returns 201 with generated name
 - **WHEN** a Schema is POSTed to `/apis/kapi.io/v1/Schema` with `targetKind: "Widget"` and `targetGroup: "example.io"`
@@ -70,7 +72,7 @@ The get handler SHALL extract path parameters and call `ObjectService::get(key, 
 - **THEN** the response is 404 with `NotFound` error
 
 ### Requirement: List handler supports both list and watch modes
-The list handler SHALL check for `?watch=true` query parameter. If present, it SHALL parse the `fieldSelector` and `labelSelector` query parameters into a `WatchFilter`, subscribe to the event bus with the filter, and return an SSE stream. When both `fieldSelector` and `labelSelector` are present on a watch request, the handler SHALL combine them with `WatchFilter::And`. If a `fieldSelector` or `labelSelector` is present on a non-watch (list) request, the handler SHALL parse the selectors and pass them to `ListOptions` for store-level filtering. Invalid selectors on either list or watch SHALL return 400 Bad Request.
+The list handler SHALL check for `?watch=true` query parameter. If present, it SHALL parse the `fieldSelector` and `labelSelector` query parameters using `FieldSelector::parse()` and `LabelSelector::parse()` into a `WatchFilter`, subscribe to the event bus with the filter, and return an SSE stream. When both `fieldSelector` and `labelSelector` are present on a watch request, the handler SHALL combine them with `WatchFilter::And`. If a `fieldSelector` or `labelSelector` is present on a non-watch (list) request, the handler SHALL parse the selectors using `FieldSelector::parse()` and `LabelSelector::parse()` and pass them to `ListOptions` for store-level filtering. Invalid selectors on either list or watch SHALL return 400 Bad Request.
 
 #### Scenario: List returns JSON
 - **WHEN** GET `/apis/example.io/v1/Widget` without `?watch=true`
@@ -133,7 +135,9 @@ The list handler SHALL check for `?watch=true` query parameter. If present, it S
 - **THEN** the SSE stream receives an event with `event: message` and the `WatchEvent` JSON as data
 
 ### Requirement: Update handler accepts PUT to /apis/{group}/{version}/{kind}/{name}
-The update handler SHALL extract path parameters, deserialize the body as `StoredObject`, validate that the URL `key` and `name` match the object's `key` and `metadata.name`, and call `ObjectService::update(object)`. Labels SHALL be passed through as part of the `StoredObject` body's `metadata` field. The handler SHALL NOT modify `system` fields; the `resourceVersion` in `system` is used by the store for optimistic concurrency control.
+The update handler SHALL extract path parameters, deserialize the body as `StoredObject`, validate that the URL `key` and `name` match the object's `key` and `metadata.name`. For Schema objects (`kind == "Schema"`), the handler SHALL call `SchemaService::update(object)`. For non-Schema objects, the handler SHALL call `ObjectService::update(object)`. Labels SHALL be passed through as part of the `StoredObject` body's `metadata` field. The handler SHALL NOT modify `system` fields; the `resourceVersion` in `system` is used by the store for optimistic concurrency control.
+
+The handler SHALL NOT perform label, annotation, or finalizer format validation. Format validation is the responsibility of the service layer.
 
 #### Scenario: Successful update returns 200
 - **WHEN** an object is PUT with a matching `system.resourceVersion`
@@ -156,7 +160,7 @@ The update handler SHALL extract path parameters, deserialize the body as `Store
 - **THEN** the handler SHALL pass the empty labels map to the service, which SHALL remove all existing labels
 
 ### Requirement: Delete handler accepts DELETE to /apis/{group}/{version}/{kind}/{name}
-The delete handler SHALL extract path parameters and call `ObjectService::delete(key, name)`.
+The delete handler SHALL extract path parameters. For Schema objects (`kind == "Schema"`), the handler SHALL call `SchemaService::delete(key, name)`. For non-Schema objects, the handler SHALL call `ObjectService::delete(key, name)`.
 
 #### Scenario: Successful delete returns 200
 - **WHEN** an existing object is DELETEd
@@ -188,52 +192,12 @@ The system SHALL provide an `update_status` handler for `PUT /apis/{group}/{vers
 - **WHEN** a PUT request is made to `/status` for a kind without `statusSchema`
 - **THEN** the handler returns `404 Not Found` with `StatusSubresourceNotEnabled` error
 
-### Requirement: Create handler validates label format eagerly
-The create handler SHALL call `validate_labels(&labels)` immediately after extracting labels from the request body, before invoking `ObjectService::create`. If validation fails, the handler SHALL return the error without calling the service.
+### Requirement: Handler principle
+The module documentation in `src/object/handler.rs` SHALL state: "Handlers extract parameters from HTTP requests, perform deserialization and structural validation (required fields, type checks), and delegate to the appropriate service. They never access the store, event bus, or schema registry directly. They do not perform domain format validation (labels, annotations, finalizers) — that is the service layer's responsibility."
 
-#### Scenario: Create with invalid label key rejected at handler
-- **WHEN** a POST request is received with `metadata.labels: {"invalid key!": "value"}`
-- **THEN** the handler SHALL return `AppError::InvalidLabel` without invoking the service
-
-#### Scenario: Create with label value exceeding length rejected at handler
-- **WHEN** a POST request is received with a label value exceeding 256 characters
-- **THEN** the handler SHALL return `AppError::InvalidLabel` without invoking the service
-
-### Requirement: Create handler validates annotation format eagerly
-The create handler SHALL call `validate_annotations(&annotations)` immediately after extracting annotations from the request body, before invoking `ObjectService::create`. If validation fails, the handler SHALL return the error without calling the service.
-
-#### Scenario: Create with annotation key exceeding length rejected at handler
-- **WHEN** a POST request is received with an annotation key exceeding 256 characters
-- **THEN** the handler SHALL return `AppError::InvalidAnnotation` without invoking the service
-
-#### Scenario: Create with annotations exceeding total size rejected at handler
-- **WHEN** a POST request is received with annotations whose total serialized size exceeds 256KB
-- **THEN** the handler SHALL return `AppError::InvalidAnnotation` without invoking the service
-
-### Requirement: Update handler validates label format eagerly
-The update handler SHALL call `validate_labels(&body.metadata.labels)` after the URL/body consistency check, before invoking `ObjectService::update`. If validation fails, the handler SHALL return the error without calling the service.
-
-#### Scenario: Update with invalid label key rejected at handler
-- **WHEN** a PUT request is received with `metadata.labels: {"invalid key!": "value"}`
-- **THEN** the handler SHALL return `AppError::InvalidLabel` without invoking the service
-
-#### Scenario: Update with valid labels passes through
-- **WHEN** a PUT request is received with valid labels
-- **THEN** the handler SHALL pass the labels to the service for processing
-
-### Requirement: Update handler validates annotation format eagerly
-The update handler SHALL call `validate_annotations(&body.metadata.annotations)` after the URL/body consistency check, before invoking `ObjectService::update`. If validation fails, the handler SHALL return the error without calling the service.
-
-#### Scenario: Update with annotations exceeding total size rejected at handler
-- **WHEN** a PUT request is received with annotations whose total serialized size exceeds 256KB
-- **THEN** the handler SHALL return `AppError::InvalidAnnotation` without invoking the service
-
-### Requirement: Handler principle updated
-The module documentation in `src/object/handler.rs` SHALL state: "Handlers validate input format and deserialization constraints. They never access the store, event bus, or schema registry, and never contain conditional mutation logic."
-
-#### Scenario: Handler module doc reflects new principle
+#### Scenario: Handler module doc reflects principle
 - **WHEN** the handler module documentation is read
-- **THEN** it SHALL describe format validation as a handler responsibility and state access as prohibited
+- **THEN** it SHALL describe parameter extraction and structural validation as handler responsibilities, domain format validation as a service responsibility, and direct store/bus/registry access as prohibited
 
 ### Requirement: Routes are composed under /apis/{group}/{version}
 The router SHALL define:
