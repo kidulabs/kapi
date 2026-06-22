@@ -20,6 +20,7 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tracing::info;
 
+use crate::object::schema_service::SchemaService;
 use crate::object::service::ObjectService;
 use crate::routes::{AppState, build_router};
 use crate::schema::SchemaValidator;
@@ -33,13 +34,21 @@ pub fn create_app(config: &AppConfig) -> anyhow::Result<Router> {
     let meta_validator: Arc<dyn SchemaValidator> = Arc::new(compile_meta_schema()?);
     info!("Meta-schema compiled successfully");
 
+    // SchemaService owns its own SchemaRegistry
+    let schema_service = Arc::new(SchemaService::new(
+        config.store.clone(),
+        config.event_bus.clone(),
+        meta_validator.clone(),
+    ));
+
+    // ObjectService gets its own SchemaRegistry (shared store, separate cache)
     let object_service = Arc::new(ObjectService::new(
         config.store.clone(),
         config.event_bus.clone(),
-        meta_validator,
+        crate::schema::SchemaRegistry::new(config.store.clone(), meta_validator),
     ));
 
-    let app_state = AppState::new(object_service);
+    let app_state = AppState::new(object_service, schema_service);
     let app: Router = build_router(app_state);
 
     Ok(app)

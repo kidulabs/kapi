@@ -11,8 +11,8 @@ use std::collections::HashMap;
 
 use crate::error::AppError;
 use crate::object::types::{
-    ContinueToken, FieldSelector, LabelRequirement, ListOptions, ListResponse, ObjectMeta,
-    StoredObject, SystemMetadata,
+    ContinueToken, FieldSelector, LabelRequirement, LabelSelector, ListOptions, ListResponse,
+    ObjectMeta, StoredObject, SystemMetadata,
 };
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
@@ -416,6 +416,132 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
     .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
 }
 
+/// Builds dynamic SQL WHERE clauses for `SQLiteStore::list()`.
+///
+/// Encapsulates `where_clauses`, `params`, and `param_idx` tracking
+/// to eliminate the manual index management bug class and make query
+/// generation testable without a database.
+struct ListQueryBuilder {
+    where_clauses: Vec<String>,
+    params: Vec<Box<dyn rusqlite::types::ToSql>>,
+    param_idx: usize,
+}
+
+impl ListQueryBuilder {
+    /// Initializes with the base WHERE clause for resource key matching.
+    ///
+    /// Sets up `resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3`
+    /// with the corresponding params, and starts `param_idx` at 4 for subsequent
+    /// parameter placeholders.
+    fn new(key: &ResourceKey) -> Self {
+        Self {
+            where_clauses: vec![
+                "resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3".to_string(),
+            ],
+            params: vec![
+                Box::new(key.group.clone()),
+                Box::new(key.version.clone()),
+                Box::new(key.kind.clone()),
+            ],
+            param_idx: 4,
+        }
+    }
+
+    /// Adds a `name > ?N` clause for cursor-based pagination.
+    fn add_continue_token(&mut self, skip: &str) {
+        self.where_clauses.push(format!("name > ?{}", self.param_idx));
+        self.params.push(Box::new(skip.to_string()));
+        self.param_idx += 1;
+    }
+
+    /// Adds field selector clauses.
+    ///
+    /// Currently supports:
+    /// - `FieldSelector::NameEquals` — adds `name = ?N`
+    fn add_field_selector(&mut self, selector: &FieldSelector) {
+        match selector {
+            FieldSelector::NameEquals(name) => {
+                self.where_clauses.push(format!("name = ?{}", self.param_idx));
+                self.params.push(Box::new(name.clone()));
+                self.param_idx += 1;
+            }
+        }
+    }
+
+    /// Adds label selector clauses using EXISTS subqueries.
+    ///
+    /// Each `LabelRequirement` variant maps to a different EXISTS pattern:
+    /// - `Equals` — EXISTS with key = value match
+    /// - `NotEquals` — NOT EXISTS (key) OR EXISTS (key with different value)
+    /// - `Exists` — EXISTS with key match
+    /// - `NotExists` — NOT EXISTS with key match
+    fn add_label_selector(&mut self, selector: &LabelSelector) {
+        for req in &selector.requirements {
+            match req {
+                LabelRequirement::Equals { key: k, value: v } => {
+                    let clause = format!(
+                        "EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                         AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                         AND l.name = o.name AND l.label_key = ?{} AND l.label_value = ?{})",
+                        self.param_idx,
+                        self.param_idx + 1
+                    );
+                    self.where_clauses.push(clause);
+                    self.params.push(Box::new(k.clone()));
+                    self.params.push(Box::new(v.clone()));
+                    self.param_idx += 2;
+                }
+                LabelRequirement::NotEquals { key: k, value: v } => {
+                    let clause = format!(
+                        "(NOT EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                         AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                         AND l.name = o.name AND l.label_key = ?{}) \
+                         OR EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                         AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                         AND l.name = o.name AND l.label_key = ?{} AND l.label_value != ?{}))",
+                        self.param_idx,
+                        self.param_idx + 1,
+                        self.param_idx + 2
+                    );
+                    self.where_clauses.push(clause);
+                    self.params.push(Box::new(k.clone()));
+                    self.params.push(Box::new(k.clone()));
+                    self.params.push(Box::new(v.clone()));
+                    self.param_idx += 3;
+                }
+                LabelRequirement::Exists { key: k } => {
+                    let clause = format!(
+                        "EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                         AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                         AND l.name = o.name AND l.label_key = ?{})",
+                        self.param_idx
+                    );
+                    self.where_clauses.push(clause);
+                    self.params.push(Box::new(k.clone()));
+                    self.param_idx += 1;
+                }
+                LabelRequirement::NotExists { key: k } => {
+                    let clause = format!(
+                        "NOT EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
+                         AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
+                         AND l.name = o.name AND l.label_key = ?{})",
+                        self.param_idx
+                    );
+                    self.where_clauses.push(clause);
+                    self.params.push(Box::new(k.clone()));
+                    self.param_idx += 1;
+                }
+            }
+        }
+    }
+
+    /// Consumes the builder and returns the joined WHERE SQL, all parameters,
+    /// and the next parameter index (for use with the LIMIT parameter).
+    fn build(self) -> (String, Vec<Box<dyn rusqlite::types::ToSql>>, usize) {
+        (self.where_clauses.join(" AND "), self.params, self.param_idx)
+    }
+}
+
 #[async_trait]
 impl ObjectStore for SQLiteStore {
     /// Inserts a new object. Returns `Conflict` if the composite key already exists.
@@ -603,98 +729,22 @@ impl ObjectStore for SQLiteStore {
 
             let c = conn.lock().unwrap();
 
-            // Build dynamic SQL with filter WHERE clauses
-            let base_where =
-                "resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3".to_string();
+            // Build dynamic SQL with filter WHERE clauses using ListQueryBuilder
+            let mut builder = ListQueryBuilder::new(&key);
 
-            let mut where_clauses = vec![base_where];
-            let mut params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
-                Box::new(key.group.clone()),
-                Box::new(key.version.clone()),
-                Box::new(key.kind.clone()),
-            ];
-            let mut param_idx: usize = 4; // next parameter index
-
-            // Add continue_token skip condition
             if let Some(ref skip) = skip_past {
-                where_clauses.push(format!("name > ?{}", param_idx));
-                params_vec.push(Box::new(skip.clone()));
-                param_idx += 1;
+                builder.add_continue_token(skip);
             }
 
-            // Add field_selector filter
             if let Some(ref selector) = opts.field_selector {
-                match selector {
-                    FieldSelector::NameEquals(name) => {
-                        where_clauses.push(format!("name = ?{}", param_idx));
-                        params_vec.push(Box::new(name.clone()));
-                        param_idx += 1;
-                    }
-                }
+                builder.add_field_selector(selector);
             }
 
-            // Add label_selector filters using EXISTS subqueries
             if let Some(ref selector) = opts.label_selector {
-                for req in &selector.requirements {
-                    match req {
-                        LabelRequirement::Equals { key: k, value: v } => {
-                            let clause = format!(
-                                "EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
-                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                                 AND l.name = o.name AND l.label_key = ?{} AND l.label_value = ?{})",
-                                param_idx,
-                                param_idx + 1
-                            );
-                            where_clauses.push(clause);
-                            params_vec.push(Box::new(k.clone()));
-                            params_vec.push(Box::new(v.clone()));
-                            param_idx += 2;
-                        }
-                        LabelRequirement::NotEquals { key: k, value: v } => {
-                            // NOT EXISTS (label key) OR EXISTS (label key with different value)
-                            let clause = format!(
-                                "(NOT EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
-                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                                 AND l.name = o.name AND l.label_key = ?{}) \
-                                 OR EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
-                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                                 AND l.name = o.name AND l.label_key = ?{} AND l.label_value != ?{}))",
-                                param_idx, param_idx + 1, param_idx + 2
-                            );
-                            where_clauses.push(clause);
-                            params_vec.push(Box::new(k.clone()));
-                            params_vec.push(Box::new(k.clone()));
-                            params_vec.push(Box::new(v.clone()));
-                            param_idx += 3;
-                        }
-                        LabelRequirement::Exists { key: k } => {
-                            let clause = format!(
-                                "EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
-                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                                 AND l.name = o.name AND l.label_key = ?{})",
-                                param_idx
-                            );
-                            where_clauses.push(clause);
-                            params_vec.push(Box::new(k.clone()));
-                            param_idx += 1;
-                        }
-                        LabelRequirement::NotExists { key: k } => {
-                            let clause = format!(
-                                "NOT EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
-                                 AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                                 AND l.name = o.name AND l.label_key = ?{})",
-                                param_idx
-                            );
-                            where_clauses.push(clause);
-                            params_vec.push(Box::new(k.clone()));
-                            param_idx += 1;
-                        }
-                    }
-                }
+                builder.add_label_selector(selector);
             }
 
-            let where_sql = where_clauses.join(" AND ");
-            let limit_param_idx = param_idx;
+            let (where_sql, mut params_vec, limit_param_idx) = builder.build();
 
             // Add limit parameter
             params_vec.push(Box::new(query_limit as i64));

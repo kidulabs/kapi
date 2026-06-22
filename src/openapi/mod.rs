@@ -374,9 +374,34 @@ mod tests {
         assert_eq!(names, vec!["name"], "only name param should be present, GVK is in the URL");
     }
 
+    /// Helper to create services for testing with a fresh store and event bus.
+    fn make_test_services()
+    -> (crate::object::service::ObjectService, crate::object::schema_service::SchemaService) {
+        use crate::event::EventPublisher;
+        let store: std::sync::Arc<dyn crate::store::ObjectStore> =
+            std::sync::Arc::new(crate::store::memory::InMemoryStore::new());
+        let event_bus: std::sync::Arc<dyn EventPublisher> =
+            std::sync::Arc::new(crate::event::EventBus::default());
+        let meta_validator: std::sync::Arc<dyn crate::schema::SchemaValidator> =
+            std::sync::Arc::new(
+                crate::schema::meta_schema::compile_meta_schema()
+                    .expect("meta-schema should compile"),
+            );
+        let schema_registry =
+            crate::schema::SchemaRegistry::new(store.clone(), meta_validator.clone());
+        let schema_service = crate::object::schema_service::SchemaService::new(
+            store.clone(),
+            event_bus.clone(),
+            meta_validator,
+        );
+        let object_service =
+            crate::object::service::ObjectService::new(store, event_bus, schema_registry);
+        (object_service, schema_service)
+    }
+
     #[tokio::test]
     async fn build_openapi_spec_includes_dynamic_paths_and_components() {
-        let service = make_test_service();
+        let (service, schema_service) = make_test_services();
         let schema_key = crate::schema::schema_key();
         let schema_data = serde_json::json!({
             "targetGroup": "example.io",
@@ -389,7 +414,7 @@ mod tests {
                 }
             }
         });
-        service
+        schema_service
             .create(
                 schema_key,
                 crate::object::types::ObjectMeta {
@@ -415,7 +440,7 @@ mod tests {
 
     #[tokio::test]
     async fn build_openapi_spec_reflects_mutations() {
-        let service = make_test_service();
+        let (service, schema_service) = make_test_services();
         let schema_key = crate::schema::schema_key();
         let schema_data = serde_json::json!({
             "targetGroup": "example.io",
@@ -425,7 +450,7 @@ mod tests {
         });
 
         // Register schema → build spec → verify paths exist
-        service
+        schema_service
             .create(
                 schema_key.clone(),
                 crate::object::types::ObjectMeta {
@@ -447,7 +472,7 @@ mod tests {
         );
 
         // Delete schema → build spec → verify paths removed
-        service.delete(schema_key, "Widget.example.io".to_string()).await.unwrap();
+        schema_service.delete(schema_key, "Widget.example.io".to_string()).await.unwrap();
         let spec_after_delete = build_openapi_spec(&service).await.unwrap();
         assert!(
             !spec_after_delete["paths"]
@@ -456,20 +481,5 @@ mod tests {
                 .contains_key("/apis/example.io/v1/Widget"),
             "paths should be removed after schema deletion"
         );
-    }
-
-    /// Helper to create an ObjectService for testing with a fresh store and event bus.
-    fn make_test_service() -> crate::object::service::ObjectService {
-        use crate::event::EventPublisher;
-        let store: std::sync::Arc<dyn crate::store::ObjectStore> =
-            std::sync::Arc::new(crate::store::memory::InMemoryStore::new());
-        let event_bus: std::sync::Arc<dyn EventPublisher> =
-            std::sync::Arc::new(crate::event::EventBus::default());
-        let meta_validator: std::sync::Arc<dyn crate::schema::SchemaValidator> =
-            std::sync::Arc::new(
-                crate::schema::meta_schema::compile_meta_schema()
-                    .expect("meta-schema should compile"),
-            );
-        crate::object::service::ObjectService::new(store, event_bus, meta_validator)
     }
 }

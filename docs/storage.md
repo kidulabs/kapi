@@ -26,7 +26,7 @@ pub trait ObjectStore: Send + Sync {
 - **Schema is also an object** — there's one store for everything. Schema objects use kind `"Schema"` in group `kapi.io`.
 - **`create`** accepts a complete `StoredObject` with all system metadata pre-populated by the service. The store persists it as-is.
 - **`transaction`** is the single mutation path for updates, deletes, and status changes. The callback performs domain logic and returns a `TransactionOp`. The store executes the operation but does NOT modify metadata.
-- **The caller** (ObjectService) is responsible for: resource_version increment, generation bump on spec change, timestamp updates, created_at preservation, and OCC checks. See `apply_with_metadata()` in `object/service.rs`.
+- **The caller** (ObjectService or SchemaService) is responsible for: resource_version increment, generation bump on spec change, timestamp updates, created_at preservation, and OCC checks. See `apply_with_metadata()` in `object/helpers.rs`.
 
 ## InMemoryStore
 
@@ -129,7 +129,7 @@ pub trait EventPublisher: Send + Sync {
 }
 ```
 
-This trait isolates `ObjectService` from the concrete event bus implementation, enabling mock-based testing and future backends without touching the service layer.
+This trait isolates both services (`ObjectService` and `SchemaService`) from the concrete event bus implementation, enabling mock-based testing and future backends without touching the service layer.
 
 ## EventBus
 

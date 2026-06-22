@@ -4,6 +4,8 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
+use crate::error::AppError;
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContinueToken(pub String);
 
@@ -33,6 +35,28 @@ pub struct ValidationError {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum FieldSelector {
     NameEquals(String),
+}
+
+impl FieldSelector {
+    /// Parses a `fieldSelector` query parameter value into a [`WatchFilter`].
+    ///
+    /// Supports standard syntax: `metadata.name=<value>`.
+    /// Returns [`AppError::InvalidFieldSelector`] for unsupported fields or malformed input.
+    pub fn parse(raw: &str) -> Result<WatchFilter, AppError> {
+        let (field, value) = raw.split_once('=').ok_or_else(|| {
+            AppError::InvalidFieldSelector(format!(
+                "invalid field selector format: expected 'field=value', got '{raw}'"
+            ))
+        })?;
+        match field {
+            "metadata.name" => {
+                Ok(WatchFilter::FieldSelector(FieldSelector::NameEquals(value.to_string())))
+            }
+            _ => Err(AppError::InvalidFieldSelector(format!(
+                "unsupported field '{field}': only 'metadata.name' is supported"
+            ))),
+        }
+    }
 }
 
 // LabelRequirement represents a single label matching condition
@@ -68,6 +92,93 @@ impl LabelSelector {
     pub fn matches(&self, labels: &HashMap<String, String>) -> bool {
         self.requirements.iter().all(|req| req.matches(labels))
     }
+
+    /// Parses a `labelSelector` query parameter value into a [`WatchFilter::LabelSelector`].
+    ///
+    /// Supported syntax:
+    /// - `key=value` — equality
+    /// - `key!=value` — inequality
+    /// - `key` — existence (key present, any value)
+    /// - `!key` — non-existence (key not present)
+    /// - Comma-separated — AND combinator (e.g., `app=nginx,env=prod`)
+    ///
+    /// Returns [`AppError::InvalidLabelSelector`] for malformed selectors.
+    /// Empty string returns a `LabelSelector` with no requirements (matches all).
+    pub fn parse(raw: &str) -> Result<WatchFilter, AppError> {
+        if raw.is_empty() {
+            return Ok(WatchFilter::LabelSelector(LabelSelector { requirements: vec![] }));
+        }
+
+        let requirements: Result<Vec<LabelRequirement>, AppError> = raw
+            .split(',')
+            .map(|segment| {
+                let segment = segment.trim();
+                if segment.is_empty() {
+                    return Err(AppError::InvalidLabelSelector(
+                        "empty segment in label selector".to_string(),
+                    ));
+                }
+                parse_label_requirement(segment)
+            })
+            .collect();
+
+        Ok(WatchFilter::LabelSelector(LabelSelector { requirements: requirements? }))
+    }
+}
+
+/// Parses a single label requirement string into a [`LabelRequirement`].
+fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, AppError> {
+    // Check for inequality first (must be before equality check)
+    if let Some((key, value)) = segment.split_once("!=") {
+        let key = key.trim();
+        let value = value.trim();
+        validate_label_key(key)?;
+        if value.is_empty() {
+            return Err(AppError::InvalidLabelSelector(format!(
+                "empty value in inequality selector: '{segment}'"
+            )));
+        }
+        return Ok(LabelRequirement::NotEquals { key: key.to_string(), value: value.to_string() });
+    }
+
+    // Check for equality
+    if let Some((key, value)) = segment.split_once('=') {
+        let key = key.trim();
+        let value = value.trim();
+        validate_label_key(key)?;
+        if value.is_empty() {
+            return Err(AppError::InvalidLabelSelector(format!(
+                "empty value in equality selector: '{segment}'"
+            )));
+        }
+        return Ok(LabelRequirement::Equals { key: key.to_string(), value: value.to_string() });
+    }
+
+    // Check for non-existence (!key)
+    if let Some(key) = segment.strip_prefix('!') {
+        let key = key.trim();
+        validate_label_key(key)?;
+        return Ok(LabelRequirement::NotExists { key: key.to_string() });
+    }
+
+    // Existence (key only)
+    let key = segment.trim();
+    validate_label_key(key)?;
+    Ok(LabelRequirement::Exists { key: key.to_string() })
+}
+
+/// Validates a label key format for selector parsing.
+/// Label keys must not be empty or contain whitespace.
+fn validate_label_key(key: &str) -> Result<(), AppError> {
+    if key.is_empty() {
+        return Err(AppError::InvalidLabelSelector("empty label key".to_string()));
+    }
+    if key.contains(|c: char| c.is_whitespace()) {
+        return Err(AppError::InvalidLabelSelector(format!(
+            "label key contains whitespace: '{key}'"
+        )));
+    }
+    Ok(())
 }
 
 // WatchFilter determines which events a watcher receives
@@ -197,7 +308,6 @@ pub struct StoredObject {
     pub metadata: ObjectMeta,
     pub system: SystemMetadata,
     pub spec: serde_json::Value,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub status: Option<serde_json::Value>,
 }
 

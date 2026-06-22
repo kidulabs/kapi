@@ -10,26 +10,34 @@ use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::object::handler;
+use crate::object::schema_service::SchemaService;
 use crate::object::service::ObjectService;
 
 /// Application state shared across all handlers.
 ///
-/// Contains the ObjectService which holds the store, event bus, and validators.
-/// Wrapped in Arc for Clone (required by axum's State extractor).
+/// Contains the ObjectService and SchemaService, which together hold the store,
+/// event bus, and validators. Wrapped in Arc for Clone (required by axum's State
+/// extractor).
 #[derive(Clone)]
 pub struct AppState {
     object_service: Arc<ObjectService>,
+    schema_service: Arc<SchemaService>,
 }
 
 impl AppState {
-    /// Creates a new AppState wrapping an ObjectService.
-    pub fn new(object_service: Arc<ObjectService>) -> Self {
-        Self { object_service }
+    /// Creates a new AppState wrapping ObjectService and SchemaService.
+    pub fn new(object_service: Arc<ObjectService>, schema_service: Arc<SchemaService>) -> Self {
+        Self { object_service, schema_service }
     }
 
     /// Returns a reference to the ObjectService.
     pub fn object_service(&self) -> &ObjectService {
         &self.object_service
+    }
+
+    /// Returns a reference to the SchemaService.
+    pub fn schema_service(&self) -> &SchemaService {
+        &self.schema_service
     }
 }
 

@@ -1,8 +1,10 @@
 //! HTTP handlers for object CRUD operations.
 //!
-//! Handlers validate input format and deserialization constraints.
-//! They never access the store, event bus, or schema registry, and never
-//! contain conditional mutation logic.
+//! Handlers extract parameters from HTTP requests, perform deserialization and structural
+//! validation (required fields, type checks), and delegate to the appropriate service.
+//! They never access the store, event bus, or schema registry directly. They do not perform
+//! domain format validation (labels, annotations, finalizers) — that is the service layer's
+//! responsibility.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -25,7 +27,6 @@ use crate::object::types::{
 use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
 use crate::store::ResourceKey;
-use crate::validation::{validate_annotations, validate_finalizers, validate_labels};
 
 /// Path parameters for /apis/{group}/{version}/{kind}
 #[derive(Deserialize)]
@@ -176,11 +177,6 @@ pub async fn create(
     let annotations = extract_annotations(&body)?;
     let finalizers = extract_finalizers(&body)?;
 
-    // Fail-fast: validate format before any service invocation
-    validate_labels(&labels)?;
-    validate_annotations(&annotations)?;
-    validate_finalizers(&finalizers)?;
-
     // Branch on kind: Schema objects generate their name from payload fields,
     // while regular objects require a client-supplied metadata.name and a spec field
     let (meta, data) = if path.kind == SCHEMA_KIND {
@@ -233,7 +229,11 @@ pub async fn create(
 
     let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
 
-    let stored = state.object_service().create(key, meta, data).await?;
+    let stored = if key.kind == SCHEMA_KIND {
+        state.schema_service().create(key, meta, data).await?
+    } else {
+        state.object_service().create(key, meta, data).await?
+    };
     Ok((StatusCode::CREATED, Json(stored)))
 }
 
@@ -264,13 +264,13 @@ pub async fn list(
 
     // Parse fieldSelector if present
     let field_filter = match &query.field_selector {
-        Some(raw) => Some(parse_field_selector(raw)?),
+        Some(raw) => Some(FieldSelector::parse(raw)?),
         None => None,
     };
 
     // Parse labelSelector if present
     let label_filter = match &query.label_selector {
-        Some(raw) => Some(parse_label_selector(raw)?),
+        Some(raw) => Some(LabelSelector::parse(raw)?),
         None => None,
     };
 
@@ -301,113 +301,6 @@ pub async fn list(
     };
     let response = state.object_service().list(key, opts).await?;
     Ok(Json(response).into_response())
-}
-
-/// Parses a `fieldSelector` query parameter value into a `WatchFilter`.
-///
-/// Supports standard syntax: `metadata.name=<value>`.
-/// Returns `InvalidFieldSelector` for unsupported fields or malformed input.
-pub fn parse_field_selector(raw: &str) -> Result<WatchFilter, AppError> {
-    let (field, value) = raw.split_once('=').ok_or_else(|| {
-        AppError::InvalidFieldSelector(format!(
-            "invalid field selector format: expected 'field=value', got '{raw}'"
-        ))
-    })?;
-    match field {
-        "metadata.name" => {
-            Ok(WatchFilter::FieldSelector(FieldSelector::NameEquals(value.to_string())))
-        }
-        _ => Err(AppError::InvalidFieldSelector(format!(
-            "unsupported field '{field}': only 'metadata.name' is supported"
-        ))),
-    }
-}
-
-/// Parses a `labelSelector` query parameter value into a `WatchFilter::LabelSelector`.
-///
-/// Supported syntax:
-/// - `key=value` — equality
-/// - `key!=value` — inequality
-/// - `key` — existence (key present, any value)
-/// - `!key` — non-existence (key not present)
-/// - Comma-separated — AND combinator (e.g., `app=nginx,env=prod`)
-///
-/// Returns `InvalidLabelSelector` for malformed selectors.
-/// Empty string returns a `LabelSelector` with no requirements (matches all).
-pub fn parse_label_selector(raw: &str) -> Result<WatchFilter, AppError> {
-    if raw.is_empty() {
-        return Ok(WatchFilter::LabelSelector(LabelSelector { requirements: vec![] }));
-    }
-
-    let requirements: Result<Vec<LabelRequirement>, AppError> = raw
-        .split(',')
-        .map(|segment| {
-            let segment = segment.trim();
-            if segment.is_empty() {
-                return Err(AppError::InvalidLabelSelector(
-                    "empty segment in label selector".to_string(),
-                ));
-            }
-            parse_label_requirement(segment)
-        })
-        .collect();
-
-    Ok(WatchFilter::LabelSelector(LabelSelector { requirements: requirements? }))
-}
-
-/// Parses a single label requirement string into a `LabelRequirement`.
-fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, AppError> {
-    // Check for inequality first (must be before equality check)
-    if let Some((key, value)) = segment.split_once("!=") {
-        let key = key.trim();
-        let value = value.trim();
-        validate_label_key(key)?;
-        if value.is_empty() {
-            return Err(AppError::InvalidLabelSelector(format!(
-                "empty value in inequality selector: '{segment}'"
-            )));
-        }
-        return Ok(LabelRequirement::NotEquals { key: key.to_string(), value: value.to_string() });
-    }
-
-    // Check for equality
-    if let Some((key, value)) = segment.split_once('=') {
-        let key = key.trim();
-        let value = value.trim();
-        validate_label_key(key)?;
-        if value.is_empty() {
-            return Err(AppError::InvalidLabelSelector(format!(
-                "empty value in equality selector: '{segment}'"
-            )));
-        }
-        return Ok(LabelRequirement::Equals { key: key.to_string(), value: value.to_string() });
-    }
-
-    // Check for non-existence (!key)
-    if let Some(key) = segment.strip_prefix('!') {
-        let key = key.trim();
-        validate_label_key(key)?;
-        return Ok(LabelRequirement::NotExists { key: key.to_string() });
-    }
-
-    // Existence (key only)
-    let key = segment.trim();
-    validate_label_key(key)?;
-    Ok(LabelRequirement::Exists { key: key.to_string() })
-}
-
-/// Validates a label key format.
-/// Label keys must not contain spaces, commas, equals signs, or exclamation marks.
-fn validate_label_key(key: &str) -> Result<(), AppError> {
-    if key.is_empty() {
-        return Err(AppError::InvalidLabelSelector("empty label key".to_string()));
-    }
-    if key.contains(|c: char| c.is_whitespace()) {
-        return Err(AppError::InvalidLabelSelector(format!(
-            "label key contains whitespace: '{key}'"
-        )));
-    }
-    Ok(())
 }
 
 /// Watch logic — subscribes to event bus and returns SSE stream.
@@ -474,12 +367,11 @@ pub async fn update(
     body.key = url_key;
     body.metadata.name = path.name;
 
-    // Fail-fast: validate format before any service invocation
-    validate_labels(&body.metadata.labels)?;
-    validate_annotations(&body.metadata.annotations)?;
-    validate_finalizers(&body.metadata.finalizers)?;
-
-    let updated = state.object_service().update(body).await?;
+    let updated = if body.key.kind == SCHEMA_KIND {
+        state.schema_service().update(body).await?
+    } else {
+        state.object_service().update(body).await?
+    };
     Ok(Json(updated))
 }
 
@@ -493,7 +385,11 @@ pub async fn delete(
 ) -> Result<Json<StoredObject>, AppError> {
     let key = ResourceKey { group: path.group, version: path.version, kind: path.kind };
 
-    let deleted = state.object_service().delete(key, path.name).await?;
+    let deleted = if key.kind == SCHEMA_KIND {
+        state.schema_service().delete(key.clone(), path.name.clone()).await?
+    } else {
+        state.object_service().delete(key, path.name).await?
+    };
     Ok(Json(deleted))
 }
 
@@ -544,6 +440,7 @@ mod tests {
 
     use crate::event::EventBus;
     use crate::event::EventPublisher;
+    use crate::object::schema_service::SchemaService;
     use crate::object::service::ObjectService;
     use crate::routes::build_router;
     use crate::schema::SchemaValidator;
@@ -557,8 +454,17 @@ mod tests {
         let event_bus: Arc<dyn EventPublisher> = Arc::new(EventBus::default());
         let meta_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        let service = Arc::new(ObjectService::new(store, event_bus, meta_validator));
-        let state = AppState::new(service);
+
+        let schema_service =
+            Arc::new(SchemaService::new(store.clone(), event_bus.clone(), meta_validator.clone()));
+
+        let object_service = Arc::new(ObjectService::new(
+            store.clone(),
+            event_bus.clone(),
+            crate::schema::SchemaRegistry::new(store, meta_validator),
+        ));
+
+        let state = AppState::new(object_service, schema_service);
         build_router(state)
     }
 
@@ -723,7 +629,7 @@ mod tests {
 
     #[test]
     fn parse_field_selector_valid_metadata_name() {
-        let result = parse_field_selector("metadata.name=my-widget");
+        let result = FieldSelector::parse("metadata.name=my-widget");
         assert!(result.is_ok());
         let filter = result.unwrap();
         assert!(matches!(
@@ -734,7 +640,7 @@ mod tests {
 
     #[test]
     fn parse_field_selector_unsupported_field() {
-        let result = parse_field_selector("metadata.namespace=default");
+        let result = FieldSelector::parse("metadata.namespace=default");
         assert!(result.is_err());
         assert!(
             matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("metadata.namespace"))
@@ -743,7 +649,7 @@ mod tests {
 
     #[test]
     fn parse_field_selector_malformed_input() {
-        let result = parse_field_selector("invalid-format");
+        let result = FieldSelector::parse("invalid-format");
         assert!(result.is_err());
         assert!(
             matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("expected 'field=value'"))
@@ -752,7 +658,7 @@ mod tests {
 
     #[test]
     fn parse_field_selector_empty_value() {
-        let result = parse_field_selector("metadata.name=");
+        let result = FieldSelector::parse("metadata.name=");
         assert!(result.is_ok());
         let filter = result.unwrap();
         assert!(matches!(
@@ -765,7 +671,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_equality() {
-        let result = parse_label_selector("app=nginx");
+        let result = LabelSelector::parse("app=nginx");
         assert!(result.is_ok());
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
@@ -783,7 +689,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_inequality() {
-        let result = parse_label_selector("env!=prod");
+        let result = LabelSelector::parse("env!=prod");
         assert!(result.is_ok());
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
@@ -801,7 +707,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_existence() {
-        let result = parse_label_selector("gpu");
+        let result = LabelSelector::parse("gpu");
         assert!(result.is_ok());
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
@@ -818,7 +724,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_non_existence() {
-        let result = parse_label_selector("!experimental");
+        let result = LabelSelector::parse("!experimental");
         assert!(result.is_ok());
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
@@ -835,7 +741,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_and_combinator() {
-        let result = parse_label_selector("app=nginx,env=prod");
+        let result = LabelSelector::parse("app=nginx,env=prod");
         assert!(result.is_ok());
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
@@ -847,7 +753,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_mixed_operators() {
-        let result = parse_label_selector("app=nginx,!experimental,gpu");
+        let result = LabelSelector::parse("app=nginx,!experimental,gpu");
         assert!(result.is_ok());
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
@@ -862,7 +768,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_empty_string() {
-        let result = parse_label_selector("");
+        let result = LabelSelector::parse("");
         assert!(result.is_ok());
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
@@ -874,7 +780,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_with_whitespace() {
-        let result = parse_label_selector("app=nginx, env=prod");
+        let result = LabelSelector::parse("app=nginx, env=prod");
         assert!(result.is_ok());
         let filter = result.unwrap();
         if let WatchFilter::LabelSelector(selector) = filter {
@@ -886,7 +792,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_empty_value_error() {
-        let result = parse_label_selector("app=");
+        let result = LabelSelector::parse("app=");
         assert!(result.is_err());
         assert!(
             matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("empty value"))
@@ -895,7 +801,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_invalid_key_with_space() {
-        let result = parse_label_selector("invalid key!=value");
+        let result = LabelSelector::parse("invalid key!=value");
         assert!(result.is_err());
         assert!(
             matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("whitespace"))
@@ -904,7 +810,7 @@ mod tests {
 
     #[test]
     fn parse_label_selector_empty_segment_error() {
-        let result = parse_label_selector("app=nginx,,env=prod");
+        let result = LabelSelector::parse("app=nginx,,env=prod");
         assert!(result.is_err());
         assert!(
             matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("empty segment"))
@@ -915,8 +821,8 @@ mod tests {
 
     #[test]
     fn watch_filter_combination_both_present_creates_and() {
-        let field = parse_field_selector("metadata.name=foo").unwrap();
-        let label = parse_label_selector("app=nginx").unwrap();
+        let field = FieldSelector::parse("metadata.name=foo").unwrap();
+        let label = LabelSelector::parse("app=nginx").unwrap();
         let combined = match (Some(field), Some(label)) {
             (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
             (Some(f), None) => f,
@@ -928,7 +834,7 @@ mod tests {
 
     #[test]
     fn watch_filter_combination_field_only() {
-        let field = parse_field_selector("metadata.name=foo").unwrap();
+        let field = FieldSelector::parse("metadata.name=foo").unwrap();
         let combined = match (Some(field), None::<WatchFilter>) {
             (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
             (Some(f), None) => f,
@@ -940,7 +846,7 @@ mod tests {
 
     #[test]
     fn watch_filter_combination_label_only() {
-        let label = parse_label_selector("app=nginx").unwrap();
+        let label = LabelSelector::parse("app=nginx").unwrap();
         let combined = match (None::<WatchFilter>, Some(label)) {
             (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
             (Some(f), None) => f,
