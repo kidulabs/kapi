@@ -1,18 +1,10 @@
 ---
-name: openspec-complete-change
-description: "Close out an OpenSpec change end-to-end: sync delta specs, verify implementation, archive, commit, merge feature branch to main, delete branch. Triggers: finish change, complete feature, merge branch, close change, complete this change, finish this feature, wrap up change, finalize change, merge and delete branch, complete the whole thing"
+description: Close out an OpenSpec change end-to-end — sync delta specs, verify, archive, commit, merge feature branch to main, delete branch
 ---
 
-# OpenSpec Complete Change
+Orchestrate the final stages of an OpenSpec-driven feature branch: sync delta specs to main specs, verify the implementation, archive the change, commit, merge to main, and clean up the feature branch.
 
-> Orchestrate the final stages of an OpenSpec-driven feature branch: sync delta specs to main specs, verify the implementation, archive the change, commit, merge to main, and clean up the feature branch. Composes the existing `openspec-sync-specs`, `openspec-verify-change`, and `openspec-archive-change` skills with git operations.
-
-## When to Use
-
-- All implementation is committed and tested on a feature branch
-- The feature branch is ready to merge to main
-- The user asks to "complete", "finish", "close out", "wrap up", or "finalize" a change
-- You see the pattern: sync specs → verify → archive → commit → merge → delete branch
+**Input**: The argument after `/cmd-merge` is the change name (kebab-case), e.g., `multi-version-schema-support`.
 
 ## Prerequisites
 
@@ -25,7 +17,7 @@ description: "Close out an OpenSpec change end-to-end: sync delta specs, verify 
 
 ### Step 1: Identify the Change
 
-If the change name is not clear from context, ask the user. When in doubt, check:
+If the change name is not provided as `$ARGUMENTS`, ask the user. When in doubt, check:
 
 ```bash
 openspec list --json
@@ -37,7 +29,7 @@ Filter for active changes (not archived) that have a `tasks` artifact.
 
 **2a. Sync delta specs to main specs**
 
-If delta specs exist at `openspec/changes/<name>/specs/`, sync them using the openspec-sync-specs skill (invoke via task tool with fixer agent):
+If delta specs exist at `openspec/changes/<name>/specs/`, sync them:
 
 > Delegate to a fixer agent with full delta-spec context. Give it the change name and the delta spec files to read. It should:
 > - Read each delta spec under `openspec/changes/<name>/specs/*/spec.md`
@@ -50,7 +42,7 @@ If no delta specs exist, skip this substep.
 
 **2b. Verify the change**
 
-Delegate to an oracle agent using the openspec-verify-change skill:
+Delegate to an oracle agent:
 
 > Have the oracle read the tasks.md, delta specs, design.md, and key implementation files. Check:
 > - Completeness: all tasks [x], requirements implemented
@@ -84,12 +76,10 @@ Address any CRITICAL or actionable WARNING issues from the verification report:
 
 **3a. Archive the change**
 
-Use the openspec-archive-change skill:
-
-> Check artifact completion via `openspec status --change "<name>" --json`
-> Confirm all tasks in tasks.md are [x] complete
-> Move the change directory: `mkdir -p openspec/changes/archive && mv openspec/changes/<name> openspec/changes/archive/YYYY-MM-DD-<name>`
-> Verify the archive is in place
+Check artifact completion via `openspec status --change "<name>" --json`
+Confirm all tasks in tasks.md are [x] complete
+Move the change directory: `mkdir -p openspec/changes/archive && mv openspec/changes/<name> openspec/changes/archive/YYYY-MM-DD-<name>`
+Verify the archive is in place
 
 **3b. Commit the archive**
 
@@ -129,7 +119,7 @@ Only use `-D` (force) if the branch has unmerged work and the user confirms.
 ## Important Notes
 
 - **The `git rm` after archive is easy to forget.** Without it, the old change directory stays in git's index and reappears after merge. Always do both: add the archive dir AND rm the old one.
-- **Sync before archive.** The openspec-archive-change skill checks whether delta specs are synced and prompts. Do the sync explicitly in Step 2 so archive proceeds cleanly.
+- **Sync before archive.** Do the sync explicitly in Step 2 so archive proceeds cleanly.
 - **Fix test failures incrementally.** Don't batch all fixes — fix one, run tests, fix next, run tests. This prevents cascading failures.
 - **Pre-existing clippy warnings** (like `large_enum_variant`) should be noted but not block the workflow.
 - If the user has a remote tracking branch, offer to push main after merge: `git push origin main`.
@@ -142,18 +132,6 @@ Only use `-D` (force) if the branch has unmerged work and the user confirms.
 - Use `-D` to delete a branch when `-d` works — use `-D` only when the user explicitly confirms
 - Leave the old change directory behind — both old and archive paths must not coexist
 - Archive without checking that delta specs are synced (or confirming with user if skipping)
-
-## Composition Note
-
-This skill composes three existing skills:
-
-| Step | Skill used | Delegate to |
-|------|-----------|-------------|
-| 2a (sync) | openspec-sync-specs | fixer agent |
-| 2b (verify) | openspec-verify-change | oracle agent |
-| 3a (archive) | openspec-archive-change | orchestrator (direct) |
-
-The sync and verify steps can be parallelized if the sync is straightforward, but typically sync → verify is sequential because verify checks the synced specs.
 
 ## Error Handling
 
