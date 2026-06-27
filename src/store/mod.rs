@@ -23,6 +23,7 @@ pub struct ResourceKey {
 /// setting `resource_version`, `generation`, and timestamps before returning
 /// `Apply`.
 #[derive(Debug)]
+#[allow(clippy::large_enum_variant)]
 pub enum TransactionOp {
     /// Persist the provided object, replacing the existing one.
     /// The store does NOT modify any system metadata fields. The caller is

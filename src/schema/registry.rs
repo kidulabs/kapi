@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::object::types::SchemaData;
-use crate::schema::{JsonSchemaValidator, SchemaValidator, schema_key};
+use crate::schema::{JsonSchemaValidator, SchemaValidator, schema_cache_key, schema_key};
 use crate::store::{ObjectStore, ResourceKey};
 
 /// Result of schema validation and compilation: parsed data, spec validator, optional status validator.
@@ -87,20 +87,20 @@ impl SchemaRegistry {
 
     /// Returns a compiled validator for the given object `key`.
     ///
-    /// Checks the cache first (keyed as `"{kind}.{group}"`). On cache miss,
+    /// Checks the cache first (keyed as `"{kind}.{group}.{version}"`). On cache miss,
     /// fetches the Schema from the store, compiles it, inserts into the cache,
     /// and returns the validator.
     ///
     /// # Errors
     ///
     /// Returns:
-    /// - [`AppError::NotFound`] if no Schema exists in the store for this kind+group
+    /// - [`AppError::NotFound`] if no Schema exists in the store for this kind+group+version
     /// - [`AppError::StoredSchemaCompilationFailed`] if the stored schema fails to compile
     pub async fn get_validator(
         &self,
         key: &ResourceKey,
     ) -> Result<Arc<dyn SchemaValidator>, AppError> {
-        let cache_key = format!("{}.{}", key.kind, key.group);
+        let cache_key = schema_cache_key(&key.kind, &key.group, &key.version);
 
         // Cache hit
         if let Some(validator) = self.cache.get(&cache_key) {
@@ -133,6 +133,7 @@ impl SchemaRegistry {
 
     /// Inserts a compiled validator into the cache under the given name.
     ///
+    /// The name should be the versioned schema name (e.g., `"Widget.example.io.v1"`).
     /// If an entry with the same name already exists, it is replaced.
     pub fn insert(&self, name: &str, validator: Arc<dyn SchemaValidator>) {
         self.cache.insert(name.to_string(), validator);
@@ -140,7 +141,8 @@ impl SchemaRegistry {
 
     /// Removes a validator from the cache.
     ///
-    /// This is a no-op if the entry does not exist.
+    /// Removes both the spec validator (keyed by `name`) and the corresponding status
+    /// validator (keyed by `"{name}.status"`). This is a no-op if the entry does not exist.
     pub fn evict(&self, name: &str) {
         self.cache.remove(name);
         // Also evict the corresponding status validator if present
@@ -149,21 +151,22 @@ impl SchemaRegistry {
 
     /// Returns a compiled status validator for the given object `key`.
     ///
-    /// Checks the cache first (keyed as `"{kind}.{group}.status"`). On cache miss,
-    /// fetches the Schema from the store, parses `status_schema`, compiles it,
+    /// Checks the cache first (keyed as `"{kind}.{group}.{version}.status"`). On cache
+    /// miss, fetches the Schema from the store, parses `status_schema`, compiles it,
     /// inserts into the cache, and returns the validator.
     ///
     /// # Errors
     ///
     /// Returns:
-    /// - [`AppError::NotFound`] if no Schema exists in the store for this kind+group
+    /// - [`AppError::NotFound`] if no Schema exists in the store for this kind+group+version
     /// - [`AppError::StatusSubresourceNotEnabled`] if the Schema has no `statusSchema`
     /// - [`AppError::StoredSchemaCompilationFailed`] if the stored status_schema fails to compile
     pub async fn get_status_validator(
         &self,
         key: &ResourceKey,
     ) -> Result<Arc<dyn SchemaValidator>, AppError> {
-        let cache_key = format!("{}.{}.status", key.kind, key.group);
+        let base_key = schema_cache_key(&key.kind, &key.group, &key.version);
+        let cache_key = format!("{base_key}.status");
 
         // Cache hit
         if let Some(validator) = self.cache.get(&cache_key) {
@@ -172,7 +175,7 @@ impl SchemaRegistry {
 
         // Cache miss: fetch from store
         let schema_key = schema_key();
-        let schema_name = format!("{}.{}", key.kind, key.group);
+        let schema_name = base_key;
 
         let schema_obj = self.store.get(&schema_key, &schema_name).await.map_err(|_| {
             AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
@@ -202,7 +205,8 @@ impl SchemaRegistry {
 
     /// Inserts a compiled status validator into the cache under the given name.
     ///
-    /// The name is suffixed with `.status` to distinguish from spec validators.
+    /// The name is suffixed with `.status` (e.g., `"Widget.example.io.v1"` →
+    /// `"Widget.example.io.v1.status"`) to distinguish from spec validators.
     /// If an entry with the same name already exists, it is replaced.
     pub fn insert_status(&self, name: &str, validator: Arc<dyn SchemaValidator>) {
         self.cache.insert(format!("{name}.status"), validator);
@@ -277,7 +281,7 @@ mod tests {
         assert_eq!(schema_data.target_group, "example.io");
 
         // Cache should NOT be modified
-        assert!(!registry.cache.contains_key("Widget.example.io"));
+        assert!(!registry.cache.contains_key("Widget.example.io.v1"));
     }
 
     #[tokio::test]
@@ -318,7 +322,7 @@ mod tests {
         // Prime the cache directly
         let dummy_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        registry.cache.insert("Widget.example.io".to_string(), dummy_validator.clone());
+        registry.cache.insert("Widget.example.io.v1".to_string(), dummy_validator.clone());
 
         let result = registry.get_validator(&key).await;
         assert!(result.is_ok());
@@ -336,13 +340,13 @@ mod tests {
         };
 
         // Store a schema in the store
-        store_test_schema(&registry, "Widget.example.io").await;
+        store_test_schema(&registry, "Widget.example.io.v1").await;
 
         let result = registry.get_validator(&key).await;
         assert!(result.is_ok());
 
         // Verify it was cached
-        assert!(registry.cache.contains_key("Widget.example.io"));
+        assert!(registry.cache.contains_key("Widget.example.io.v1"));
     }
 
     #[tokio::test]
@@ -373,7 +377,7 @@ mod tests {
             .create(crate::object::types::StoredObject {
                 key: schema_key,
                 metadata: crate::object::types::ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: std::collections::HashMap::new(),
                     annotations: std::collections::HashMap::new(),
                     finalizers: Vec::new(),
@@ -463,7 +467,7 @@ mod tests {
         // Prime the cache with a status validator
         let dummy_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        registry.cache.insert("Widget.example.io.status".to_string(), dummy_validator.clone());
+        registry.cache.insert("Widget.example.io.v1.status".to_string(), dummy_validator.clone());
 
         let result = registry.get_status_validator(&key).await;
         assert!(result.is_ok());
@@ -493,7 +497,7 @@ mod tests {
             .create(crate::object::types::StoredObject {
                 key: schema_key,
                 metadata: crate::object::types::ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: std::collections::HashMap::new(),
                     annotations: std::collections::HashMap::new(),
                     finalizers: Vec::new(),
@@ -507,7 +511,7 @@ mod tests {
 
         let result = registry.get_status_validator(&key).await;
         assert!(result.is_ok());
-        assert!(registry.cache.contains_key("Widget.example.io.status"));
+        assert!(registry.cache.contains_key("Widget.example.io.v1.status"));
     }
 
     #[tokio::test]
@@ -532,7 +536,7 @@ mod tests {
             .create(crate::object::types::StoredObject {
                 key: schema_key,
                 metadata: crate::object::types::ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: std::collections::HashMap::new(),
                     annotations: std::collections::HashMap::new(),
                     finalizers: Vec::new(),

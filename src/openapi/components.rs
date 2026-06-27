@@ -8,7 +8,7 @@ use serde_json::{Value, json};
 
 use crate::object::types::SchemaData;
 
-/// Converts a schema name (format: `{Kind}.{group}`) into an OpenAPI component name.
+/// Converts a schema name (format: `{Kind}.{group}.{version}`) into an OpenAPI component name.
 ///
 /// Splits on dots, PascalCases each segment, and concatenates them.
 ///
@@ -16,9 +16,9 @@ use crate::object::types::SchemaData;
 ///
 /// ```
 /// # use kapi::openapi::component_name;
-/// assert_eq!(component_name("Widget.example.io"), "WidgetExampleIo");
+/// assert_eq!(component_name("Widget.example.io.v1"), "WidgetExampleIoV1");
 /// assert_eq!(component_name("Deployment.apps"), "DeploymentApps");
-/// assert_eq!(component_name("Widget.example.io"), component_name("Widget.example.io"));
+/// assert_eq!(component_name("Widget.example.io.v1"), "WidgetExampleIoV1");
 /// ```
 pub fn component_name(schema_name: &str) -> String {
     schema_name

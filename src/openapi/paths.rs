@@ -57,7 +57,10 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
                 Err(_) => continue,
             };
 
-        let schema_name = format!("{}.{}", schema_data.target_kind, schema_data.target_group);
+        let schema_name = format!(
+            "{}.{}.{}",
+            schema_data.target_kind, schema_data.target_group, schema_data.target_version
+        );
         let comp_name = component_name(&schema_name);
 
         // Generate the three component schemas for this kind
@@ -189,7 +192,7 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "in": "path",
                             "required": true,
                             "schema": { "type": "string" },
-                            "description": "The schema name (e.g. Widget.example.io)"
+                            "description": "The schema name (e.g. Widget.example.io.v1)"
                         }
                     ],
                     "responses": {
@@ -216,7 +219,7 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "in": "path",
                             "required": true,
                             "schema": { "type": "string" },
-                            "description": "The schema name (e.g. Widget.example.io)"
+                            "description": "The schema name (e.g. Widget.example.io.v1)"
                         }
                     ],
                     "responses": {
@@ -245,7 +248,7 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
 
 /// Builds the request body schema for creating a Schema object.
 ///
-/// Schema name is auto-generated as `{targetKind}.{targetGroup}` by the handler.
+/// Schema name is auto-generated as `{targetKind}.{targetGroup}.{targetVersion}` by the handler.
 /// The client does not need to supply `metadata.name`, but can supply `metadata.labels`.
 pub(crate) fn schema_create_request_schema() -> Value {
     let metadata_part = json!({

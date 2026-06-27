@@ -50,7 +50,7 @@ mod tests {
 
     #[test]
     fn component_name_splits_dots_and_pascal_cases() {
-        assert_eq!(component_name("Widget.example.io"), "WidgetExampleIo");
+        assert_eq!(component_name("Widget.example.io.v1"), "WidgetExampleIoV1");
     }
 
     #[test]
@@ -60,9 +60,9 @@ mod tests {
 
     #[test]
     fn component_name_same_kind_different_group_no_collision() {
-        assert_eq!(component_name("Widget.example.io"), "WidgetExampleIo");
+        assert_eq!(component_name("Widget.example.io.v1"), "WidgetExampleIoV1");
         assert_eq!(component_name("Widget.other.io"), "WidgetOtherIo");
-        assert_ne!(component_name("Widget.example.io"), component_name("Widget.other.io"),);
+        assert_ne!(component_name("Widget.example.io.v1"), component_name("Widget.other.io"),);
     }
 
     #[test]
@@ -418,7 +418,7 @@ mod tests {
             .create(
                 schema_key,
                 crate::object::types::ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -433,9 +433,9 @@ mod tests {
         assert!(paths.contains_key("/apis/example.io/v1/Widget"), "missing collection path");
         assert!(paths.contains_key("/apis/example.io/v1/Widget/{name}"), "missing item path");
         let schemas = spec["components"]["schemas"].as_object().unwrap();
-        assert!(schemas.contains_key("WidgetExampleIo"), "missing spec component");
-        assert!(schemas.contains_key("WidgetExampleIoStoredObject"), "missing stored component");
-        assert!(schemas.contains_key("WidgetExampleIoListResponse"), "missing list component");
+        assert!(schemas.contains_key("WidgetExampleIoV1"), "missing spec component");
+        assert!(schemas.contains_key("WidgetExampleIoV1StoredObject"), "missing stored component");
+        assert!(schemas.contains_key("WidgetExampleIoV1ListResponse"), "missing list component");
     }
 
     #[tokio::test]
@@ -454,7 +454,7 @@ mod tests {
             .create(
                 schema_key.clone(),
                 crate::object::types::ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -472,7 +472,7 @@ mod tests {
         );
 
         // Delete schema → build spec → verify paths removed
-        schema_service.delete(schema_key, "Widget.example.io".to_string()).await.unwrap();
+        schema_service.delete(schema_key, "Widget.example.io.v1".to_string()).await.unwrap();
         let spec_after_delete = build_openapi_spec(&service).await.unwrap();
         assert!(
             !spec_after_delete["paths"]

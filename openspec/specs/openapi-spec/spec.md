@@ -13,10 +13,17 @@ The system SHALL provide a `GET /openapi` endpoint that returns an OpenAPI 3.0.3
 - **AND** the spec contains no dynamic per-kind paths
 
 #### Scenario: Registered schemas produce dynamic paths and components
-- **WHEN** a Schema is registered for kind `Widget` in group `example.io`
+- **WHEN** a Schema is registered for `example.io/v1/Widget`
 - **AND** `GET /openapi` is called
 - **THEN** the spec contains paths for `/apis/example.io/v1/Widget` and `/apis/example.io/v1/Widget/{name}`
-- **AND** the spec contains component schemas `WidgetExampleIo`, `WidgetExampleIoStoredObject`, and `WidgetExampleIoListResponse`
+- **AND** the spec contains component schemas `WidgetExampleIoV1`, `WidgetExampleIoV1StoredObject`, and `WidgetExampleIoV1ListResponse`
+
+#### Scenario: Two versions of the same kind produce distinct component sets
+- **WHEN** Schemas are registered for `example.io/v1/Widget` and `example.io/v2/Widget`
+- **AND** `GET /openapi` is called
+- **THEN** the spec contains component schemas `WidgetExampleIoV1`, `WidgetExampleIoV1StoredObject`, `WidgetExampleIoV1ListResponse` AND `WidgetExampleIoV2`, `WidgetExampleIoV2StoredObject`, `WidgetExampleIoV2ListResponse`
+- **AND** both URL paths are documented (`/apis/example.io/v1/Widget` and `/apis/example.io/v2/Widget`)
+- **AND** no component name collides between the two versions
 
 #### Scenario: Spec reflects current state at request time
 - **WHEN** a Schema is registered after a previous `/openapi` call
@@ -76,27 +83,32 @@ For each registered Schema object, the system SHALL generate paths under `/apis/
   - `PUT /apis/example.io/v1/Widget/{name}` (update)
   - `DELETE /apis/example.io/v1/Widget/{name}` (delete)
 
+#### Scenario: Two versions generate distinct path sets
+- **WHEN** Schemas are registered for `example.io/v1/Widget` and `example.io/v2/Widget`
+- **THEN** the spec contains a full CRUD path set for each version
+- **AND** the two path sets do not overlap
+
 #### Scenario: POST path uses kind-specific spec schema
 - **WHEN** the spec is generated for a registered kind
-- **THEN** the POST request body references the kind's spec component (e.g., `WidgetExampleIo`) via `allOf` with `metadata.name`
+- **THEN** the POST request body references the kind's versioned spec component (`WidgetExampleIoV1`) via `allOf` with `metadata.name`
 
 #### Scenario: GET/PUT/DELETE responses use kind-specific StoredObject schema
 - **WHEN** the spec is generated for a registered kind
-- **THEN** the 200 responses reference the kind's StoredObject component (e.g., `WidgetExampleIoStoredObject`)
+- **THEN** the 200 responses reference the kind's versioned StoredObject component (`WidgetExampleIoV1StoredObject`)
 
-### Requirement: Dynamic component schemas embed user's jsonSchema
-For each registered Schema, the system SHALL generate a component schema from the Schema's `jsonSchema` field. This component represents the user's data shape and is referenced by the kind's `StoredObject` component's `spec` property. The kind-specific spec component SHALL be the user's specSchema directly, with no `value` wrapper or envelope.
+### Requirement: Dynamic component schemas embed user's specSchema
+For each registered Schema, the system SHALL generate a component schema from the Schema's `specSchema` field. This component represents the user's data shape and is referenced by the kind's `StoredObject` component's `spec` property. The kind-specific spec component SHALL be the user's specSchema directly, with no `value` wrapper or envelope.
 
 #### Scenario: User schema properties appear in component
-- **WHEN** a Schema is registered with `jsonSchema: { "type": "object", "properties": { "color": { "type": "string" }, "size": { "type": "integer" } } }`
-- **THEN** the generated component (e.g., `WidgetExampleIo`) has `type: "object"` with `properties` containing `color` and `size` as top-level properties (not nested under a `value` key)
+- **WHEN** a Schema is registered with `specSchema: { "type": "object", "properties": { "color": { "type": "string" }, "size": { "type": "integer" } } }`
+- **THEN** the generated component (`WidgetExampleIoV1`) has `type: "object"` with `properties` containing `color` and `size` as top-level properties (not nested under a `value` key)
 
 #### Scenario: Kind-specific StoredObject references kind-specific spec
 - **WHEN** the spec is generated for a registered kind
 - **THEN** `{Kind}{Group}StoredObject` has a `spec` property with `$ref` pointing to `#/components/schemas/{Kind}{Group}`
 
 #### Scenario: Swagger UI displays user fields without indirection
-- **WHEN** a user views a per-kind schema (e.g. `WidgetExampleIo`) in Swagger UI
+- **WHEN** a user views a per-kind schema (e.g. `WidgetExampleIoV1`) in Swagger UI
 - **THEN** the schema SHALL expand to show the user's fields (`color`, `size`) at the top level
 - **AND** the user SHALL NOT have to click through a `value` wrapper to see the fields
 
@@ -112,19 +124,19 @@ The OpenAPI schemas for the create-request body, the GET-item response, the GET-
 - **THEN** the PUT /status request body and the GET /status response body SHALL both expose the status JSON directly, with no `value` wrapper
 
 ### Requirement: Component names follow PascalCase dot-split convention
-Component names SHALL be derived from the schema name (format: `{Kind}.{group}`) by splitting on dots, PascalCasing each segment, and concatenating. Example: `"Widget.other.io"` → `"WidgetOtherIo"`.
+Component names SHALL be derived from the schema name (format: `{Kind}.{group}.{version}`) by splitting on dots, PascalCasing each segment, and concatenating. Example: `"Widget.example.io.v1"` → `"WidgetExampleIoV1"`.
 
-#### Scenario: Single-dot schema name
-- **WHEN** schema name is `"Widget.example.io"`
-- **THEN** component name is `"WidgetExampleIo"`
+#### Scenario: Single-dot schema name with version
+- **WHEN** schema name is `"Widget.example.io.v1"`
+- **THEN** component name is `"WidgetExampleIoV1"`
 
-#### Scenario: Multi-segment group name
+#### Scenario: Multi-segment group name with version
 - **WHEN** schema name is `"Deployment.apps.v1"`
 - **THEN** component name is `"DeploymentAppsV1"`
 
-#### Scenario: No collision between same kind different groups
-- **WHEN** schemas `"Widget.example.io"` and `"Widget.other.io"` are both registered
-- **THEN** component names are `"WidgetExampleIo"` and `"WidgetOtherIo"` respectively
+#### Scenario: No collision between same kind different groups or versions
+- **WHEN** schemas `"Widget.example.io.v1"` and `"Widget.other.io.v1"` are both registered
+- **THEN** component names are `"WidgetExampleIoV1"` and `"WidgetOtherIoV1"` respectively
 
 ### Requirement: Path parameters are documented in OpenAPI
 

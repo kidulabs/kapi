@@ -316,6 +316,7 @@ mod tests {
     use crate::object::schema_service::SchemaService;
     use crate::schema::SchemaValidator;
     use crate::schema::meta_schema::compile_meta_schema;
+    use crate::schema::schema_cache_key;
     use crate::store::memory::InMemoryStore;
     use serde_json::json;
     use std::collections::HashMap;
@@ -334,7 +335,7 @@ mod tests {
     }
 
     // Helper to register a Schema for testing using SchemaService.
-    // The name format "{targetKind}.{targetGroup}" is backend-generated
+    // The name format "{targetKind}.{targetGroup}.{targetVersion}" is backend-generated
     // (see handler::extract_schema_name), but tests call service.create()
     // directly and must supply the name.
     async fn register_test_schema(schema_service: &SchemaService) {
@@ -355,7 +356,7 @@ mod tests {
             .create(
                 schema_key,
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -382,7 +383,7 @@ mod tests {
             .create(
                 schema_key.clone(),
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -392,11 +393,11 @@ mod tests {
             .await;
         assert!(result.is_ok());
         let stored = result.unwrap();
-        assert_eq!(stored.metadata.name, "Widget.example.io");
+        assert_eq!(stored.metadata.name, "Widget.example.io.v1");
 
         // Verify stored in store (using ObjectService.get which delegates to store)
-        let retrieved = service.get(schema_key, "Widget.example.io".to_string()).await.unwrap();
-        assert_eq!(retrieved.metadata.name, "Widget.example.io");
+        let retrieved = service.get(schema_key, "Widget.example.io.v1".to_string()).await.unwrap();
+        assert_eq!(retrieved.metadata.name, "Widget.example.io.v1");
 
         // Verify ObjectService's registry can lazy-load and cache it
         let widget_key = ResourceKey {
@@ -404,10 +405,10 @@ mod tests {
             version: "v1".to_string(),
             kind: "Widget".to_string(),
         };
-        assert!(!service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(!service.schema_registry.cache.contains_key("Widget.example.io.v1"));
         // Trigger lazy compilation by validating an object
         let _ = service.schema_registry.get_validator(&widget_key).await.unwrap();
-        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io.v1"));
     }
 
     // T20: Create Schema with invalid meta-schema → InvalidSchema, nothing stored
@@ -422,7 +423,7 @@ mod tests {
             .create(
                 schema_key,
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -450,7 +451,7 @@ mod tests {
             .create(
                 schema_key,
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -600,7 +601,7 @@ mod tests {
             .create(
                 schema_key.clone(),
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -611,7 +612,7 @@ mod tests {
             .unwrap();
 
         // Delete the schema via SchemaService
-        let result = schema_service.delete(schema_key, "Widget.example.io".to_string()).await;
+        let result = schema_service.delete(schema_key, "Widget.example.io.v1".to_string()).await;
         assert!(result.is_ok());
     }
 
@@ -643,7 +644,7 @@ mod tests {
 
         // Try to delete the schema via SchemaService
         let schema_key = schema_key();
-        let result = schema_service.delete(schema_key, "Widget.example.io".to_string()).await;
+        let result = schema_service.delete(schema_key, "Widget.example.io.v1".to_string()).await;
         assert!(matches!(result, Err(AppError::SchemaHasObjects { kind }) if kind == "Widget"));
     }
 
@@ -692,7 +693,7 @@ mod tests {
             .create(
                 schema_key.clone(),
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -707,7 +708,7 @@ mod tests {
             .create(
                 schema_key.clone(),
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -733,7 +734,7 @@ mod tests {
             .create(
                 schema_key.clone(),
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -750,14 +751,14 @@ mod tests {
             kind: "Widget".to_string(),
         };
         let _ = service.schema_registry.get_validator(&widget_key).await.unwrap();
-        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io.v1"));
 
         // Delete the schema via SchemaService
-        schema_service.delete(schema_key, "Widget.example.io".to_string()).await.unwrap();
+        schema_service.delete(schema_key, "Widget.example.io.v1".to_string()).await.unwrap();
 
         // ObjectService's cache still has it (SchemaService evicted its own cache)
         // but the store no longer has the schema, so next use will fail
-        assert!(service.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(service.schema_registry.cache.contains_key("Widget.example.io.v1"));
         // Verify the key was evicted from SchemaService's perspective by trying to use it:
         // ObjectService will try to use its cached value, which is still valid
         // (cache invalidation across service boundaries is out of scope for this test)
@@ -780,7 +781,7 @@ mod tests {
             .create(
                 schema_key,
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -808,7 +809,7 @@ mod tests {
             .create(
                 schema_key,
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -854,7 +855,7 @@ mod tests {
             .create(
                 schema_key,
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -880,7 +881,7 @@ mod tests {
         // Service B: same store, fresh cache (simulating restart)
         let schema_registry_b = SchemaRegistry::new(store.clone(), meta_validator);
         let service_b = ObjectService::new(store, event_bus, schema_registry_b);
-        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io.v1"));
 
         let result = service_b
             .create(
@@ -895,7 +896,7 @@ mod tests {
             )
             .await;
         assert!(result.is_ok());
-        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io.v1"));
     }
 
     // T32: Cache miss triggers compilation, subsequent requests use cached validator
@@ -933,7 +934,7 @@ mod tests {
             .create(
                 schema_key,
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -946,7 +947,7 @@ mod tests {
         // Service B starts with empty cache
         let schema_registry_b = SchemaRegistry::new(store.clone(), meta_validator);
         let service_b = ObjectService::new(store, event_bus, schema_registry_b);
-        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(!service_b.schema_registry.cache.contains_key("Widget.example.io.v1"));
 
         // First creation triggers lazy compilation
         let first = service_b
@@ -962,7 +963,7 @@ mod tests {
             )
             .await;
         assert!(first.is_ok());
-        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io"));
+        assert!(service_b.schema_registry.cache.contains_key("Widget.example.io.v1"));
 
         // Second creation uses cached validator
         let second = service_b
@@ -1000,7 +1001,7 @@ mod tests {
             .create(StoredObject {
                 key: schema_key.clone(),
                 metadata: ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1201,7 +1202,7 @@ mod tests {
             .create(
                 schema_key,
                 ObjectMeta {
-                    name: "Widget.example.io".to_string(),
+                    name: "Widget.example.io.v1".to_string(),
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1683,5 +1684,200 @@ mod tests {
             updated.system.generation, created.system.generation,
             "generation should NOT increment on status update"
         );
+    }
+
+    // --- Multi-version schema support tests ---
+
+    #[tokio::test]
+    async fn multi_version_schemas_register_cache_independently() {
+        let (object_service, schema_service) = make_services();
+        let schema_key = schema_key();
+
+        // Register v1 schema
+        let v1_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "specSchema": {
+                "type": "object",
+                "properties": { "color": { "type": "string" } },
+                "required": ["color"]
+            }
+        });
+        schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: schema_cache_key("Widget", "example.io", "v1"),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                v1_data,
+            )
+            .await
+            .expect("v1 schema should register");
+
+        // Register v2 schema (same kind, same group, different version)
+        let v2_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v2",
+            "targetKind": "Widget",
+            "specSchema": {
+                "type": "object",
+                "properties": {
+                    "color": { "type": "string" },
+                    "size": { "type": "integer" }
+                },
+                "required": ["color", "size"]
+            }
+        });
+        schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: schema_cache_key("Widget", "example.io", "v2"),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                v2_data,
+            )
+            .await
+            .expect("v2 schema should register");
+
+        // Verify cache entries exist under distinct keys
+        // SchemaService has its own SchemaRegistry; ObjectService has another.
+        // Populate ObjectService's registry via lazy load.
+        let v1_key = schema_cache_key("Widget", "example.io", "v1");
+        let v2_key = schema_cache_key("Widget", "example.io", "v2");
+        assert_ne!(v1_key, v2_key);
+
+        let widget_v1 = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let widget_v2 = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v2".to_string(),
+            kind: "Widget".to_string(),
+        };
+
+        // Lazy-load both into ObjectService's cache
+        let v1_validator = object_service.schema_registry.get_validator(&widget_v1).await.unwrap();
+        let v2_validator = object_service.schema_registry.get_validator(&widget_v2).await.unwrap();
+
+        // Both should be cached under distinct keys
+        assert!(object_service.schema_registry.cache.contains_key(&v1_key));
+        assert!(object_service.schema_registry.cache.contains_key(&v2_key));
+
+        // Verify independent validation:
+        // v1 requires only "color", v2 requires "color" AND "size"
+        let partial_payload = json!({ "color": "red" });
+        assert!(v1_validator.is_valid(&partial_payload), "v1 should accept partial payload");
+        assert!(!v2_validator.is_valid(&partial_payload), "v2 should reject partial payload");
+
+        // Payload with both fields should pass both
+        let full_payload = json!({ "color": "blue", "size": 10 });
+        assert!(v1_validator.is_valid(&full_payload), "v1 should accept full payload");
+        assert!(v2_validator.is_valid(&full_payload), "v2 should accept full payload");
+
+        // Verify independent eviction: delete v1 schema, v2 cache should remain
+        schema_service
+            .delete(schema_key.clone(), v1_key.clone())
+            .await
+            .expect("v1 schema should delete (no objects exist)");
+
+        // SchemaService evicted its own cache entry for v1. ObjectService's
+        // cache still has its own copies — that's expected since they are
+        // separate DashMaps. The key test is that the store persists both
+        // versions and the lazy-load works for each independently.
+        // Verify v2 still works after v1 deletion
+        let v2_validator2 = object_service.schema_registry.get_validator(&widget_v2).await.unwrap();
+        assert!(v2_validator2.is_valid(&full_payload), "v2 should still accept after v1 deletion");
+    }
+
+    #[tokio::test]
+    async fn multi_version_status_validators_cache_independently() {
+        let (object_service, schema_service) = make_services();
+        let schema_key = schema_key();
+
+        // Register v1 schema with statusSchema
+        let v1_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "specSchema": { "type": "object" },
+            "statusSchema": {
+                "type": "object",
+                "properties": { "phase": { "type": "string" } }
+            }
+        });
+        schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: schema_cache_key("Widget", "example.io", "v1"),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                v1_data,
+            )
+            .await
+            .expect("v1 schema with status should register");
+
+        // Register v2 schema with different statusSchema
+        let v2_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v2",
+            "targetKind": "Widget",
+            "specSchema": { "type": "object" },
+            "statusSchema": {
+                "type": "object",
+                "properties": {
+                    "phase": { "type": "string" },
+                    "count": { "type": "integer" }
+                }
+            }
+        });
+        schema_service
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: schema_cache_key("Widget", "example.io", "v2"),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                v2_data,
+            )
+            .await
+            .expect("v2 schema with status should register");
+
+        // Status cache keys should be distinct
+        let v1_status_key = format!("{}.status", schema_cache_key("Widget", "example.io", "v1"));
+        let v2_status_key = format!("{}.status", schema_cache_key("Widget", "example.io", "v2"));
+        assert_ne!(v1_status_key, v2_status_key);
+
+        // Lazy-load status validators into ObjectService's cache
+        let widget_v1 = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let widget_v2 = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v2".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let _ = object_service.schema_registry.get_status_validator(&widget_v1).await.unwrap();
+        let _ = object_service.schema_registry.get_status_validator(&widget_v2).await.unwrap();
+
+        // Both should be present in cache under distinct keys
+        assert!(object_service.schema_registry.cache.contains_key(&v1_status_key));
+        assert!(object_service.schema_registry.cache.contains_key(&v2_status_key));
+        assert_ne!(v1_status_key, v2_status_key);
     }
 }

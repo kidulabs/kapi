@@ -214,7 +214,7 @@ Compiled once at server startup via `compile_meta_schema()` and injected into `S
 
 ## Schema Cache
 
-`SchemaRegistry` manages compiled user schemas in a `DashMap<String, Arc<dyn SchemaValidator>>` keyed by schema name (`{targetKind}.{targetGroup}`). The cache is:
+`SchemaRegistry` manages compiled user schemas in a `DashMap<String, Arc<dyn SchemaValidator>>` keyed by versioned schema name (`{targetKind}.{targetGroup}.{targetVersion}`). Two versions of the same kind occupy independent cache entries. Status validators are keyed as `{kind}.{group}.{version}.status`. The cache is:
 
 - **Populated** on Schema creation and update (the jsonSchema is compiled and stored via `insert()`)
 - **Invalidated** on Schema deletion (the entry is removed via `evict()`)

@@ -16,6 +16,7 @@
 
 ## Future Work
 
+- [ ] **Version conversion webhooks** — Exploration of a conversion-hook mechanism that translates objects between registered API versions of the same kind. When multiple versions of a kind are registered (e.g., `example.io/v1/Widget` and `example.io/v2/Widget`), a conversion webhook would allow reading objects at any supported version by converting between the version's schema. This is the natural follow-up to multi-version schema support.
 - [ ] **Query optimization for high-cardinality labels** — Improve SQLite EXISTS subquery performance for large label sets
 - [ ] **Full label selector syntax parity** — Add set-based operators (`in`, `notin`) to `labelSelector` query parameter for full Kubernetes label selector support
 - [ ] **Label indexing** — Index label key-value pairs for efficient high-cardinality label queries at scale

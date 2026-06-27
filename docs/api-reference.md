@@ -10,7 +10,7 @@ Schemas define the JSON Schema that objects of a given kind must conform to. The
 
 ### Register a Schema
 
-Creates a new Schema. The name is auto-generated as `{targetKind}.{targetGroup}`.
+Creates a new Schema. The name is auto-generated as `{targetKind}.{targetGroup}.{targetVersion}`.
 
 ```
 POST /apis/kapi.io/v1/Schema
@@ -50,7 +50,7 @@ POST /apis/kapi.io/v1/Schema
         "kind": "Schema"
     },
     "metadata": {
-        "name": "Widget.example.io",
+        "name": "Widget.example.io.v1",
         "labels": {}
     },
     "system": {
@@ -90,7 +90,7 @@ GET /apis/kapi.io/v1/Schema
 GET /apis/kapi.io/v1/Schema/{name}
 ```
 
-`name` is the auto-generated name, e.g. `Widget.example.io`.
+`name` is the auto-generated name, e.g. `Widget.example.io.v1`. The name includes the `targetVersion` component to distinguish schemas for the same kind across different API versions.
 
 **Response:** `200 OK` — single StoredObject
 

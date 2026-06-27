@@ -8,7 +8,7 @@ pub async fn test_delete_schema_no_objects(app: &TestApp) -> Result<(), String> 
 
     register_widget_schema(&client).await;
 
-    let resp = client.delete("/apis/kapi.io/v1/Schema/Widget.example.io").await;
+    let resp = client.delete("/apis/kapi.io/v1/Schema/Widget.example.io.v1").await;
     assert_status(&resp, StatusCode::OK);
 
     Ok(())
@@ -25,7 +25,7 @@ pub async fn test_delete_schema_with_objects(app: &TestApp) -> Result<(), String
         assert_status(&resp, StatusCode::CREATED);
     }
 
-    let resp = client.delete("/apis/kapi.io/v1/Schema/Widget.example.io").await;
+    let resp = client.delete("/apis/kapi.io/v1/Schema/Widget.example.io.v1").await;
     assert_status(&resp, StatusCode::CONFLICT);
 
     let body: Value = parse_body(resp).await;

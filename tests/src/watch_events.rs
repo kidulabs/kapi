@@ -29,8 +29,8 @@ pub async fn test_watch_schema_added(app: &TestApp) -> Result<(), String> {
         event.event_type
     );
     assert_eq!(
-        event.object.metadata.name, "Widget.example.io",
-        "expected schema name 'Widget.example.io'"
+        event.object.metadata.name, "Widget.example.io.v1",
+        "expected schema name 'Widget.example.io.v1'"
     );
 
     Ok(())

@@ -25,6 +25,7 @@ use crate::object::types::{
 };
 use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
+use crate::schema::schema_cache_key;
 use crate::store::ResourceKey;
 
 /// Path parameters for /apis/{group}/{version}/{kind}
@@ -59,16 +60,17 @@ pub struct ListQuery {
 
 /// Extracts the schema name from a Schema registration body.
 ///
-/// Reads `targetKind` and `targetGroup` from the JSON body and returns
-/// `Some("{targetKind}.{targetGroup}")`. Returns `None` if either field
-/// is missing or not a string.
+/// Reads `targetKind`, `targetGroup`, and `targetVersion` from the JSON body
+/// and returns `Some(schema_cache_key(target_kind, target_group, target_version))`.
+/// Returns `None` if any of the three fields is missing or not a string.
 ///
 /// The generated name is used as the storage key and cache key for the schema,
 /// ensuring consistency between the stored name and the cache lookup key.
 fn extract_schema_name(body: &Value) -> Option<String> {
     let target_kind = body.get("targetKind")?.as_str()?;
     let target_group = body.get("targetGroup")?.as_str()?;
-    Some(format!("{}.{}", target_kind, target_group))
+    let target_version = body.get("targetVersion")?.as_str()?;
+    Some(schema_cache_key(target_kind, target_group, target_version))
 }
 
 /// Extracts annotations from `metadata.annotations` in the request body.
@@ -156,8 +158,9 @@ fn extract_finalizers(body: &Value) -> Result<Vec<String>, AppError> {
 /// and calls ObjectService::create. Returns 201 Created with the StoredObject.
 ///
 /// For Schema objects (`kind == SCHEMA_KIND`), the name is generated from
-/// `targetKind` and `targetGroup` in the body as `{targetKind}.{targetGroup}`,
-/// and the full body is passed as the spec data.
+/// `targetKind`, `targetGroup`, and `targetVersion` in the body as
+/// `{targetKind}.{targetGroup}.{targetVersion}`, and the full body is passed
+/// as the spec data.
 ///
 /// For non-Schema objects:
 /// - The name is extracted from `metadata.name`.
@@ -179,10 +182,11 @@ pub async fn create(
     // Branch on kind: Schema objects generate their name from payload fields,
     // while regular objects require a client-supplied metadata.name and a spec field
     let (meta, data) = if path.kind == SCHEMA_KIND {
-        // Schema registration: generate name from targetKind.targetGroup
+        // Schema registration: generate name from targetKind.targetGroup.targetVersion
         let name = extract_schema_name(&body).ok_or_else(|| {
             AppError::InvalidSchema(
-                "Schema registration requires targetKind and targetGroup fields".to_string(),
+                "Schema registration requires targetKind, targetGroup, and targetVersion fields"
+                    .to_string(),
             )
         })?;
         // Strip metadata from body before passing as spec data

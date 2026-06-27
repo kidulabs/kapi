@@ -153,4 +153,116 @@ impl SchemaService {
     ) -> Result<Arc<dyn SchemaValidator>, AppError> {
         self.schema_registry.get_status_validator(key).await
     }
+
+    /// Expose the schema registry for testing.
+    #[cfg(test)]
+    pub(crate) fn registry(&self) -> &SchemaRegistry {
+        &self.schema_registry
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::EventPublisher;
+    use crate::object::service::ObjectService;
+    use crate::schema::meta_schema::compile_meta_schema;
+    use crate::schema::schema_cache_key;
+    use crate::schema::schema_key;
+    use crate::store::memory::InMemoryStore;
+    use serde_json::json;
+    use std::collections::HashMap;
+
+    fn make_service() -> (ObjectService, SchemaService) {
+        let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
+        let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+        let meta_validator: Arc<dyn SchemaValidator> =
+            Arc::new(compile_meta_schema().expect("meta-schema should compile"));
+        let schema_registry = SchemaRegistry::new(store.clone(), meta_validator.clone());
+        let schema_service = SchemaService::new(store.clone(), event_bus.clone(), meta_validator);
+        let object_service = ObjectService::new(store, event_bus, schema_registry);
+        (object_service, schema_service)
+    }
+
+    #[tokio::test]
+    async fn delete_v1_schema_keeps_v2_cache_intact() {
+        let (object_service, schema_service) = make_service();
+        let schema_key = schema_key();
+
+        // Register v1 schema
+        let v1_name = schema_cache_key("Widget", "example.io", "v1");
+        schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: v1_name.clone(),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({
+                    "targetGroup": "example.io",
+                    "targetVersion": "v1",
+                    "targetKind": "Widget",
+                    "specSchema": { "type": "object" }
+                }),
+            )
+            .await
+            .expect("v1 schema should register");
+
+        // Register v2 schema
+        let v2_name = schema_cache_key("Widget", "example.io", "v2");
+        schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: v2_name.clone(),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({
+                    "targetGroup": "example.io",
+                    "targetVersion": "v2",
+                    "targetKind": "Widget",
+                    "specSchema": { "type": "object" }
+                }),
+            )
+            .await
+            .expect("v2 schema should register");
+
+        // Create an object at v2
+        let widget_v2 = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v2".to_string(),
+            kind: "Widget".to_string(),
+        };
+        object_service
+            .create(
+                widget_v2,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"dummy": "data"}),
+            )
+            .await
+            .expect("v2 object should create");
+
+        // Delete v1 schema — should succeed (no objects at v1)
+        let result = schema_service.delete(schema_key.clone(), v1_name.clone()).await;
+        assert!(result.is_ok(), "v1 schema deletion should succeed");
+
+        // Verify v2 cache entry is untouched
+        assert!(
+            schema_service.registry().cache.contains_key(&v2_name),
+            "v2 cache entry should remain after v1 deletion"
+        );
+        assert!(
+            !schema_service.registry().cache.contains_key(&v1_name),
+            "v1 cache entry should be evicted"
+        );
+    }
 }

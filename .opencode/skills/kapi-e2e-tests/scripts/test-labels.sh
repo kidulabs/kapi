@@ -33,7 +33,7 @@ curl -s -X POST http://localhost:8080/apis/kapi.io/v1/Schema \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"labels\":{\"team\":\"platform\",\"status\":\"active\"},\"annotations\":{\"team\":\"platform\",\"docs\":\"https://example.com/docs\"}},\"targetGroup\":\"test-$TEST_RUN.io\",\"targetVersion\":\"v1\",\"targetKind\":\"Gadget\",\"specSchema\":{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\"}}}}" > /dev/null
 
-echo "Schema labels/annotations:"; curl -s "http://localhost:8080/apis/kapi.io/v1/Schema/Gadget.test-$TEST_RUN.io" | python3 -c "
+echo "Schema labels/annotations:"; curl -s "http://localhost:8080/apis/kapi.io/v1/Schema/Gadget.test-$TEST_RUN.io.v1" | python3 -c "
 import sys,json;obj=json.load(sys.stdin);md=obj['metadata']
 print(f'labels: {md.get(\"labels\",{})}, annotations: {md.get(\"annotations\",{})}')"
 echo "T7_PASS: Schema supports labels and annotations"
