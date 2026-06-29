@@ -53,3 +53,4 @@ rules:
     - For coding tasks, add comments that are not verbose but explain the intent of complex code sections to make the code walkthrough easier.
     - Add tasks for checking existing documentation docs directory and updating it if necessary when making changes to the codebase.
     - Add tasks to check if any items in roadmap are impacted by the changes and update or remove them accordingly.
+    - Add tasks to update/add tests in the kapi-e2e-tests skill, if the changes impact any existing functionality or add new functionality.
