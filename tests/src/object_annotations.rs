@@ -19,7 +19,7 @@ pub async fn test_create_object_with_annotations(app: &TestApp) -> Result<(), St
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     assert_eq!(created["metadata"]["name"], "annotated-widget", "expected name 'annotated-widget'");
@@ -33,7 +33,7 @@ pub async fn test_create_object_with_annotations(app: &TestApp) -> Result<(), St
     );
 
     // Verify annotations survive a GET
-    let resp = client.get("/apis/example.io/v1/Widget/annotated-widget").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/annotated-widget").await;
     assert_status(&resp, StatusCode::OK);
     let fetched: Value = parse_body(resp).await;
     assert_eq!(
@@ -53,8 +53,12 @@ pub async fn test_create_object_without_annotations(app: &TestApp) -> Result<(),
 
     register_widget_schema(&client).await;
 
-    let resp =
-        client.post("/apis/example.io/v1/Widget", widget("no-annotations-widget", "red", 5)).await;
+    let resp = client
+        .post(
+            "/apis/example.io/v1/namespaces/default/Widget",
+            widget("no-annotations-widget", "red", 5),
+        )
+        .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
 
@@ -85,7 +89,7 @@ pub async fn test_update_object_annotations(app: &TestApp) -> Result<(), String>
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", create_body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", create_body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     assert_eq!(
@@ -94,7 +98,7 @@ pub async fn test_update_object_annotations(app: &TestApp) -> Result<(), String>
     );
 
     // Get the full StoredObject to use as update body
-    let resp = client.get("/apis/example.io/v1/Widget/update-annotations").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/update-annotations").await;
     assert_status(&resp, StatusCode::OK);
     let mut obj: Value = parse_body(resp).await;
 
@@ -102,7 +106,8 @@ pub async fn test_update_object_annotations(app: &TestApp) -> Result<(), String>
     obj["metadata"]["annotations"]["description"] = serde_json::json!("new widget");
     obj["metadata"]["annotations"]["owner"] = serde_json::json!("team");
 
-    let resp = client.put("/apis/example.io/v1/Widget/update-annotations", obj).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/update-annotations", obj).await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
     let annotations = &updated["metadata"]["annotations"];
@@ -113,7 +118,7 @@ pub async fn test_update_object_annotations(app: &TestApp) -> Result<(), String>
     assert_eq!(annotations["owner"], "team", "expected added annotation owner=team");
 
     // Verify via GET
-    let resp = client.get("/apis/example.io/v1/Widget/update-annotations").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/update-annotations").await;
     assert_status(&resp, StatusCode::OK);
     let fetched: Value = parse_body(resp).await;
     let annotations = &fetched["metadata"]["annotations"];
@@ -158,7 +163,8 @@ pub async fn test_create_schema_with_annotations(app: &TestApp) -> Result<(), St
     );
 
     // GET the schema and verify annotations are persisted
-    let resp = client.get("/apis/kapi.io/v1/Schema/Gadget.annotations-test.io").await;
+    // Schema name is generated as {targetKind}.{targetGroup}.{targetVersion}
+    let resp = client.get("/apis/kapi.io/v1/Schema/Gadget.annotations-test.io.v1").await;
     assert_status(&resp, StatusCode::OK);
     let fetched: Value = parse_body(resp).await;
     assert_eq!(
@@ -185,7 +191,7 @@ pub async fn test_invalid_annotation_key_empty(app: &TestApp) -> Result<(), Stri
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidAnnotation", "expected InvalidAnnotation error code");
@@ -210,7 +216,7 @@ pub async fn test_invalid_annotation_key_too_long(app: &TestApp) -> Result<(), S
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidAnnotation", "expected InvalidAnnotation error code");
@@ -234,7 +240,7 @@ pub async fn test_invalid_annotation_value_non_string(app: &TestApp) -> Result<(
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidAnnotation", "expected InvalidAnnotation error code");
@@ -258,7 +264,7 @@ pub async fn test_invalid_annotations_format(app: &TestApp) -> Result<(), String
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidAnnotation", "expected InvalidAnnotation error code");
@@ -283,7 +289,7 @@ pub async fn test_annotation_size_limit(app: &TestApp) -> Result<(), String> {
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(
@@ -311,11 +317,11 @@ pub async fn test_annotation_size_limit_on_update(app: &TestApp) -> Result<(), S
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", create_body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", create_body).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Get the full StoredObject to use as update body
-    let resp = client.get("/apis/example.io/v1/Widget/size-limit-update").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/size-limit-update").await;
     assert_status(&resp, StatusCode::OK);
     let mut obj: Value = parse_body(resp).await;
 
@@ -323,7 +329,8 @@ pub async fn test_annotation_size_limit_on_update(app: &TestApp) -> Result<(), S
     let large_value = "x".repeat(256 * 1024); // > 256KB
     obj["metadata"]["annotations"]["large"] = serde_json::json!(large_value);
 
-    let resp = client.put("/apis/example.io/v1/Widget/size-limit-update", obj).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/size-limit-update", obj).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(

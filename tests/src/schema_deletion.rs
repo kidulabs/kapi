@@ -21,7 +21,9 @@ pub async fn test_delete_schema_with_objects(app: &TestApp) -> Result<(), String
 
     for i in 0..2 {
         let name = format!("del-schema-obj-{i}");
-        let resp = client.post("/apis/example.io/v1/Widget", widget(&name, "red", i as i64)).await;
+        let resp = client
+            .post("/apis/example.io/v1/namespaces/default/Widget", widget(&name, "red", i as i64))
+            .await;
         assert_status(&resp, StatusCode::CREATED);
     }
 

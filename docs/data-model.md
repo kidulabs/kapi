@@ -23,7 +23,9 @@ User-controlled metadata fields. Clients set these on create and echo them back 
 
 ```rust
 struct ObjectMeta {
-    name: String,                         // unique within a (group, version, kind)
+    name: String,                         // unique within a (group, version, kind, namespace)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    namespace: Option<String>,            // namespace (None for cluster-scoped, Some for namespaced)
     #[serde(default)]
     labels: HashMap<String, String>,      // optional key-value metadata (queryable)
     #[serde(default)]
@@ -31,14 +33,21 @@ struct ObjectMeta {
 }
 ```
 
-Wire format uses camelCase (`name`, `labels`, `annotations`). Both `labels` and `annotations` default to `{}` when absent in the request body — the `#[serde(default)]` attribute ensures deserialization never fails on a missing field.
+Wire format uses camelCase (`name`, `namespace`, `labels`, `annotations`). Both `labels` and `annotations` default to `{}` when absent in the request body — the `#[serde(default)]` attribute ensures deserialization never fails on a missing field.
+
+The `namespace` field:
+- **`null` (None)** — for cluster-scoped resources (Schema, ClusterWidget). Indicates the resource is not in any namespace.
+- **`"<name>"` (Some)** — for namespace-scoped resources. Set from the URL path at creation time.
+- The request body's `metadata.namespace` is ignored — the URL namespace takes precedence.
+- On updates, `metadata.namespace` in the body must match the stored object's namespace.
 
 Serialization examples:
 
 ```json
-// With labels and annotations
+// With labels, annotations, and namespace (namespace-scoped)
 {
     "name": "my-app",
+    "namespace": "production",
     "labels": {
         "app.example.io/name": "my-app",
         "tier": "frontend",
@@ -48,6 +57,14 @@ Serialization examples:
         "description": "Production deployment of my-app",
         "owner": "team-platform",
         "deployment-sha": "a1b2c3d4"
+    }
+}
+
+// Cluster-scoped (namespace is null, omitted from JSON)
+{
+    "name": "my-cluster-resource",
+    "labels": {
+        "app.example.io/name": "my-cluster-resource"
     }
 }
 
@@ -225,10 +242,11 @@ data: {"eventType":"Modified","object":{...}}
     "key": {
         "group": "apps",
         "version": "v1",
-        "kind": "deployments"
+        "kind": "Deployable"
     },
     "metadata": {
         "name": "my-app",
+        "namespace": "production",
         "labels": {
             "app.example.io/name": "my-app",
             "environment": "prod"
@@ -248,6 +266,8 @@ data: {"eventType":"Modified","object":{...}}
     }
 }
 ```
+
+For cluster-scoped resources, the `namespace` field is `null` and omitted from the JSON response.
 
 When `status` is `null`, the field is omitted from the response.
 

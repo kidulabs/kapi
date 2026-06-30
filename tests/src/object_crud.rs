@@ -8,13 +8,15 @@ pub async fn test_create_schema_then_object(app: &TestApp) -> Result<(), String>
 
     register_widget_schema(&client).await;
 
-    let resp = client.post("/apis/example.io/v1/Widget", widget("my-widget", "blue", 42)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("my-widget", "blue", 42))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let name = created["metadata"]["name"].as_str().unwrap_or("").to_string();
     assert_eq!(name, "my-widget", "expected name 'my-widget'");
 
-    let resp = client.get("/apis/example.io/v1/Widget/my-widget").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/my-widget").await;
     assert_status(&resp, StatusCode::OK);
     let fetched: Value = parse_body(resp).await;
     assert_eq!(fetched["metadata"]["name"], "my-widget", "GET returned wrong name");
@@ -29,7 +31,9 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
 
     register_widget_schema(&client).await;
 
-    let resp = client.post("/apis/example.io/v1/Widget", widget("crud-widget", "red", 10)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("crud-widget", "red", 10))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
@@ -43,16 +47,17 @@ pub async fn test_full_crud_flow(app: &TestApp) -> Result<(), String> {
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "green", "size": 20 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/crud-widget", update_body).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/crud-widget", update_body).await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
     let new_rv = updated["system"]["resourceVersion"].as_u64().unwrap_or(0);
     assert!(new_rv > rv, "new resourceVersion should be greater than old");
 
-    let resp = client.delete("/apis/example.io/v1/Widget/crud-widget").await;
+    let resp = client.delete("/apis/example.io/v1/namespaces/default/Widget/crud-widget").await;
     assert_status(&resp, StatusCode::OK);
 
-    let resp = client.get("/apis/example.io/v1/Widget/crud-widget").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/crud-widget").await;
     assert_status(&resp, StatusCode::NOT_FOUND);
 
     Ok(())
@@ -65,11 +70,13 @@ pub async fn test_list_single_page(app: &TestApp) -> Result<(), String> {
 
     for i in 0..2 {
         let name = format!("list-sp-{i}");
-        let resp = client.post("/apis/example.io/v1/Widget", widget(&name, "red", i as i64)).await;
+        let resp = client
+            .post("/apis/example.io/v1/namespaces/default/Widget", widget(&name, "red", i as i64))
+            .await;
         assert_status(&resp, StatusCode::CREATED);
     }
 
-    let resp = client.get("/apis/example.io/v1/Widget?limit=5").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget?limit=5").await;
     assert_status(&resp, StatusCode::OK);
     let list: Value = parse_body(resp).await;
     let items = list["items"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -86,11 +93,13 @@ pub async fn test_list_two_pages(app: &TestApp) -> Result<(), String> {
 
     for i in 0..4 {
         let name = format!("list-tp-{i}");
-        let resp = client.post("/apis/example.io/v1/Widget", widget(&name, "blue", i as i64)).await;
+        let resp = client
+            .post("/apis/example.io/v1/namespaces/default/Widget", widget(&name, "blue", i as i64))
+            .await;
         assert_status(&resp, StatusCode::CREATED);
     }
 
-    let resp = client.get("/apis/example.io/v1/Widget?limit=2").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget?limit=2").await;
     assert_status(&resp, StatusCode::OK);
     let page1: Value = parse_body(resp).await;
     let items1 = page1["items"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -98,7 +107,9 @@ pub async fn test_list_two_pages(app: &TestApp) -> Result<(), String> {
     let token = page1["continue_token"].as_str().unwrap_or("").to_string();
     assert!(!token.is_empty(), "page1 should have continue token");
 
-    let resp = client.get(&format!("/apis/example.io/v1/Widget?limit=2&continue={token}")).await;
+    let resp = client
+        .get(&format!("/apis/example.io/v1/namespaces/default/Widget?limit=2&continue={token}"))
+        .await;
     assert_status(&resp, StatusCode::OK);
     let page2: Value = parse_body(resp).await;
     let items2 = page2["items"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -114,11 +125,13 @@ pub async fn test_list_resume_position(app: &TestApp) -> Result<(), String> {
     register_widget_schema(&client).await;
 
     for name in ["a", "b", "c", "d"] {
-        let resp = client.post("/apis/example.io/v1/Widget", widget(name, "green", 1)).await;
+        let resp = client
+            .post("/apis/example.io/v1/namespaces/default/Widget", widget(name, "green", 1))
+            .await;
         assert_status(&resp, StatusCode::CREATED);
     }
 
-    let resp = client.get("/apis/example.io/v1/Widget?limit=2").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget?limit=2").await;
     assert_status(&resp, StatusCode::OK);
     let page1: Value = parse_body(resp).await;
     let names1: Vec<&str> = page1["items"]
@@ -129,7 +142,9 @@ pub async fn test_list_resume_position(app: &TestApp) -> Result<(), String> {
 
     let token = page1["continue_token"].as_str().unwrap_or("").to_string();
 
-    let resp = client.get(&format!("/apis/example.io/v1/Widget?limit=2&continue={token}")).await;
+    let resp = client
+        .get(&format!("/apis/example.io/v1/namespaces/default/Widget?limit=2&continue={token}"))
+        .await;
     assert_status(&resp, StatusCode::OK);
     let page2: Value = parse_body(resp).await;
     let names2: Vec<&str> = page2["items"]
@@ -147,10 +162,12 @@ pub async fn test_list_exhausted(app: &TestApp) -> Result<(), String> {
 
     register_widget_schema(&client).await;
 
-    let resp = client.post("/apis/example.io/v1/Widget", widget("exhausted", "yellow", 1)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("exhausted", "yellow", 1))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
-    let resp = client.get("/apis/example.io/v1/Widget?limit=10").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget?limit=10").await;
     assert_status(&resp, StatusCode::OK);
     let list: Value = parse_body(resp).await;
     let items = list["items"].as_array().map(|a| a.len()).unwrap_or(0);
@@ -167,7 +184,7 @@ pub async fn test_create_missing_spec(app: &TestApp) -> Result<(), String> {
 
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "no-spec-widget" }
             }),
@@ -191,7 +208,7 @@ pub async fn test_create_empty_spec(app: &TestApp) -> Result<(), String> {
 
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "empty-spec-widget" },
                 "spec": {}
@@ -217,7 +234,7 @@ pub async fn test_create_non_object_spec(app: &TestApp) -> Result<(), String> {
     // spec as array
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "array-spec-widget" },
                 "spec": [1, 2, 3]
@@ -235,7 +252,7 @@ pub async fn test_create_non_object_spec(app: &TestApp) -> Result<(), String> {
     // spec as string
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "string-spec-widget" },
                 "spec": "not an object"
@@ -260,7 +277,7 @@ pub async fn test_create_unknown_top_level_field(app: &TestApp) -> Result<(), St
 
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "unknown-field-widget" },
                 "spec": { "color": "blue", "size": 10 },

@@ -1,11 +1,11 @@
 ---
 name: kapi-e2e-tests
-description: "Run kapi end-to-end tests from docs/testprompt.md. Triggers: test kapi, run tests, e2e, verify kapi, test labels, test watch, test finalizers, test status, test generation, test annotations, test persistence, test label selection, test label selector, test list filtering, run all tests"
+description: "Run kapi end-to-end tests. Triggers: test kapi, run tests, e2e, verify kapi, test labels, test watch, test finalizers, test status, test generation, test annotations, test persistence, test label selection, test label selector, test list filtering, run all tests"
 ---
 
 # kapi-e2e-tests
 
-Run kapi end-to-end tests from `docs/testprompt.md`. Supports running all tests or specific test areas.
+Run kapi end-to-end tests. Supports running all tests or specific test areas.
 
 ## When to Use
 
@@ -13,7 +13,7 @@ Use this skill when the user asks to:
 - Run kapi tests / e2e tests
 - Test specific areas (labels, annotations, finalizers, watch, status, etc.)
 - Verify kapi functionality
-- Run the test suite from testprompt.md
+- Run the automated test suite
 
 ## Test Areas
 
@@ -31,7 +31,13 @@ The tests are organized into these areas:
 | `finalizers` | 41, 42, 43, 44, 45, 46, 47, 48, 49 | Finalizers: create, delete, update, validation, watch, persistence |
 | `persistence` | 10, 49 | SQLite persistence: labels/annotations and finalizers survive restart |
 | `concurrent` | 50, 51 | Concurrent spec/status updates, failed ops don't publish events |
-| `all` | 1-51 | Run all tests |
+| `schema-scope` | 52-59 | Schema registration: scope field, cluster-scoped Schema |
+| `namespace-crud` | 60-68 | Namespace-scoped CRUD: create, get, list, update, delete |
+| `cross-namespace` | 69-71 | Cross-namespace list: all namespaces, pagination, comparison |
+| `cluster-scoped` | 72-76 | Cluster-scoped resources: CRUD with namespace=null |
+| `scope-validation` | 77-81 | Scope validation: reject cluster+ns, default ns, same name diff ns |
+| `namespace-watch` | 82-83 | Namespace-aware watch: scoped and cross-namespace |
+| `all` | 1-83 | Run all tests |
 
 ## Workflow
 
@@ -116,7 +122,7 @@ User: "test the label selection"
 → Run `label-selectors` area (tests 11-17)
 
 User: "run all tests"
-→ Run `all` area (tests 1-51)
+→ Run `all` area (tests 1-83)
 
 User: "test finalizers and persistence"
 → Run `finalizers` area (tests 41-49) then `persistence` area (tests 10, 49)

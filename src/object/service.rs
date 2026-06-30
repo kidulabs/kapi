@@ -53,36 +53,56 @@ impl ObjectService {
     /// 1. Look up the Schema from the store
     /// 2. Validate against cached compiled schema
     /// 3. Store and publish Added event
+    ///
+    /// `namespace` is the namespace from the URL path. For cluster-scoped kinds,
+    /// it must be `None`. For namespaced kinds, `None` defaults to "default".
+    /// Any namespace in `meta.namespace` from the request body is discarded
+    /// in favor of the URL-derived namespace.
     pub async fn create(
         &self,
         key: ResourceKey,
+        namespace: Option<String>,
         meta: ObjectMeta,
         spec: Value,
     ) -> Result<StoredObject, AppError> {
-        self.validate_and_create_object(key, meta, spec).await
+        self.validate_and_create_object(key, namespace, meta, spec).await
     }
 
-    /// Gets an object by key and name — delegates to store.
-    pub async fn get(&self, key: ResourceKey, name: String) -> Result<StoredObject, AppError> {
-        self.store.get(&key, &name).await
+    /// Gets an object by key, namespace, and name — delegates to store.
+    pub async fn get(
+        &self,
+        key: ResourceKey,
+        namespace: Option<&str>,
+        name: String,
+    ) -> Result<StoredObject, AppError> {
+        self.store.get(&key, namespace, &name).await
     }
 
-    /// Lists objects by key and options — delegates to store.
+    /// Lists objects by key, namespace, and options — delegates to store.
     pub async fn list(
         &self,
         key: ResourceKey,
+        namespace: Option<&str>,
         opts: ListOptions,
     ) -> Result<ListResponse, AppError> {
-        self.store.list(&key, opts).await
+        self.store.list(&key, namespace, opts).await
     }
 
     /// Updates a regular object with validation.
     ///
     /// Looks up compiled schema, validates spec, applies transaction with OCC and
     /// finalizer checks, and publishes a Modified (or Deleted) event.
-    pub async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
+    ///
+    /// `namespace` is the namespace from the URL path. When `Some`, it is validated
+    /// against `object.metadata.namespace` for consistency. When `None`, the namespace
+    /// from the object metadata is used.
+    pub async fn update(
+        &self,
+        namespace: Option<&str>,
+        object: StoredObject,
+    ) -> Result<StoredObject, AppError> {
         let spec = object.spec.clone();
-        self.validate_and_update_object(object, spec).await
+        self.validate_and_update_object(namespace, object, spec).await
     }
 
     /// Deletes an object with finalizer support.
@@ -94,11 +114,17 @@ impl ObjectService {
     /// Controllers watch for objects with `deletion_timestamp` set, perform cleanup,
     /// then remove their finalizer via UPDATE. When all finalizers are removed,
     /// the object is hard-deleted (see `validate_and_update_object`).
-    pub async fn delete(&self, key: ResourceKey, name: String) -> Result<StoredObject, AppError> {
+    pub async fn delete(
+        &self,
+        key: ResourceKey,
+        namespace: Option<&str>,
+        name: String,
+    ) -> Result<StoredObject, AppError> {
         let action = Arc::new(Mutex::new(finalizer::DeleteAction::HardDeleted));
         let action_clone = action.clone();
         let result = self.store.transaction(
             &key,
+            namespace,
             &name,
             Box::new(move |existing| {
                 let act = finalizer::evaluate_delete(existing);
@@ -147,6 +173,7 @@ impl ObjectService {
     pub async fn update_status(
         &self,
         key: ResourceKey,
+        namespace: Option<&str>,
         name: String,
         status: Value,
     ) -> Result<StoredObject, AppError> {
@@ -164,6 +191,7 @@ impl ObjectService {
         // No OCC check for status updates — they are unconditional per spec.
         let updated = self.store.transaction(
             &key,
+            namespace,
             &name,
             Box::new(move |existing| {
                 helpers::apply_with_metadata(existing, |_existing| {
@@ -189,27 +217,52 @@ impl ObjectService {
     pub async fn get_status(
         &self,
         key: ResourceKey,
+        namespace: Option<&str>,
         name: String,
     ) -> Result<Option<Value>, AppError> {
         // Check that status subresource is enabled
         self.schema_registry.get_status_validator(&key).await?;
 
         // Fetch object and return status
-        let object = self.store.get(&key, &name).await?;
+        let object = self.store.get(&key, namespace, &name).await?;
         Ok(object.status)
     }
 
     /// Validates an object against its cached schema and creates it.
+    ///
+    /// Resolves the namespace from the URL parameter and schema scope:
+    /// - Cluster-scoped kinds reject a provided namespace.
+    /// - Namespaced kinds default to "default" when no namespace is provided.
+    ///
+    /// The resolved namespace is set in `metadata.namespace`.
     async fn validate_and_create_object(
         &self,
         key: ResourceKey,
+        namespace: Option<String>,
         meta: ObjectMeta,
         spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&meta.labels)?;
         validate_annotations(&meta.annotations)?;
         validate_finalizers(&meta.finalizers)?;
-        let validator = self.schema_registry.get_validator(&key).await?;
+        let (validator, scope) = self.schema_registry.get_validator(&key).await?;
+
+        // Resolve namespace from scope and URL namespace parameter
+        let resolved_namespace = match scope.as_str() {
+            "Cluster" => {
+                if namespace.is_some() {
+                    return Err(AppError::InvalidRequest(format!(
+                        "cluster-scoped kind '{}' does not accept namespace",
+                        key.kind
+                    )));
+                }
+                None
+            }
+            "Namespaced" => Some(namespace.unwrap_or_else(|| "default".to_string())),
+            _ => {
+                return Err(AppError::Internal(anyhow::anyhow!("unknown scope: {}", scope)));
+            }
+        };
 
         if !validator.is_valid(&spec) {
             let errors = helpers::map_validation_errors(validator.validate(&spec));
@@ -220,7 +273,7 @@ impl ObjectService {
             .store
             .create(StoredObject {
                 key: key.clone(),
-                metadata: meta,
+                metadata: ObjectMeta { namespace: resolved_namespace, ..meta },
                 system: SystemMetadata::initial(),
                 spec,
                 status: None,
@@ -231,15 +284,52 @@ impl ObjectService {
     }
 
     /// Validates and updates a regular object.
+    ///
+    /// Resolves namespace from schema scope:
+    /// - Cluster-scoped kinds reject a provided namespace in object metadata.
+    /// - Namespaced kinds default to "default" when no namespace is set.
+    /// - When `namespace` (from URL) is `Some`, it must match the object's metadata namespace.
+    ///
+    /// The resolved namespace is passed to `store.transaction()`.
     async fn validate_and_update_object(
         &self,
-        object: StoredObject,
+        namespace: Option<&str>,
+        mut object: StoredObject,
         spec: Value,
     ) -> Result<StoredObject, AppError> {
         validate_labels(&object.metadata.labels)?;
         validate_annotations(&object.metadata.annotations)?;
         validate_finalizers(&object.metadata.finalizers)?;
-        let validator = self.schema_registry.get_validator(&object.key).await?;
+        let (validator, scope) = self.schema_registry.get_validator(&object.key).await?;
+
+        // Resolve namespace from scope
+        let resolved_namespace = match scope.as_str() {
+            "Cluster" => {
+                if object.metadata.namespace.is_some() {
+                    return Err(AppError::InvalidRequest(format!(
+                        "cluster-scoped kind '{}' does not accept namespace",
+                        object.key.kind
+                    )));
+                }
+                None
+            }
+            "Namespaced" => {
+                let ns = object.metadata.namespace.get_or_insert_with(|| "default".to_string());
+                // If a namespace was passed from URL, validate it matches
+                if let Some(expected_ns) = namespace
+                    && ns.as_str() != expected_ns
+                {
+                    return Err(AppError::InvalidRequest(format!(
+                        "namespace mismatch: expected '{}', got '{}'",
+                        expected_ns, ns
+                    )));
+                }
+                Some(ns.clone())
+            }
+            _ => {
+                return Err(AppError::Internal(anyhow::anyhow!("unknown scope: {}", scope)));
+            }
+        };
 
         if !validator.is_valid(&spec) {
             let errors = helpers::map_validation_errors(validator.validate(&spec));
@@ -255,6 +345,7 @@ impl ObjectService {
         let wd = was_hard_deleted.clone();
         let updated = self.store.transaction(
             &key,
+            resolved_namespace.as_deref(),
             &name,
             Box::new(move |existing| {
                 // OCC check: reject if resource_version doesn't match
@@ -338,12 +429,15 @@ mod tests {
     // The name format "{targetKind}.{targetGroup}.{targetVersion}" is backend-generated
     // (see handler::extract_schema_name), but tests call service.create()
     // directly and must supply the name.
+    // Uses "Cluster" scope so objects store with namespace=None (avoids namespace
+    // interactions for tests that don't test namespace/scope behavior).
     async fn register_test_schema(schema_service: &SchemaService) {
         let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
+            "scope": "Cluster",
             "specSchema": {
                 "type": "object",
                 "properties": {
@@ -357,6 +451,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -384,6 +479,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -396,7 +492,8 @@ mod tests {
         assert_eq!(stored.metadata.name, "Widget.example.io.v1");
 
         // Verify stored in store (using ObjectService.get which delegates to store)
-        let retrieved = service.get(schema_key, "Widget.example.io.v1".to_string()).await.unwrap();
+        let retrieved =
+            service.get(schema_key, None, "Widget.example.io.v1".to_string()).await.unwrap();
         assert_eq!(retrieved.metadata.name, "Widget.example.io.v1");
 
         // Verify ObjectService's registry can lazy-load and cache it
@@ -424,6 +521,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -452,6 +550,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -476,8 +575,10 @@ mod tests {
         let result = service
             .create(
                 widget_key,
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -505,8 +606,10 @@ mod tests {
         let result = service
             .create(
                 widget_key,
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -531,8 +634,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -547,7 +652,7 @@ mod tests {
         updated_obj.spec = json!({ "color": "red", "size": 20 });
         updated_obj.system.resource_version = v1;
 
-        let result = service.update(updated_obj).await;
+        let result = service.update(None, updated_obj).await;
         assert!(result.is_ok());
         assert!(result.unwrap().system.resource_version > v1);
     }
@@ -566,8 +671,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -582,7 +689,7 @@ mod tests {
         wrong_version_obj.system.resource_version = 999;
 
         // OCC check in service layer rejects stale versions
-        let result = service.update(wrong_version_obj).await;
+        let result = service.update(None, wrong_version_obj).await;
         assert!(matches!(result, Err(AppError::Conflict { .. })));
     }
 
@@ -602,6 +709,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -631,8 +739,10 @@ mod tests {
         service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -662,8 +772,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -673,7 +785,7 @@ mod tests {
             .await
             .unwrap();
 
-        let result = service.delete(widget_key, "my-widget".to_string()).await;
+        let result = service.delete(widget_key, None, "my-widget".to_string()).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap().metadata.name, created.metadata.name);
     }
@@ -694,6 +806,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -709,6 +822,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -735,6 +849,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -782,6 +897,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -810,6 +926,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -856,6 +973,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -867,8 +985,10 @@ mod tests {
         service_a
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "widget-1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -886,8 +1006,10 @@ mod tests {
         let result = service_b
             .create(
                 widget_key,
+                None,
                 ObjectMeta {
                     name: "widget-2".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -935,6 +1057,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -953,8 +1076,10 @@ mod tests {
         let first = service_b
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "widget-1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -969,8 +1094,10 @@ mod tests {
         let second = service_b
             .create(
                 widget_key,
+                None,
                 ObjectMeta {
                     name: "widget-2".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1002,6 +1129,7 @@ mod tests {
                 key: schema_key.clone(),
                 metadata: ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1024,8 +1152,10 @@ mod tests {
         let result = service
             .create(
                 widget_key,
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1178,12 +1308,14 @@ mod tests {
     // --- Status subresource tests ---
 
     // Helper to register a Schema with statusSchema using SchemaService
+    // Uses "Cluster" scope so objects store with namespace=None.
     async fn register_test_schema_with_status(schema_service: &SchemaService) {
         let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
+            "scope": "Cluster",
             "specSchema": {
                 "type": "object",
                 "properties": {
@@ -1203,6 +1335,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1226,8 +1359,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1239,7 +1374,12 @@ mod tests {
         assert!(created.status.is_none());
 
         let updated = service
-            .update_status(widget_key.clone(), "my-widget".to_string(), json!({"phase": "Running"}))
+            .update_status(
+                widget_key.clone(),
+                None,
+                "my-widget".to_string(),
+                json!({"phase": "Running"}),
+            )
             .await
             .unwrap();
         assert!(updated.status.is_some());
@@ -1260,8 +1400,10 @@ mod tests {
         service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1272,7 +1414,12 @@ mod tests {
             .unwrap();
 
         let err = service
-            .update_status(widget_key.clone(), "my-widget".to_string(), json!({"phase": "Running"}))
+            .update_status(
+                widget_key.clone(),
+                None,
+                "my-widget".to_string(),
+                json!({"phase": "Running"}),
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::StatusSubresourceNotEnabled { .. }));
@@ -1291,8 +1438,10 @@ mod tests {
         service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1304,7 +1453,7 @@ mod tests {
 
         // phase should be string, not integer
         let err = service
-            .update_status(widget_key.clone(), "my-widget".to_string(), json!({"phase": 123}))
+            .update_status(widget_key.clone(), None, "my-widget".to_string(), json!({"phase": 123}))
             .await
             .unwrap_err();
         assert!(matches!(err, AppError::SchemaValidation(_)));
@@ -1324,6 +1473,7 @@ mod tests {
         let err = service
             .update_status(
                 widget_key.clone(),
+                None,
                 "nonexistent".to_string(),
                 json!({"phase": "Running"}),
             )
@@ -1345,8 +1495,10 @@ mod tests {
         service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1357,16 +1509,23 @@ mod tests {
             .unwrap();
 
         // Initially None
-        let status = service.get_status(widget_key.clone(), "my-widget".to_string()).await.unwrap();
+        let status =
+            service.get_status(widget_key.clone(), None, "my-widget".to_string()).await.unwrap();
         assert!(status.is_none());
 
         // After update
         service
-            .update_status(widget_key.clone(), "my-widget".to_string(), json!({"phase": "Running"}))
+            .update_status(
+                widget_key.clone(),
+                None,
+                "my-widget".to_string(),
+                json!({"phase": "Running"}),
+            )
             .await
             .unwrap();
 
-        let status = service.get_status(widget_key.clone(), "my-widget".to_string()).await.unwrap();
+        let status =
+            service.get_status(widget_key.clone(), None, "my-widget".to_string()).await.unwrap();
         assert!(status.is_some());
         assert_eq!(status.unwrap(), json!({"phase": "Running"}));
     }
@@ -1384,8 +1543,10 @@ mod tests {
         service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1395,8 +1556,10 @@ mod tests {
             .await
             .unwrap();
 
-        let err =
-            service.get_status(widget_key.clone(), "my-widget".to_string()).await.unwrap_err();
+        let err = service
+            .get_status(widget_key.clone(), None, "my-widget".to_string())
+            .await
+            .unwrap_err();
         assert!(matches!(err, AppError::StatusSubresourceNotEnabled { .. }));
     }
 
@@ -1415,8 +1578,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1443,8 +1608,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "meta-test".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1457,7 +1624,7 @@ mod tests {
 
         let mut update_obj = created;
         update_obj.system.resource_version = v1;
-        let result = service.update(update_obj).await.unwrap();
+        let result = service.update(None, update_obj).await.unwrap();
         assert_eq!(
             result.system.resource_version,
             v1 + 1,
@@ -1478,8 +1645,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "created-at-test".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1492,7 +1661,7 @@ mod tests {
         let rv = created.system.resource_version;
         let mut update_obj = created;
         update_obj.system.resource_version = rv;
-        let result = service.update(update_obj).await.unwrap();
+        let result = service.update(None, update_obj).await.unwrap();
         assert_eq!(result.system.created_at, created_at, "created_at should be preserved");
     }
 
@@ -1509,8 +1678,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "gen-bump-test".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1526,7 +1697,7 @@ mod tests {
         update_obj.system.resource_version = v1;
         update_obj.spec = json!({"color": "red", "size": 20});
 
-        let result = service.update(update_obj).await.unwrap();
+        let result = service.update(None, update_obj).await.unwrap();
         assert_eq!(result.system.generation, 2, "generation should bump to 2 on spec change");
     }
 
@@ -1543,8 +1714,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "gen-preserve-test".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1561,7 +1734,7 @@ mod tests {
         update_obj.system.resource_version = v1;
         update_obj.metadata.labels.insert("env".to_string(), "prod".to_string());
 
-        let result = service.update(update_obj).await.unwrap();
+        let result = service.update(None, update_obj).await.unwrap();
         assert_eq!(
             result.system.generation, gen1,
             "generation should not bump on metadata-only update"
@@ -1583,8 +1756,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "occ-pass".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1599,7 +1774,7 @@ mod tests {
         update_obj.system.resource_version = rv;
         update_obj.spec = json!({"color": "red", "size": 2});
 
-        let result = service.update(update_obj).await;
+        let result = service.update(None, update_obj).await;
         assert!(result.is_ok(), "update should succeed with matching rv");
     }
 
@@ -1616,8 +1791,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "occ-fail".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1631,7 +1808,7 @@ mod tests {
         update_obj.spec = json!({"color": "red", "size": 2});
         update_obj.system.resource_version = 999; // wrong version
 
-        let result = service.update(update_obj).await;
+        let result = service.update(None, update_obj).await;
         assert!(
             matches!(result, Err(AppError::Conflict { .. })),
             "expected Conflict error, got {:?}",
@@ -1652,8 +1829,10 @@ mod tests {
         let created = service
             .create(
                 widget_key.clone(),
+                None,
                 ObjectMeta {
                     name: "status-occ".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1668,6 +1847,7 @@ mod tests {
         let result = service
             .update_status(
                 widget_key.clone(),
+                None,
                 "status-occ".to_string(),
                 json!({"phase": "Running"}),
             )
@@ -1709,6 +1889,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: schema_cache_key("Widget", "example.io", "v1"),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1737,6 +1918,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: schema_cache_key("Widget", "example.io", "v2"),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1765,8 +1947,10 @@ mod tests {
         };
 
         // Lazy-load both into ObjectService's cache
-        let v1_validator = object_service.schema_registry.get_validator(&widget_v1).await.unwrap();
-        let v2_validator = object_service.schema_registry.get_validator(&widget_v2).await.unwrap();
+        let (v1_validator, _) =
+            object_service.schema_registry.get_validator(&widget_v1).await.unwrap();
+        let (v2_validator, _) =
+            object_service.schema_registry.get_validator(&widget_v2).await.unwrap();
 
         // Both should be cached under distinct keys
         assert!(object_service.schema_registry.cache.contains_key(&v1_key));
@@ -1794,7 +1978,8 @@ mod tests {
         // separate DashMaps. The key test is that the store persists both
         // versions and the lazy-load works for each independently.
         // Verify v2 still works after v1 deletion
-        let v2_validator2 = object_service.schema_registry.get_validator(&widget_v2).await.unwrap();
+        let (v2_validator2, _) =
+            object_service.schema_registry.get_validator(&widget_v2).await.unwrap();
         assert!(v2_validator2.is_valid(&full_payload), "v2 should still accept after v1 deletion");
     }
 
@@ -1819,6 +2004,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: schema_cache_key("Widget", "example.io", "v1"),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1847,6 +2033,7 @@ mod tests {
                 schema_key,
                 ObjectMeta {
                     name: schema_cache_key("Widget", "example.io", "v2"),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -1855,11 +2042,6 @@ mod tests {
             )
             .await
             .expect("v2 schema with status should register");
-
-        // Status cache keys should be distinct
-        let v1_status_key = format!("{}.status", schema_cache_key("Widget", "example.io", "v1"));
-        let v2_status_key = format!("{}.status", schema_cache_key("Widget", "example.io", "v2"));
-        assert_ne!(v1_status_key, v2_status_key);
 
         // Lazy-load status validators into ObjectService's cache
         let widget_v1 = ResourceKey {
@@ -1875,9 +2057,110 @@ mod tests {
         let _ = object_service.schema_registry.get_status_validator(&widget_v1).await.unwrap();
         let _ = object_service.schema_registry.get_status_validator(&widget_v2).await.unwrap();
 
-        // Both should be present in cache under distinct keys
-        assert!(object_service.schema_registry.cache.contains_key(&v1_status_key));
-        assert!(object_service.schema_registry.cache.contains_key(&v2_status_key));
-        assert_ne!(v1_status_key, v2_status_key);
+        // Both should be present in cache under the base cache keys (status validators
+        // are stored in the same CachedSchema entry as spec validators, under the base key)
+        let v1_key = schema_cache_key("Widget", "example.io", "v1");
+        let v2_key = schema_cache_key("Widget", "example.io", "v2");
+        assert!(object_service.schema_registry.cache.contains_key(&v1_key));
+        assert!(object_service.schema_registry.cache.contains_key(&v2_key));
+        assert_ne!(v1_key, v2_key);
+
+        // Verify both cache entries exist (status validators stored in same entry as spec)
+        assert!(object_service.schema_registry.cache.contains_key(&v1_key));
+        assert!(object_service.schema_registry.cache.contains_key(&v2_key));
+    }
+
+    // --- Scope validation tests ---
+
+    // Helper to register a Namespaced Widget schema
+    #[tokio::test]
+    async fn create_cluster_scoped_kind_with_namespace_rejected() {
+        let (service, schema_service) = make_services();
+        register_test_schema(&schema_service).await; // Cluster-scoped Widget
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+
+        let result = service
+            .create(
+                widget_key,
+                Some("default".to_string()),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(AppError::InvalidRequest(msg)) if msg.contains("cluster-scoped"))
+        );
+    }
+
+    #[tokio::test]
+    async fn create_cluster_scoped_kind_without_namespace_stores_none() {
+        let (service, schema_service) = make_services();
+        register_test_schema(&schema_service).await; // Cluster-scoped Widget (all schemas are now cluster-scoped)
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+
+        let result = service
+            .create(
+                widget_key,
+                None, // No namespace — cluster-scoped kinds don't use namespace
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await;
+        assert!(result.is_ok());
+        let stored = result.unwrap();
+        // Cluster-scoped kinds always have namespace: None
+        assert_eq!(stored.metadata.namespace, None);
+    }
+
+    #[tokio::test]
+    async fn create_cluster_scoped_kind_with_namespace_rejected_alternate() {
+        let (service, schema_service) = make_services();
+        register_test_schema(&schema_service).await; // All schemas are now cluster-scoped
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+
+        let result = service
+            .create(
+                widget_key,
+                Some("custom".to_string()),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "blue", "size": 10}),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(AppError::InvalidRequest(msg)) if msg.contains("cluster-scoped"))
+        );
     }
 }

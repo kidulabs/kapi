@@ -39,18 +39,25 @@ impl SchemaService {
     }
 
     /// Creates a Schema object: validates against meta-schema, compiles, stores, caches, publishes.
+    ///
+    /// The Schema resource itself is always cluster-scoped (`metadata.namespace` is forced to
+    /// `None`). However, the `scope` field in the spec (`SchemaData.scope`) is user-specified
+    /// and determines whether objects of the target kind are cluster-scoped or namespaced.
+    /// It is preserved as-is from the request body.
     pub async fn create(
         &self,
         key: ResourceKey,
         meta: ObjectMeta,
         spec: Value,
     ) -> Result<StoredObject, AppError> {
-        // Copy exact logic from ObjectService::validate_and_create_schema
-        // but use helpers::publish_event(&self.event_bus, ...) instead of self.publish_event(...)
+        // Schema resource is always cluster-scoped — force namespace to None
+        // but preserve the user-specified scope from the spec for target objects
+        let meta = ObjectMeta { namespace: None, ..meta };
+
         validate_labels(&meta.labels)?;
         validate_annotations(&meta.annotations)?;
         validate_finalizers(&meta.finalizers)?;
-        let (_schema_data, compiled, status_compiled) =
+        let (schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
         let stored = self
             .store
@@ -62,7 +69,7 @@ impl SchemaService {
                 status: None,
             })
             .await?;
-        self.schema_registry.insert(&meta.name, compiled);
+        self.schema_registry.insert(&meta.name, compiled, &schema_data.scope);
         if let Some(status_validator) = status_compiled {
             self.schema_registry.insert_status(&meta.name, status_validator);
         }
@@ -71,14 +78,21 @@ impl SchemaService {
     }
 
     /// Updates a Schema object: revalidates, recompiles, persists, caches, publishes.
-    pub async fn update(&self, object: StoredObject) -> Result<StoredObject, AppError> {
-        // Copy exact logic from ObjectService::validate_and_update_schema
-        // but use helpers::apply_with_metadata(...) and helpers::publish_event(...)
+    ///
+    /// The Schema resource itself is always cluster-scoped (`metadata.namespace` is forced to
+    /// `None`). However, the `scope` field in the spec (`SchemaData.scope`) is user-specified
+    /// and determines whether objects of the target kind are cluster-scoped or namespaced.
+    /// It is preserved as-is from the request body.
+    pub async fn update(&self, mut object: StoredObject) -> Result<StoredObject, AppError> {
+        // Schema resource is always cluster-scoped — force namespace to None
+        // but preserve the user-specified scope from the spec for target objects
+        object.metadata.namespace = None;
         let spec = object.spec.clone();
+
         validate_labels(&object.metadata.labels)?;
         validate_annotations(&object.metadata.annotations)?;
         validate_finalizers(&object.metadata.finalizers)?;
-        let (_schema_data, compiled, status_compiled) =
+        let (schema_data, compiled, status_compiled) =
             self.schema_registry.validate_and_compile(&spec)?;
 
         let key = object.key.clone();
@@ -86,6 +100,7 @@ impl SchemaService {
         let incoming_rv = object.system.resource_version;
         let updated = self.store.transaction(
             &key,
+            None,
             &name,
             Box::new(move |existing| {
                 if incoming_rv != existing.system.resource_version {
@@ -102,7 +117,7 @@ impl SchemaService {
                 })
             }),
         )?;
-        self.schema_registry.insert(&updated.metadata.name, compiled);
+        self.schema_registry.insert(&updated.metadata.name, compiled, &schema_data.scope);
         if let Some(status_validator) = status_compiled {
             self.schema_registry.insert_status(&updated.metadata.name, status_validator);
         }
@@ -119,7 +134,7 @@ impl SchemaService {
     pub async fn delete(&self, key: ResourceKey, name: String) -> Result<StoredObject, AppError> {
         // Copy exact logic from ObjectService::delete_schema
         // but use helpers::publish_event(...)
-        let schema_obj = self.store.get(&key, &name).await?;
+        let schema_obj = self.store.get(&key, None, &name).await?;
         let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
         let target_key = ResourceKey {
@@ -130,19 +145,23 @@ impl SchemaService {
         if self.store.exists(&target_key).await? {
             return Err(AppError::SchemaHasObjects { kind: target_key.kind });
         }
-        let deleted =
-            self.store.transaction(&key, &name, Box::new(|_existing| TransactionOp::Delete))?;
+        let deleted = self.store.transaction(
+            &key,
+            None,
+            &name,
+            Box::new(|_existing| TransactionOp::Delete),
+        )?;
         self.schema_registry.evict(&name);
         helpers::publish_event(self.event_bus.as_ref(), &key, WatchEventType::Deleted, &deleted);
         Ok(deleted)
     }
 
-    /// Returns a compiled validator for the given object key.
+    /// Returns a compiled validator and scope for the given object key.
     /// Delegates to the internal SchemaRegistry.
     pub async fn get_validator(
         &self,
         key: &ResourceKey,
-    ) -> Result<Arc<dyn SchemaValidator>, AppError> {
+    ) -> Result<(Arc<dyn SchemaValidator>, String), AppError> {
         self.schema_registry.get_validator(key).await
     }
 
@@ -196,6 +215,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: v1_name.clone(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -217,6 +237,7 @@ mod tests {
                 schema_key.clone(),
                 ObjectMeta {
                     name: v2_name.clone(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -240,8 +261,10 @@ mod tests {
         object_service
             .create(
                 widget_v2,
+                None,
                 ObjectMeta {
                     name: "my-widget".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -263,6 +286,226 @@ mod tests {
         assert!(
             !schema_service.registry().cache.contains_key(&v1_name),
             "v1 cache entry should be evicted"
+        );
+    }
+
+    // T: Schema create stores object with namespace: None
+    #[tokio::test]
+    async fn schema_create_stores_with_no_namespace() {
+        let (_object_service, schema_service) = make_service();
+        let schema_key = schema_key();
+        let name = "Widget.example.io.v1".to_string();
+
+        let result = schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: name.clone(),
+                    namespace: Some("should-be-ignored".to_string()),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({
+                    "targetGroup": "example.io",
+                    "targetVersion": "v1",
+                    "targetKind": "Widget",
+                    "specSchema": { "type": "object" }
+                }),
+            )
+            .await;
+        assert!(result.is_ok());
+        let stored = result.unwrap();
+        assert!(
+            stored.metadata.namespace.is_none(),
+            "Schema metadata.namespace should be None, got {:?}",
+            stored.metadata.namespace
+        );
+
+        // Also verify via store get
+        let retrieved = _object_service.get(schema_key, None, name).await.unwrap();
+        assert!(
+            retrieved.metadata.namespace.is_none(),
+            "Schema stored in store should have namespace=None"
+        );
+    }
+
+    // T: Schema create preserves user-specified scope in stored spec
+    #[tokio::test]
+    async fn schema_create_preserves_user_scope() {
+        let (_object_service, schema_service) = make_service();
+        let schema_key = schema_key();
+        let name = "Widget.example.io.v1".to_string();
+
+        // Create Schema with explicit "Namespaced" scope
+        let result = schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: name.clone(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({
+                    "targetGroup": "example.io",
+                    "targetVersion": "v1",
+                    "targetKind": "Widget",
+                    "scope": "Namespaced",
+                    "specSchema": { "type": "object" }
+                }),
+            )
+            .await;
+        assert!(result.is_ok());
+        let stored = result.unwrap();
+
+        // Verify the stored spec preserves the user-specified scope="Namespaced"
+        let stored_scope = stored.spec.get("scope").and_then(|v| v.as_str());
+        assert_eq!(
+            stored_scope,
+            Some("Namespaced"),
+            "Schema spec.scope should be preserved as 'Namespaced', got {:?}",
+            stored_scope
+        );
+
+        // Verify the registry cached it with "Namespaced" scope
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let (_, scope) = schema_service.get_validator(&widget_key).await.unwrap();
+        assert_eq!(
+            scope, "Namespaced",
+            "Cached schema scope should be 'Namespaced', got '{}'",
+            scope
+        );
+
+        // Also verify that creating with scope="Cluster" still works
+        let cluster_name = "ClusterWidget.example.io.v1".to_string();
+        let result2 = schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: cluster_name.clone(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({
+                    "targetGroup": "example.io",
+                    "targetVersion": "v1",
+                    "targetKind": "ClusterWidget",
+                    "scope": "Cluster",
+                    "specSchema": { "type": "object" }
+                }),
+            )
+            .await;
+        assert!(result2.is_ok());
+        let stored2 = result2.unwrap();
+        let stored_scope2 = stored2.spec.get("scope").and_then(|v| v.as_str());
+        assert_eq!(
+            stored_scope2,
+            Some("Cluster"),
+            "Schema spec.scope should be preserved as 'Cluster', got {:?}",
+            stored_scope2
+        );
+
+        // Verify default scope (no scope specified) resolves to "Namespaced" via SchemaData default
+        let default_name = "DefaultScope.example.io.v1".to_string();
+        let result3 = schema_service
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: default_name.clone(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({
+                    "targetGroup": "example.io",
+                    "targetVersion": "v1",
+                    "targetKind": "DefaultScope",
+                    "specSchema": { "type": "object" }
+                }),
+            )
+            .await;
+        assert!(result3.is_ok());
+
+        // Verify the registry cached it with "Namespaced" scope (from serde default)
+        let default_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "DefaultScope".to_string(),
+        };
+        let (_, scope) = schema_service.get_validator(&default_key).await.unwrap();
+        assert_eq!(
+            scope, "Namespaced",
+            "Default scope should be 'Namespaced' when not specified in request"
+        );
+    }
+
+    // T: Schema update preserves user-specified scope and forces namespace to None
+    #[tokio::test]
+    async fn schema_update_preserves_scope_and_forces_no_namespace() {
+        let (_object_service, schema_service) = make_service();
+        let schema_key = schema_key();
+        let name = "Widget.example.io.v1".to_string();
+
+        // Create schema first
+        let created = schema_service
+            .create(
+                schema_key.clone(),
+                ObjectMeta {
+                    name: name.clone(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({
+                    "targetGroup": "example.io",
+                    "targetVersion": "v1",
+                    "targetKind": "Widget",
+                    "scope": "Namespaced",
+                    "specSchema": { "type": "object" }
+                }),
+            )
+            .await
+            .unwrap();
+
+        // Update with explicit scope and a namespace — scope should be preserved, namespace forced to None
+        let mut updated_obj = created;
+        updated_obj.spec = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "scope": "Namespaced",
+            "specSchema": { "type": "object", "properties": { "color": { "type": "string" } } }
+        });
+        updated_obj.metadata.namespace = Some("should-be-ignored".to_string());
+
+        let result = schema_service.update(updated_obj).await;
+        assert!(result.is_ok());
+        let stored = result.unwrap();
+
+        // Verify namespace is None (forced by schema service)
+        assert!(
+            stored.metadata.namespace.is_none(),
+            "Updated Schema metadata.namespace should be None, got {:?}",
+            stored.metadata.namespace
+        );
+
+        // Verify scope is preserved as "Namespaced" (user-specified)
+        let stored_scope = stored.spec.get("scope").and_then(|v| v.as_str());
+        assert_eq!(
+            stored_scope,
+            Some("Namespaced"),
+            "Updated Schema spec.scope should be preserved as 'Namespaced', got {:?}",
+            stored_scope
         );
     }
 }

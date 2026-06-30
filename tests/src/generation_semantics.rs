@@ -38,7 +38,7 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
     // 1. Create an object and verify generation == 1
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("gen-widget", "blue", 10, serde_json::json!({"app": "nginx"})),
         )
         .await;
@@ -63,7 +63,8 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/gen-widget", update_body).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/gen-widget", update_body).await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
     let gen_after_labels =
@@ -88,7 +89,8 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "system": { "resourceVersion": rv2, "createdAt": created_at, "updatedAt": updated_at2 },
         "spec": { "color": "red", "size": 20 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/gen-widget", update_body).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/gen-widget", update_body).await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
     let gen_after_spec =
@@ -105,7 +107,7 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
     // 4. Update status — generation should NOT change (still 2)
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/gen-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/gen-widget/status",
             serde_json::json!({
                 "status": { "phase": "Running" }
             }),
@@ -141,7 +143,8 @@ pub async fn test_generation_semantics(app: &TestApp) -> Result<(), String> {
         "system": { "resourceVersion": rv4, "createdAt": created_at, "updatedAt": updated_at4 },
         "spec": { "color": "red", "size": 20 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/gen-widget", update_body).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/gen-widget", update_body).await;
     if resp.status() != StatusCode::OK {
         let status = resp.status();
         let body: Value = parse_body(resp).await;

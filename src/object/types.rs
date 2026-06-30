@@ -233,6 +233,12 @@ pub struct SchemaData {
     pub spec_schema: serde_json::Value,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_schema: Option<serde_json::Value>,
+    #[serde(default = "default_scope")]
+    pub scope: String,
+}
+
+fn default_scope() -> String {
+    "Namespaced".to_string()
 }
 
 /// User-controlled metadata for stored objects.
@@ -251,6 +257,8 @@ pub struct SchemaData {
 #[serde(rename_all = "camelCase")]
 pub struct ObjectMeta {
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub namespace: Option<String>,
     #[serde(default)]
     pub labels: HashMap<String, String>,
     #[serde(default)]
@@ -330,6 +338,7 @@ mod tests {
             key,
             metadata: ObjectMeta {
                 name: name.to_string(),
+                namespace: None,
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
                 finalizers: Vec::new(),
@@ -351,6 +360,7 @@ mod tests {
                 },
                 metadata: ObjectMeta {
                     name: name.into(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -556,6 +566,7 @@ mod tests {
                 },
                 metadata: ObjectMeta {
                     name: "test".into(),
+                    namespace: None,
                     labels,
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -595,6 +606,7 @@ mod tests {
                 },
                 metadata: ObjectMeta {
                     name: "test".into(),
+                    namespace: None,
                     labels,
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -637,6 +649,7 @@ mod tests {
                 },
                 metadata: ObjectMeta {
                     name: "target".into(),
+                    namespace: None,
                     labels,
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -691,6 +704,7 @@ mod tests {
                 },
                 metadata: ObjectMeta {
                     name: "target".into(),
+                    namespace: None,
                     labels,
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -740,6 +754,7 @@ mod tests {
                 },
                 metadata: ObjectMeta {
                     name: "target".into(),
+                    namespace: None,
                     labels,
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -770,6 +785,7 @@ mod tests {
             },
             metadata: ObjectMeta {
                 name: "test".to_string(),
+                namespace: None,
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
                 finalizers: Vec::new(),
@@ -800,6 +816,7 @@ mod tests {
             },
             metadata: ObjectMeta {
                 name: "test".to_string(),
+                namespace: None,
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
                 finalizers: Vec::new(),
@@ -879,6 +896,7 @@ mod tests {
             target_kind: "Widget".to_string(),
             spec_schema: json!({"type": "object"}),
             status_schema: Some(json!({"type": "object"})),
+            scope: "Namespaced".to_string(),
         };
         let serialized = serde_json::to_string(&data).unwrap();
         assert!(serialized.contains("\"statusSchema\""));

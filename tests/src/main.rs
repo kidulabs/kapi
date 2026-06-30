@@ -1,7 +1,7 @@
 use kapi_tests::{
-    TestApp, all_test_stores, finalizers, generation_semantics, list_filtering, object_annotations,
-    object_crud, object_labels, optimistic_concurrency, schema_deletion, schema_validation,
-    status_subresource, watch_events,
+    TestApp, all_test_stores, finalizers, generation_semantics, list_filtering, namespace,
+    object_annotations, object_crud, object_labels, optimistic_concurrency, schema_deletion,
+    schema_validation, status_subresource, watch_events,
 };
 
 #[tokio::main]
@@ -146,6 +146,33 @@ async fn main() {
         );
         run_test!("watch_invalid_label_selector", watch_events::test_watch_invalid_label_selector);
         run_test!("watch_empty_label_selector", watch_events::test_watch_empty_label_selector);
+        println!();
+        run_test!("cross_namespace_list_all", namespace::test_cross_namespace_list_all_namespaces);
+        run_test!(
+            "cross_namespace_list_pagination",
+            namespace::test_cross_namespace_list_with_pagination
+        );
+        run_test!("same_name_different_namespaces", namespace::test_same_name_different_namespaces);
+        run_test!(
+            "delete_one_ns_does_not_affect_other",
+            namespace::test_delete_one_namespace_does_not_affect_other
+        );
+        run_test!(
+            "cluster_scoped_rejects_namespace",
+            namespace::test_cluster_scoped_rejects_namespace_in_url
+        );
+        run_test!(
+            "namespaced_defaults_to_default_ns",
+            namespace::test_namespaced_defaults_to_default_namespace
+        );
+        run_test!(
+            "namespaced_uses_provided_ns",
+            namespace::test_namespaced_uses_provided_namespace
+        );
+        run_test!(
+            "continue_token_across_ns_boundary",
+            namespace::test_continue_token_across_namespace_boundary
+        );
 
         println!();
         run_test!("delete_schema_no_objects", schema_deletion::test_delete_schema_no_objects);

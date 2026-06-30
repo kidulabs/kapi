@@ -17,15 +17,15 @@ pub async fn test_delete_without_finalizers_hard_deletes(app: &TestApp) -> Resul
         "metadata": { "name": "no-finalizers" },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // DELETE → hard delete (empty finalizers)
-    let resp = client.delete("/apis/example.io/v1/Widget/no-finalizers").await;
+    let resp = client.delete("/apis/example.io/v1/namespaces/default/Widget/no-finalizers").await;
     assert_status(&resp, StatusCode::OK);
 
     // GET → 404 (hard deleted)
-    let resp = client.get("/apis/example.io/v1/Widget/no-finalizers").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/no-finalizers").await;
     assert_status(&resp, StatusCode::NOT_FOUND);
 
     Ok(())
@@ -41,11 +41,11 @@ pub async fn test_delete_with_finalizers_marks_for_deletion(app: &TestApp) -> Re
         "metadata": { "name": "with-finalizers", "finalizers": ["example.io/cleanup"] },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // DELETE → marks for deletion (200, not hard delete)
-    let resp = client.delete("/apis/example.io/v1/Widget/with-finalizers").await;
+    let resp = client.delete("/apis/example.io/v1/namespaces/default/Widget/with-finalizers").await;
     assert_status(&resp, StatusCode::OK);
     let deleted: Value = parse_body(resp).await;
 
@@ -57,7 +57,7 @@ pub async fn test_delete_with_finalizers_marks_for_deletion(app: &TestApp) -> Re
     assert_eq!(deleted["metadata"]["name"], "with-finalizers");
 
     // GET should still return the object (it's only marked for deletion)
-    let resp = client.get("/apis/example.io/v1/Widget/with-finalizers").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/with-finalizers").await;
     assert_status(&resp, StatusCode::OK);
     let fetched: Value = parse_body(resp).await;
     assert!(
@@ -78,11 +78,12 @@ pub async fn test_delete_idempotent_on_already_deleting(app: &TestApp) -> Result
         "metadata": { "name": "idempotent-delete", "finalizers": ["example.io/cleanup"] },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // First DELETE → marks for deletion
-    let resp = client.delete("/apis/example.io/v1/Widget/idempotent-delete").await;
+    let resp =
+        client.delete("/apis/example.io/v1/namespaces/default/Widget/idempotent-delete").await;
     assert_status(&resp, StatusCode::OK);
     let first: Value = parse_body(resp).await;
     let ts = first["system"]["deletionTimestamp"].as_str().unwrap_or("").to_string();
@@ -90,7 +91,8 @@ pub async fn test_delete_idempotent_on_already_deleting(app: &TestApp) -> Result
     let first_rv = first["system"]["resourceVersion"].as_u64().unwrap_or(0);
 
     // Second DELETE → idempotent, same state returned
-    let resp = client.delete("/apis/example.io/v1/Widget/idempotent-delete").await;
+    let resp =
+        client.delete("/apis/example.io/v1/namespaces/default/Widget/idempotent-delete").await;
     assert_status(&resp, StatusCode::OK);
     let second: Value = parse_body(resp).await;
     let ts2 = second["system"]["deletionTimestamp"].as_str().unwrap_or("").to_string();
@@ -117,7 +119,7 @@ pub async fn test_update_spec_on_deleting_object_rejected(app: &TestApp) -> Resu
         "metadata": { "name": "update-spec-rejected", "finalizers": ["example.io/cleanup"] },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap();
@@ -125,7 +127,8 @@ pub async fn test_update_spec_on_deleting_object_rejected(app: &TestApp) -> Resu
     let updated_at = created["system"]["updatedAt"].as_str().unwrap().to_string();
 
     // DELETE → marks for deletion
-    let resp = client.delete("/apis/example.io/v1/Widget/update-spec-rejected").await;
+    let resp =
+        client.delete("/apis/example.io/v1/namespaces/default/Widget/update-spec-rejected").await;
     assert_status(&resp, StatusCode::OK);
 
     // Try to update spec → should be rejected (only finalizer changes allowed)
@@ -135,7 +138,9 @@ pub async fn test_update_spec_on_deleting_object_rejected(app: &TestApp) -> Resu
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "red", "size": 20 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/update-spec-rejected", update_body).await;
+    let resp = client
+        .put("/apis/example.io/v1/namespaces/default/Widget/update-spec-rejected", update_body)
+        .await;
     assert_status(&resp, StatusCode::CONFLICT);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "ObjectBeingDeleted");
@@ -157,7 +162,7 @@ pub async fn test_update_labels_on_deleting_object_rejected(app: &TestApp) -> Re
         },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap();
@@ -165,7 +170,8 @@ pub async fn test_update_labels_on_deleting_object_rejected(app: &TestApp) -> Re
     let updated_at = created["system"]["updatedAt"].as_str().unwrap().to_string();
 
     // DELETE → marks for deletion
-    let resp = client.delete("/apis/example.io/v1/Widget/update-labels-rejected").await;
+    let resp =
+        client.delete("/apis/example.io/v1/namespaces/default/Widget/update-labels-rejected").await;
     assert_status(&resp, StatusCode::OK);
 
     // Try to update labels → should be rejected
@@ -179,7 +185,9 @@ pub async fn test_update_labels_on_deleting_object_rejected(app: &TestApp) -> Re
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/update-labels-rejected", update_body).await;
+    let resp = client
+        .put("/apis/example.io/v1/namespaces/default/Widget/update-labels-rejected", update_body)
+        .await;
     assert_status(&resp, StatusCode::CONFLICT);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "ObjectBeingDeleted");
@@ -202,7 +210,7 @@ pub async fn test_update_finalizers_on_deleting_object_allowed(
         },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap();
@@ -210,7 +218,9 @@ pub async fn test_update_finalizers_on_deleting_object_allowed(
     let updated_at = created["system"]["updatedAt"].as_str().unwrap().to_string();
 
     // DELETE → marks for deletion
-    let resp = client.delete("/apis/example.io/v1/Widget/update-finalizers-allowed").await;
+    let resp = client
+        .delete("/apis/example.io/v1/namespaces/default/Widget/update-finalizers-allowed")
+        .await;
     assert_status(&resp, StatusCode::OK);
     let deleted: Value = parse_body(resp).await;
     let ts = deleted["system"]["deletionTimestamp"].as_str().unwrap_or("").to_string();
@@ -226,8 +236,9 @@ pub async fn test_update_finalizers_on_deleting_object_allowed(
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp =
-        client.put("/apis/example.io/v1/Widget/update-finalizers-allowed", update_body).await;
+    let resp = client
+        .put("/apis/example.io/v1/namespaces/default/Widget/update-finalizers-allowed", update_body)
+        .await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
     let finalizers = updated["metadata"]["finalizers"].as_array().unwrap();
@@ -254,7 +265,7 @@ pub async fn test_update_finalizers_to_empty_triggers_hard_delete(
         "metadata": { "name": "finalizers-to-empty", "finalizers": ["example.io/cleanup"] },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap();
@@ -262,7 +273,8 @@ pub async fn test_update_finalizers_to_empty_triggers_hard_delete(
     let updated_at = created["system"]["updatedAt"].as_str().unwrap().to_string();
 
     // DELETE → marks for deletion
-    let resp = client.delete("/apis/example.io/v1/Widget/finalizers-to-empty").await;
+    let resp =
+        client.delete("/apis/example.io/v1/namespaces/default/Widget/finalizers-to-empty").await;
     assert_status(&resp, StatusCode::OK);
 
     // Update to empty finalizers → should trigger hard delete
@@ -272,11 +284,14 @@ pub async fn test_update_finalizers_to_empty_triggers_hard_delete(
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/finalizers-to-empty", update_body).await;
+    let resp = client
+        .put("/apis/example.io/v1/namespaces/default/Widget/finalizers-to-empty", update_body)
+        .await;
     assert_status(&resp, StatusCode::OK);
 
     // GET → should be 404 (hard deleted)
-    let resp = client.get("/apis/example.io/v1/Widget/finalizers-to-empty").await;
+    let resp =
+        client.get("/apis/example.io/v1/namespaces/default/Widget/finalizers-to-empty").await;
     assert_status(&resp, StatusCode::NOT_FOUND);
 
     Ok(())
@@ -294,7 +309,7 @@ pub async fn test_update_adds_finalizer_on_deleting_object_rejected(
         "metadata": { "name": "add-finalizer-rejected", "finalizers": ["example.io/cleanup"] },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap();
@@ -302,7 +317,8 @@ pub async fn test_update_adds_finalizer_on_deleting_object_rejected(
     let updated_at = created["system"]["updatedAt"].as_str().unwrap().to_string();
 
     // DELETE → marks for deletion
-    let resp = client.delete("/apis/example.io/v1/Widget/add-finalizer-rejected").await;
+    let resp =
+        client.delete("/apis/example.io/v1/namespaces/default/Widget/add-finalizer-rejected").await;
     assert_status(&resp, StatusCode::OK);
 
     // Try to add a new finalizer → should be rejected
@@ -315,7 +331,9 @@ pub async fn test_update_adds_finalizer_on_deleting_object_rejected(
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/add-finalizer-rejected", update_body).await;
+    let resp = client
+        .put("/apis/example.io/v1/namespaces/default/Widget/add-finalizer-rejected", update_body)
+        .await;
     assert_status(&resp, StatusCode::CONFLICT);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "ObjectBeingDeleted");
@@ -339,7 +357,7 @@ pub async fn test_create_with_valid_finalizers(app: &TestApp) -> Result<(), Stri
         },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let finalizers = created["metadata"]["finalizers"].as_array().unwrap();
@@ -362,7 +380,7 @@ pub async fn test_create_with_invalid_finalizer_name(app: &TestApp) -> Result<()
         },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidFinalizer");
@@ -383,7 +401,7 @@ pub async fn test_create_with_too_many_finalizers(app: &TestApp) -> Result<(), S
         },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidFinalizer");
@@ -410,11 +428,12 @@ pub async fn test_create_same_name_after_delete_with_finalizers(
         },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
 
     // DELETE → marks for deletion (not hard delete because finalizers are present)
-    let resp = client.delete("/apis/example.io/v1/Widget/same-name-after-delete").await;
+    let resp =
+        client.delete("/apis/example.io/v1/namespaces/default/Widget/same-name-after-delete").await;
     assert_status(&resp, StatusCode::OK);
 
     // Try to create with same name → should fail with AlreadyExists
@@ -425,7 +444,7 @@ pub async fn test_create_same_name_after_delete_with_finalizers(
         },
         "spec": { "color": "red", "size": 20 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CONFLICT);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "AlreadyExists");
@@ -450,7 +469,7 @@ pub async fn test_backward_compat_deserialize_without_finalizers(
         "metadata": { "name": "no-finalizers-field" },
         "spec": { "color": "blue", "size": 10 }
     });
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
 

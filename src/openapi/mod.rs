@@ -163,6 +163,7 @@ mod tests {
                 }
             }),
             status_schema: None,
+            scope: "Namespaced".to_string(),
         };
         let (name, schema) = build_kind_spec_component(&schema_data, "WidgetExampleIo");
         assert_eq!(name, "WidgetExampleIo");
@@ -261,22 +262,131 @@ mod tests {
         let schema_data = crate::object::types::SchemaData {
             target_group: "example.io".to_string(),
             target_version: "v1".to_string(),
+            target_kind: "NamespacedWidget".to_string(),
+            spec_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
+            scope: "Namespaced".to_string(),
+        };
+        let paths = build_kind_paths(&schema_data, "NamespacedWidgetExampleIo");
+        let path_map: std::collections::HashMap<&str, &Value> =
+            paths.iter().map(|(p, v)| (p.as_str(), v)).collect();
+
+        // Cluster-scoped paths
+        let collection = path_map.get("/apis/example.io/v1/NamespacedWidget").unwrap();
+        assert!(collection.get("get").is_some(), "missing GET collection");
+        assert!(collection.get("post").is_some(), "missing POST collection");
+
+        let item = path_map.get("/apis/example.io/v1/NamespacedWidget/{name}").unwrap();
+        assert!(item.get("get").is_some(), "missing GET item");
+        assert!(item.get("put").is_some(), "missing PUT item");
+        assert!(item.get("delete").is_some(), "missing DELETE item");
+
+        let status = path_map.get("/apis/example.io/v1/NamespacedWidget/{name}/status").unwrap();
+        assert!(status.get("get").is_some(), "missing GET status");
+        assert!(status.get("put").is_some(), "missing PUT status");
+
+        // Namespace-scoped paths (for namespaced scope)
+        let ns_collection =
+            path_map.get("/apis/example.io/v1/namespaces/{namespace}/NamespacedWidget").unwrap();
+        assert!(ns_collection.get("get").is_some(), "missing namespace-scoped GET");
+        assert!(ns_collection.get("post").is_some(), "missing namespace-scoped POST");
+
+        let ns_item = path_map
+            .get("/apis/example.io/v1/namespaces/{namespace}/NamespacedWidget/{name}")
+            .unwrap();
+        assert!(ns_item.get("get").is_some(), "missing namespace-scoped GET item");
+        assert!(ns_item.get("put").is_some(), "missing namespace-scoped PUT item");
+        assert!(ns_item.get("delete").is_some(), "missing namespace-scoped DELETE item");
+
+        let ns_status = path_map
+            .get("/apis/example.io/v1/namespaces/{namespace}/NamespacedWidget/{name}/status")
+            .unwrap();
+        assert!(ns_status.get("get").is_some(), "missing namespace-scoped GET status");
+        assert!(ns_status.get("put").is_some(), "missing namespace-scoped PUT status");
+    }
+
+    #[test]
+    fn build_kind_paths_cluster_scoped_has_no_namespace_paths() {
+        let schema_data = crate::object::types::SchemaData {
+            target_group: "example.io".to_string(),
+            target_version: "v1".to_string(),
+            target_kind: "ClusterWidget".to_string(),
+            spec_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
+            scope: "Cluster".to_string(),
+        };
+        let paths = build_kind_paths(&schema_data, "ClusterWidgetExampleIo");
+        let path_map: std::collections::HashMap<&str, &Value> =
+            paths.iter().map(|(p, v)| (p.as_str(), v)).collect();
+
+        // Cluster-scoped paths should be present
+        assert!(
+            path_map.contains_key("/apis/example.io/v1/ClusterWidget"),
+            "missing cluster-scoped collection"
+        );
+        assert!(
+            path_map.contains_key("/apis/example.io/v1/ClusterWidget/{name}"),
+            "missing cluster-scoped item"
+        );
+
+        // Namespace-scoped paths should NOT be present for cluster-scoped kinds
+        assert!(
+            !path_map.contains_key("/apis/example.io/v1/namespaces/{namespace}/ClusterWidget"),
+            "namespace-scoped paths should not exist for cluster-scoped kind"
+        );
+    }
+
+    #[test]
+    fn build_kind_paths_has_namespace_parameter_on_namespaced_paths() {
+        let schema_data = crate::object::types::SchemaData {
+            target_group: "example.io".to_string(),
+            target_version: "v1".to_string(),
             target_kind: "Widget".to_string(),
             spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
+            scope: "Namespaced".to_string(),
+        };
+        let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
+        let path_map: std::collections::HashMap<&str, &Value> =
+            paths.iter().map(|(p, v)| (p.as_str(), v)).collect();
+
+        // Check namespace-scoped collection has namespace parameter in GET
+        let ns_collection =
+            path_map.get("/apis/example.io/v1/namespaces/{namespace}/Widget").unwrap();
+        let get_params = ns_collection["get"]["parameters"].as_array().unwrap();
+        let ns_param = get_params.iter().find(|p| p["name"] == "namespace").unwrap();
+        assert_eq!(ns_param["in"], "path");
+        assert_eq!(ns_param["required"], true);
+        assert_eq!(ns_param["schema"]["type"], "string");
+
+        // Check namespace-scoped item has namespace parameter
+        let ns_item =
+            path_map.get("/apis/example.io/v1/namespaces/{namespace}/Widget/{name}").unwrap();
+        let get_item_params = ns_item["get"]["parameters"].as_array().unwrap();
+        assert!(get_item_params.iter().any(|p| p["name"] == "namespace"));
+        assert!(get_item_params.iter().any(|p| p["name"] == "name"));
+    }
+
+    #[test]
+    fn build_kind_paths_cross_namespace_list_has_description() {
+        let schema_data = crate::object::types::SchemaData {
+            target_group: "example.io".to_string(),
+            target_version: "v1".to_string(),
+            target_kind: "Widget".to_string(),
+            spec_schema: serde_json::json!({ "type": "object" }),
+            status_schema: None,
+            scope: "Namespaced".to_string(),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let path_map: std::collections::HashMap<&str, &Value> =
             paths.iter().map(|(p, v)| (p.as_str(), v)).collect();
 
         let collection = path_map.get("/apis/example.io/v1/Widget").unwrap();
-        assert!(collection.get("get").is_some(), "missing GET collection");
-        assert!(collection.get("post").is_some(), "missing POST collection");
-
-        let item = path_map.get("/apis/example.io/v1/Widget/{name}").unwrap();
-        assert!(item.get("get").is_some(), "missing GET item");
-        assert!(item.get("put").is_some(), "missing PUT item");
-        assert!(item.get("delete").is_some(), "missing DELETE item");
+        let desc = collection["get"]["description"].as_str().unwrap_or("");
+        assert!(
+            desc.contains("Cross-namespace"),
+            "cluster-scoped list of namespaced kind should mention cross-namespace: {desc}"
+        );
     }
 
     #[test]
@@ -287,6 +397,7 @@ mod tests {
             target_kind: "Widget".to_string(),
             spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
+            scope: "Namespaced".to_string(),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, collection) =
@@ -306,6 +417,7 @@ mod tests {
             target_kind: "Widget".to_string(),
             spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
+            scope: "Namespaced".to_string(),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, collection) =
@@ -325,6 +437,7 @@ mod tests {
             target_kind: "Widget".to_string(),
             spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
+            scope: "Namespaced".to_string(),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, collection) =
@@ -346,6 +459,7 @@ mod tests {
             target_kind: "Widget".to_string(),
             spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
+            scope: "Namespaced".to_string(),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, collection) =
@@ -365,6 +479,7 @@ mod tests {
             target_kind: "Widget".to_string(),
             spec_schema: serde_json::json!({ "type": "object" }),
             status_schema: None,
+            scope: "Namespaced".to_string(),
         };
         let paths = build_kind_paths(&schema_data, "WidgetExampleIo");
         let (_path, item) =
@@ -419,6 +534,7 @@ mod tests {
                 schema_key,
                 crate::object::types::ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),
@@ -455,6 +571,7 @@ mod tests {
                 schema_key.clone(),
                 crate::object::types::ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),

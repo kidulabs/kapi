@@ -21,6 +21,7 @@ use kapi::store::sqlite::SQLiteStore;
 pub mod finalizers;
 pub mod generation_semantics;
 pub mod list_filtering;
+pub mod namespace;
 pub mod object_annotations;
 pub mod object_crud;
 pub mod object_labels;
@@ -138,6 +139,24 @@ pub fn widget_schema() -> Value {
     })
 }
 
+/// Register a Widget schema with an explicit "Namespaced" scope for namespace testing.
+pub fn widget_namespaced_schema() -> Value {
+    serde_json::json!({
+        "targetGroup": "example.io",
+        "targetVersion": "v1",
+        "targetKind": "Widget",
+        "scope": "Namespaced",
+        "specSchema": {
+            "type": "object",
+            "properties": {
+                "color": { "type": "string" },
+                "size": { "type": "integer" }
+            },
+            "required": ["color", "size"]
+        }
+    })
+}
+
 pub fn widget(name: &str, color: &str, size: i64) -> Value {
     serde_json::json!({
         "metadata": { "name": name },
@@ -156,6 +175,24 @@ pub fn widget_with_labels(name: &str, color: &str, size: i64, labels: Value) -> 
             "size": size
         }
     })
+}
+
+/// Default namespace for namespaced integration tests.
+pub const DEFAULT_NS: &str = "default";
+
+/// Build a namespace-scoped collection URL for the Widget kind.
+pub fn widget_collection_url(namespace: &str) -> String {
+    format!("/apis/example.io/v1/namespaces/{namespace}/Widget")
+}
+
+/// Build a namespace-scoped item URL for the Widget kind.
+pub fn widget_item_url(namespace: &str, name: &str) -> String {
+    format!("/apis/example.io/v1/namespaces/{namespace}/Widget/{name}")
+}
+
+/// Build a namespace-scoped status URL for the Widget kind.
+pub fn widget_status_url(namespace: &str, name: &str) -> String {
+    format!("/apis/example.io/v1/namespaces/{namespace}/Widget/{name}/status")
 }
 
 pub fn parse_sse_events(buffer: &mut Vec<u8>) -> Vec<WatchEvent> {
@@ -232,6 +269,26 @@ pub async fn watch_events(client: &TestClient, uri: &str) -> mpsc::Receiver<Watc
 }
 
 pub async fn register_widget_schema(client: &TestClient) {
-    let resp = client.post("/apis/kapi.io/v1/Schema", widget_schema()).await;
+    let resp = client.post("/apis/kapi.io/v1/Schema", widget_namespaced_schema()).await;
+    assert_status(&resp, StatusCode::CREATED);
+}
+
+/// Register a schema with an explicit scope parameter.
+pub async fn register_schema_with_scope(
+    client: &TestClient,
+    target_group: &str,
+    target_version: &str,
+    target_kind: &str,
+    scope: &str,
+    spec_schema: Value,
+) {
+    let schema = serde_json::json!({
+        "targetGroup": target_group,
+        "targetVersion": target_version,
+        "targetKind": target_kind,
+        "scope": scope,
+        "specSchema": spec_schema,
+    });
+    let resp = client.post("/apis/kapi.io/v1/Schema", schema).await;
     assert_status(&resp, StatusCode::CREATED);
 }

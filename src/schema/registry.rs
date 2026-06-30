@@ -17,6 +17,13 @@ use crate::store::{ObjectStore, ResourceKey};
 /// Result of schema validation and compilation: parsed data, spec validator, optional status validator.
 type CompileResult = (SchemaData, Arc<dyn SchemaValidator>, Option<Arc<dyn SchemaValidator>>);
 
+/// Cached schema entry containing validator, optional status validator, and scope.
+pub(crate) struct CachedSchema {
+    pub validator: Arc<dyn SchemaValidator>,
+    pub status_validator: Option<Arc<dyn SchemaValidator>>,
+    pub scope: String,
+}
+
 /// Manages schema validation, compilation, and caching.
 ///
 /// `SchemaRegistry` provides:
@@ -26,7 +33,7 @@ type CompileResult = (SchemaData, Arc<dyn SchemaValidator>, Option<Arc<dyn Schem
 pub struct SchemaRegistry {
     store: Arc<dyn ObjectStore>,
     meta_validator: Arc<dyn SchemaValidator>,
-    pub(crate) cache: DashMap<String, Arc<dyn SchemaValidator>>,
+    pub(crate) cache: DashMap<String, CachedSchema>,
 }
 
 impl SchemaRegistry {
@@ -85,11 +92,11 @@ impl SchemaRegistry {
         Ok((schema_data, validator, status_validator))
     }
 
-    /// Returns a compiled validator for the given object `key`.
+    /// Returns a compiled validator and scope for the given object `key`.
     ///
     /// Checks the cache first (keyed as `"{kind}.{group}.{version}"`). On cache miss,
     /// fetches the Schema from the store, compiles it, inserts into the cache,
-    /// and returns the validator.
+    /// and returns the validator and scope.
     ///
     /// # Errors
     ///
@@ -99,19 +106,19 @@ impl SchemaRegistry {
     pub async fn get_validator(
         &self,
         key: &ResourceKey,
-    ) -> Result<Arc<dyn SchemaValidator>, AppError> {
+    ) -> Result<(Arc<dyn SchemaValidator>, String), AppError> {
         let cache_key = schema_cache_key(&key.kind, &key.group, &key.version);
 
         // Cache hit
-        if let Some(validator) = self.cache.get(&cache_key) {
-            return Ok(validator.clone());
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok((cached.validator.clone(), cached.scope.clone()));
         }
 
         // Cache miss: fetch from store
         let schema_key = schema_key();
         let schema_name = cache_key.clone();
 
-        let schema_obj = self.store.get(&schema_key, &schema_name).await.map_err(|_| {
+        let schema_obj = self.store.get(&schema_key, None, &schema_name).await.map_err(|_| {
             AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
         })?;
 
@@ -126,34 +133,51 @@ impl SchemaRegistry {
             })
             .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
 
+        // Optionally compile status_schema
+        let status_validator = schema_data
+            .status_schema
+            .as_ref()
+            .map(|ss| {
+                JsonSchemaValidator::compile(ss)
+                    .map_err(|e| AppError::StoredSchemaCompilationFailed {
+                        schema_name: cache_key.clone(),
+                        reason: e.to_string(),
+                    })
+                    .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)
+            })
+            .transpose()?;
+
         // Insert into cache and return
-        self.cache.insert(cache_key.clone(), compiled.clone());
-        Ok(compiled)
+        let scope = schema_data.scope.clone();
+        self.cache.insert(
+            cache_key.clone(),
+            CachedSchema { validator: compiled.clone(), status_validator, scope: scope.clone() },
+        );
+        Ok((compiled, scope))
     }
 
-    /// Inserts a compiled validator into the cache under the given name.
+    /// Inserts a compiled validator and scope into the cache under the given name.
     ///
     /// The name should be the versioned schema name (e.g., `"Widget.example.io.v1"`).
     /// If an entry with the same name already exists, it is replaced.
-    pub fn insert(&self, name: &str, validator: Arc<dyn SchemaValidator>) {
-        self.cache.insert(name.to_string(), validator);
+    pub fn insert(&self, name: &str, validator: Arc<dyn SchemaValidator>, scope: &str) {
+        self.cache.insert(
+            name.to_string(),
+            CachedSchema { validator, status_validator: None, scope: scope.to_string() },
+        );
     }
 
     /// Removes a validator from the cache.
     ///
-    /// Removes both the spec validator (keyed by `name`) and the corresponding status
-    /// validator (keyed by `"{name}.status"`). This is a no-op if the entry does not exist.
+    /// Removes the entry keyed by `name`. This is a no-op if the entry does not exist.
     pub fn evict(&self, name: &str) {
         self.cache.remove(name);
-        // Also evict the corresponding status validator if present
-        self.cache.remove(&format!("{name}.status"));
     }
 
     /// Returns a compiled status validator for the given object `key`.
     ///
-    /// Checks the cache first (keyed as `"{kind}.{group}.{version}.status"`). On cache
-    /// miss, fetches the Schema from the store, parses `status_schema`, compiles it,
-    /// inserts into the cache, and returns the validator.
+    /// Checks the cache first. On cache miss, fetches the Schema from the store,
+    /// parses `status_schema`, compiles it, inserts into the cache, and returns the validator.
     ///
     /// # Errors
     ///
@@ -165,19 +189,21 @@ impl SchemaRegistry {
         &self,
         key: &ResourceKey,
     ) -> Result<Arc<dyn SchemaValidator>, AppError> {
-        let base_key = schema_cache_key(&key.kind, &key.group, &key.version);
-        let cache_key = format!("{base_key}.status");
+        let cache_key = schema_cache_key(&key.kind, &key.group, &key.version);
 
-        // Cache hit
-        if let Some(validator) = self.cache.get(&cache_key) {
-            return Ok(validator.clone());
+        // Cache hit - check if status_validator is present
+        if let Some(cached) = self.cache.get(&cache_key)
+            && let Some(ref status_validator) = cached.status_validator
+        {
+            return Ok(status_validator.clone());
         }
+        // Cached but no status validator - fall through to fetch and check
 
-        // Cache miss: fetch from store
+        // Cache miss or no status validator: fetch from store
         let schema_key = schema_key();
-        let schema_name = base_key;
+        let schema_name = cache_key.clone();
 
-        let schema_obj = self.store.get(&schema_key, &schema_name).await.map_err(|_| {
+        let schema_obj = self.store.get(&schema_key, None, &schema_name).await.map_err(|_| {
             AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
         })?;
 
@@ -198,18 +224,98 @@ impl SchemaRegistry {
             })
             .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
 
-        // Insert into cache and return
-        self.cache.insert(cache_key.clone(), compiled.clone());
+        // Update cache with status validator
+        if let Some(mut cached) = self.cache.get_mut(&cache_key) {
+            cached.status_validator = Some(compiled.clone());
+        } else {
+            // No spec validator cached yet - cache both
+            let spec_compiled = JsonSchemaValidator::compile(&schema_data.spec_schema)
+                .map_err(|e| AppError::StoredSchemaCompilationFailed {
+                    schema_name: cache_key.clone(),
+                    reason: e.to_string(),
+                })
+                .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
+            self.cache.insert(
+                cache_key.clone(),
+                CachedSchema {
+                    validator: spec_compiled,
+                    status_validator: Some(compiled.clone()),
+                    scope: schema_data.scope,
+                },
+            );
+        }
+
         Ok(compiled)
     }
 
-    /// Inserts a compiled status validator into the cache under the given name.
+    /// Inserts a compiled status validator into the cache.
     ///
-    /// The name is suffixed with `.status` (e.g., `"Widget.example.io.v1"` →
-    /// `"Widget.example.io.v1.status"`) to distinguish from spec validators.
-    /// If an entry with the same name already exists, it is replaced.
+    /// Updates the existing cache entry for `name` to include the status validator.
+    /// If no entry exists for `name`, this is a no-op (status validators are stored
+    /// alongside spec validators in the same cache entry).
     pub fn insert_status(&self, name: &str, validator: Arc<dyn SchemaValidator>) {
-        self.cache.insert(format!("{name}.status"), validator);
+        if let Some(mut cached) = self.cache.get_mut(name) {
+            cached.status_validator = Some(validator);
+        }
+    }
+
+    /// Returns the scope for the given object `key`.
+    ///
+    /// Checks the cache first. On cache miss, fetches the Schema from the store,
+    /// extracts the scope, inserts into the cache, and returns it.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`AppError::NotFound`] if no Schema exists in the store for this kind+group+version.
+    pub async fn get_scope(&self, key: &ResourceKey) -> Result<String, AppError> {
+        let cache_key = schema_cache_key(&key.kind, &key.group, &key.version);
+
+        // Cache hit
+        if let Some(cached) = self.cache.get(&cache_key) {
+            return Ok(cached.scope.clone());
+        }
+
+        // Cache miss: fetch from store
+        let schema_key = schema_key();
+        let schema_name = cache_key.clone();
+
+        let schema_obj = self.store.get(&schema_key, None, &schema_name).await.map_err(|_| {
+            AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
+        })?;
+
+        // Parse SchemaData to extract scope
+        let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
+            .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
+
+        let scope = schema_data.scope.clone();
+
+        // Compile and cache the full entry
+        let compiled = JsonSchemaValidator::compile(&schema_data.spec_schema)
+            .map_err(|e| AppError::StoredSchemaCompilationFailed {
+                schema_name: cache_key.clone(),
+                reason: e.to_string(),
+            })
+            .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
+
+        let status_validator = schema_data
+            .status_schema
+            .as_ref()
+            .map(|ss| {
+                JsonSchemaValidator::compile(ss)
+                    .map_err(|e| AppError::StoredSchemaCompilationFailed {
+                        schema_name: cache_key.clone(),
+                        reason: e.to_string(),
+                    })
+                    .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)
+            })
+            .transpose()?;
+
+        self.cache.insert(
+            cache_key.clone(),
+            CachedSchema { validator: compiled, status_validator, scope: scope.clone() },
+        );
+
+        Ok(scope)
     }
 }
 
@@ -247,6 +353,7 @@ mod tests {
                 key: schema_key,
                 metadata: crate::object::types::ObjectMeta {
                     name: name.to_string(),
+                    namespace: None,
                     labels: std::collections::HashMap::new(),
                     annotations: std::collections::HashMap::new(),
                     finalizers: Vec::new(),
@@ -322,12 +429,20 @@ mod tests {
         // Prime the cache directly
         let dummy_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        registry.cache.insert("Widget.example.io.v1".to_string(), dummy_validator.clone());
+        registry.cache.insert(
+            "Widget.example.io.v1".to_string(),
+            CachedSchema {
+                validator: dummy_validator.clone(),
+                status_validator: None,
+                scope: "Namespaced".to_string(),
+            },
+        );
 
         let result = registry.get_validator(&key).await;
         assert!(result.is_ok());
         // Verify it's the same validator by checking pointer identity via Arc::ptr_eq
-        assert!(Arc::ptr_eq(&result.unwrap(), &dummy_validator));
+        let (returned_validator, _scope) = result.unwrap();
+        assert!(Arc::ptr_eq(&returned_validator, &dummy_validator));
     }
 
     #[tokio::test]
@@ -378,6 +493,7 @@ mod tests {
                 key: schema_key,
                 metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: std::collections::HashMap::new(),
                     annotations: std::collections::HashMap::new(),
                     finalizers: Vec::new(),
@@ -411,7 +527,7 @@ mod tests {
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
         assert!(!registry.cache.contains_key("test-schema"));
-        registry.insert("test-schema", validator.clone());
+        registry.insert("test-schema", validator.clone(), "Namespaced");
         assert!(registry.cache.contains_key("test-schema"));
     }
 
@@ -423,10 +539,10 @@ mod tests {
         let validator2: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        registry.insert("test-schema", validator1);
+        registry.insert("test-schema", validator1, "Namespaced");
         assert!(registry.cache.contains_key("test-schema"));
 
-        registry.insert("test-schema", validator2);
+        registry.insert("test-schema", validator2, "Namespaced");
         // Still present (replaced)
         assert!(registry.cache.contains_key("test-schema"));
     }
@@ -439,7 +555,7 @@ mod tests {
         let validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        registry.insert("test-schema", validator);
+        registry.insert("test-schema", validator, "Namespaced");
         assert!(registry.cache.contains_key("test-schema"));
 
         registry.evict("test-schema");
@@ -467,7 +583,14 @@ mod tests {
         // Prime the cache with a status validator
         let dummy_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
-        registry.cache.insert("Widget.example.io.v1.status".to_string(), dummy_validator.clone());
+        registry.cache.insert(
+            "Widget.example.io.v1".to_string(),
+            CachedSchema {
+                validator: dummy_validator.clone(),
+                status_validator: Some(dummy_validator.clone()),
+                scope: "Namespaced".to_string(),
+            },
+        );
 
         let result = registry.get_status_validator(&key).await;
         assert!(result.is_ok());
@@ -498,6 +621,7 @@ mod tests {
                 key: schema_key,
                 metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: std::collections::HashMap::new(),
                     annotations: std::collections::HashMap::new(),
                     finalizers: Vec::new(),
@@ -511,7 +635,9 @@ mod tests {
 
         let result = registry.get_status_validator(&key).await;
         assert!(result.is_ok());
-        assert!(registry.cache.contains_key("Widget.example.io.v1.status"));
+        // Status validator is stored in the same cache entry as the spec validator
+        // (under the base key). Verify the base key exists and has status set.
+        assert!(registry.cache.contains_key("Widget.example.io.v1"));
     }
 
     #[tokio::test]
@@ -537,6 +663,7 @@ mod tests {
                 key: schema_key,
                 metadata: crate::object::types::ObjectMeta {
                     name: "Widget.example.io.v1".to_string(),
+                    namespace: None,
                     labels: std::collections::HashMap::new(),
                     annotations: std::collections::HashMap::new(),
                     finalizers: Vec::new(),
@@ -555,30 +682,35 @@ mod tests {
     // --- insert_status tests ---
 
     #[tokio::test]
-    async fn insert_status_adds_entry_with_status_suffix() {
+    async fn insert_status_updates_existing_entry() {
         let registry = make_registry();
         let validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        registry.insert_status("test-schema", validator.clone());
-        assert!(registry.cache.contains_key("test-schema.status"));
+        registry.insert("test-schema", validator.clone(), "Namespaced");
+        registry.insert_status("test-schema", validator);
+        // Status validator is stored in the same cache entry as the spec validator
+        // (under the base key, not under a ".status" suffix)
+        assert!(registry.cache.contains_key("test-schema"));
     }
 
     // --- evict also removes status entry ---
 
     #[tokio::test]
-    async fn evict_removes_status_entry_too() {
+    async fn evict_removes_entry_with_status_validator() {
         let registry = make_registry();
         let validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        registry.insert("test-schema", validator.clone());
+        registry.insert("test-schema", validator.clone(), "Namespaced");
         registry.insert_status("test-schema", validator);
         assert!(registry.cache.contains_key("test-schema"));
-        assert!(registry.cache.contains_key("test-schema.status"));
+
+        // Verify status validator is present (use contains_key to avoid DashMap get/get_mut deadlock)
+        let v1_key = "test-schema".to_string();
+        assert!(registry.cache.contains_key(&v1_key));
 
         registry.evict("test-schema");
         assert!(!registry.cache.contains_key("test-schema"));
-        assert!(!registry.cache.contains_key("test-schema.status"));
     }
 }

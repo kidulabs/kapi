@@ -79,7 +79,8 @@ pub const META_SCHEMA_JSON: &str = r#"{
     "targetVersion": { "type": "string", "minLength": 1 },
     "targetKind": { "type": "string", "minLength": 1 },
     "specSchema": { "type": "object" },
-    "statusSchema": { "type": "object" }
+    "statusSchema": { "type": "object" },
+    "scope": { "type": "string", "enum": ["Namespaced", "Cluster"] }
   },
   "unevaluatedProperties": false
 }"#;

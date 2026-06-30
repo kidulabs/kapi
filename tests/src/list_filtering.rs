@@ -11,12 +11,16 @@ pub async fn test_list_with_field_selector(app: &TestApp) -> Result<(), String> 
 
     // Create multiple widgets
     for name in ["foo", "bar", "baz"] {
-        let resp = client.post("/apis/example.io/v1/Widget", widget(name, "blue", 10)).await;
+        let resp = client
+            .post("/apis/example.io/v1/namespaces/default/Widget", widget(name, "blue", 10))
+            .await;
         assert_status(&resp, StatusCode::CREATED);
     }
 
     // List with fieldSelector=metadata.name=foo
-    let resp = client.get("/apis/example.io/v1/Widget?fieldSelector=metadata.name=foo").await;
+    let resp = client
+        .get("/apis/example.io/v1/namespaces/default/Widget?fieldSelector=metadata.name=foo")
+        .await;
     assert_status(&resp, StatusCode::OK);
     let body: Value = parse_body(resp).await;
     let items = body["items"].as_array().unwrap();
@@ -33,7 +37,7 @@ pub async fn test_list_with_label_selector(app: &TestApp) -> Result<(), String> 
     // Create widgets with different labels
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("web-1", "blue", 10, serde_json::json!({"app": "nginx"})),
         )
         .await;
@@ -41,7 +45,7 @@ pub async fn test_list_with_label_selector(app: &TestApp) -> Result<(), String> 
 
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("web-2", "red", 20, serde_json::json!({"app": "apache"})),
         )
         .await;
@@ -49,14 +53,15 @@ pub async fn test_list_with_label_selector(app: &TestApp) -> Result<(), String> 
 
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("web-3", "green", 30, serde_json::json!({})),
         )
         .await;
     assert_status(&resp, StatusCode::CREATED);
 
     // List with labelSelector=app=nginx
-    let resp = client.get("/apis/example.io/v1/Widget?labelSelector=app=nginx").await;
+    let resp =
+        client.get("/apis/example.io/v1/namespaces/default/Widget?labelSelector=app=nginx").await;
     assert_status(&resp, StatusCode::OK);
     let body: Value = parse_body(resp).await;
     let items = body["items"].as_array().unwrap();
@@ -73,7 +78,7 @@ pub async fn test_list_with_both_selectors(app: &TestApp) -> Result<(), String> 
     // Create widgets
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("target", "blue", 10, serde_json::json!({"app": "nginx"})),
         )
         .await;
@@ -81,20 +86,24 @@ pub async fn test_list_with_both_selectors(app: &TestApp) -> Result<(), String> 
 
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("other", "red", 20, serde_json::json!({"app": "nginx"})),
         )
         .await;
     assert_status(&resp, StatusCode::CREATED);
 
-    let resp =
-        client.post("/apis/example.io/v1/Widget", widget("target-nolabel", "green", 30)).await;
+    let resp = client
+        .post(
+            "/apis/example.io/v1/namespaces/default/Widget",
+            widget("target-nolabel", "green", 30),
+        )
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
     // List with both selectors
     let resp = client
         .get(
-            "/apis/example.io/v1/Widget?fieldSelector=metadata.name=target&labelSelector=app=nginx",
+            "/apis/example.io/v1/namespaces/default/Widget?fieldSelector=metadata.name=target&labelSelector=app=nginx",
         )
         .await;
     assert_status(&resp, StatusCode::OK);
@@ -116,7 +125,7 @@ pub async fn test_list_filter_with_pagination(app: &TestApp) -> Result<(), Strin
             if i < 2 { serde_json::json!({"app": "nginx"}) } else { serde_json::json!({}) };
         let resp = client
             .post(
-                "/apis/example.io/v1/Widget",
+                "/apis/example.io/v1/namespaces/default/Widget",
                 widget_with_labels(&format!("obj-{i:02}"), "blue", 10, labels),
             )
             .await;
@@ -124,7 +133,9 @@ pub async fn test_list_filter_with_pagination(app: &TestApp) -> Result<(), Strin
     }
 
     // Filter to 2, limit 10 → should return 2
-    let resp = client.get("/apis/example.io/v1/Widget?labelSelector=app=nginx&limit=10").await;
+    let resp = client
+        .get("/apis/example.io/v1/namespaces/default/Widget?labelSelector=app=nginx&limit=10")
+        .await;
     assert_status(&resp, StatusCode::OK);
     let body: Value = parse_body(resp).await;
     let items = body["items"].as_array().unwrap();
@@ -138,12 +149,17 @@ pub async fn test_list_filter_no_matches(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
 
-    let resp = client.post("/apis/example.io/v1/Widget", widget("existing", "blue", 10)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("existing", "blue", 10))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Filter that matches nothing
-    let resp =
-        client.get("/apis/example.io/v1/Widget?fieldSelector=metadata.name=nonexistent").await;
+    let resp = client
+        .get(
+            "/apis/example.io/v1/namespaces/default/Widget?fieldSelector=metadata.name=nonexistent",
+        )
+        .await;
     assert_status(&resp, StatusCode::OK);
     let body: Value = parse_body(resp).await;
     let items = body["items"].as_array().unwrap();
@@ -154,7 +170,7 @@ pub async fn test_list_filter_no_matches(app: &TestApp) -> Result<(), String> {
 
 pub async fn test_watch_with_both_selectors_matching(app: &TestApp) -> Result<(), String> {
     use crate::watch_events;
-    use kapi::object::types::{WatchEvent, WatchEventType};
+    use kapi::object::types::WatchEventType;
 
     let client = app.client();
     register_widget_schema(&client).await;
@@ -165,7 +181,7 @@ pub async fn test_watch_with_both_selectors_matching(app: &TestApp) -> Result<()
     // and the subscription is registered before we publish events.
     let mut rx = watch_events(
         &client,
-        "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=watch-target&labelSelector=app=nginx",
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&fieldSelector=metadata.name=watch-target&labelSelector=app=nginx",
     )
     .await;
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -173,7 +189,7 @@ pub async fn test_watch_with_both_selectors_matching(app: &TestApp) -> Result<()
     // Create object matching both selectors
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("watch-target", "blue", 10, serde_json::json!({"app": "nginx"})),
         )
         .await;
@@ -200,14 +216,14 @@ pub async fn test_watch_with_both_selectors_not_matching(app: &TestApp) -> Resul
     // Start watch with both selectors
     let mut rx = watch_events(
         &client,
-        "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=watch-target&labelSelector=app=nginx",
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&fieldSelector=metadata.name=watch-target&labelSelector=app=nginx",
     )
     .await;
 
     // Create object matching only field selector (wrong label)
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("watch-target", "blue", 10, serde_json::json!({"app": "apache"})),
         )
         .await;
@@ -228,7 +244,7 @@ pub async fn test_list_invalid_field_selector(app: &TestApp) -> Result<(), Strin
 
     // Invalid field selector (unsupported field)
     let resp =
-        client.get("/apis/example.io/v1/Widget?fieldSelector=metadata.namespace=default").await;
+        client.get("/apis/example.io/v1/namespaces/default/Widget?fieldSelector=metadata.namespace=default").await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
 
     Ok(())
@@ -239,7 +255,7 @@ pub async fn test_list_invalid_label_selector(app: &TestApp) -> Result<(), Strin
     register_widget_schema(&client).await;
 
     // Invalid label selector (empty value in equality)
-    let resp = client.get("/apis/example.io/v1/Widget?labelSelector=app=").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget?labelSelector=app=").await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
 
     Ok(())

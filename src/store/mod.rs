@@ -52,17 +52,31 @@ pub trait ObjectStore: Send + Sync {
     /// If an object with the same key/name already exists, returns
     /// AppError::AlreadyExists.
     async fn create(&self, object: StoredObject) -> Result<StoredObject, AppError>;
-    async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError>;
+    async fn get(
+        &self,
+        key: &ResourceKey,
+        namespace: Option<&str>,
+        name: &str,
+    ) -> Result<StoredObject, AppError>;
     /// Lists objects for a resource key with optional filtering and pagination.
+    ///
+    /// The `namespace` parameter filters to a specific namespace when `Some`,
+    /// or returns objects across all namespaces when `None`.
     ///
     /// The `ListOptions` may include `field_selector` and `label_selector` for
     /// store-level filtering. Filtering is applied before pagination to ensure
     /// correct page sizes.
-    async fn list(&self, key: &ResourceKey, opts: ListOptions) -> Result<ListResponse, AppError>;
+    async fn list(
+        &self,
+        key: &ResourceKey,
+        namespace: Option<&str>,
+        opts: ListOptions,
+    ) -> Result<ListResponse, AppError>;
     /// Atomic read-modify-write transaction.
     ///
-    /// Reads the existing object identified by `(key, name)`, passes it to the
-    /// callback `op`, then applies the [`TransactionOp`] returned by the callback.
+    /// Reads the existing object identified by `(key, namespace, name)`,
+    /// passes it to the callback `op`, then applies the [`TransactionOp`]
+    /// returned by the callback.
     ///
     /// # Callback Requirements
     ///
@@ -82,6 +96,7 @@ pub trait ObjectStore: Send + Sync {
     fn transaction(
         &self,
         key: &ResourceKey,
+        namespace: Option<&str>,
         name: &str,
         op: Box<dyn FnOnce(&StoredObject) -> TransactionOp + Send>,
     ) -> Result<StoredObject, AppError>;

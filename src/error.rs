@@ -65,6 +65,9 @@ pub enum AppError {
     #[error("status subresource not enabled for kind '{kind}'")]
     StatusSubresourceNotEnabled { kind: String },
 
+    #[error("invalid request: {0}")]
+    InvalidRequest(String),
+
     #[error("stored schema '{schema_name}' compilation failed: {reason}")]
     StoredSchemaCompilationFailed { schema_name: String, reason: String },
 
@@ -162,6 +165,10 @@ impl IntoResponse for AppError {
                 format!("schema has objects: kind={kind}"),
                 json!({ "kind": kind }),
             ),
+            // InvalidRequest maps to HTTP 400 Bad Request
+            AppError::InvalidRequest(msg) => {
+                (StatusCode::BAD_REQUEST, "InvalidRequest", msg.clone(), json!({ "message": msg }))
+            }
             // InvalidFinalizer maps to HTTP 400 Bad Request
             AppError::InvalidFinalizer(msg) => (
                 StatusCode::BAD_REQUEST,

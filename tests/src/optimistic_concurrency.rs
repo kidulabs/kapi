@@ -8,7 +8,9 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
 
     register_widget_schema(&client).await;
 
-    let resp = client.post("/apis/example.io/v1/Widget", widget("occ-correct", "red", 1)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("occ-correct", "red", 1))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
@@ -23,7 +25,8 @@ pub async fn test_update_correct_rv(app: &TestApp) -> Result<(), String> {
         "spec": { "color": "blue", "size": 2 }
     });
 
-    let resp = client.put("/apis/example.io/v1/Widget/occ-correct", update_body).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/occ-correct", update_body).await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
     let new_rv = updated["system"]["resourceVersion"].as_u64().unwrap_or(0);
@@ -37,7 +40,9 @@ pub async fn test_update_wrong_rv_returns_conflict(app: &TestApp) -> Result<(), 
 
     register_widget_schema(&client).await;
 
-    let resp = client.post("/apis/example.io/v1/Widget", widget("occ-wrong", "green", 3)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("occ-wrong", "green", 3))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
@@ -54,7 +59,8 @@ pub async fn test_update_wrong_rv_returns_conflict(app: &TestApp) -> Result<(), 
     });
 
     // OCC check in service layer rejects stale versions
-    let resp = client.put("/apis/example.io/v1/Widget/occ-wrong", update_body).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/occ-wrong", update_body).await;
     assert_status(&resp, StatusCode::CONFLICT);
 
     Ok(())

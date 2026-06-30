@@ -19,7 +19,7 @@ pub async fn test_create_object_with_labels(app: &TestApp) -> Result<(), String>
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     assert_eq!(created["metadata"]["name"], "labeled-widget", "expected name 'labeled-widget'");
@@ -27,7 +27,7 @@ pub async fn test_create_object_with_labels(app: &TestApp) -> Result<(), String>
     assert_eq!(created["metadata"]["labels"]["env"], "prod", "expected label env=prod");
 
     // Verify labels survive a GET
-    let resp = client.get("/apis/example.io/v1/Widget/labeled-widget").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/labeled-widget").await;
     assert_status(&resp, StatusCode::OK);
     let fetched: Value = parse_body(resp).await;
     assert_eq!(fetched["metadata"]["labels"]["app"], "nginx", "GET: expected label app=nginx");
@@ -41,8 +41,9 @@ pub async fn test_create_object_without_labels(app: &TestApp) -> Result<(), Stri
 
     register_widget_schema(&client).await;
 
-    let resp =
-        client.post("/apis/example.io/v1/Widget", widget("no-labels-widget", "red", 5)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("no-labels-widget", "red", 5))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
 
@@ -73,13 +74,13 @@ pub async fn test_update_object_labels(app: &TestApp) -> Result<(), String> {
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", create_body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", create_body).await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     assert_eq!(created["metadata"]["labels"]["app"], "nginx", "initial label app=nginx");
 
     // Get the full StoredObject to use as update body
-    let resp = client.get("/apis/example.io/v1/Widget/update-labels").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/update-labels").await;
     assert_status(&resp, StatusCode::OK);
     let mut obj: Value = parse_body(resp).await;
 
@@ -87,7 +88,7 @@ pub async fn test_update_object_labels(app: &TestApp) -> Result<(), String> {
     obj["metadata"]["labels"]["app"] = serde_json::json!("nginx2");
     obj["metadata"]["labels"]["env"] = serde_json::json!("prod");
 
-    let resp = client.put("/apis/example.io/v1/Widget/update-labels", obj).await;
+    let resp = client.put("/apis/example.io/v1/namespaces/default/Widget/update-labels", obj).await;
     assert_status(&resp, StatusCode::OK);
     let updated: Value = parse_body(resp).await;
     let labels = &updated["metadata"]["labels"];
@@ -95,7 +96,7 @@ pub async fn test_update_object_labels(app: &TestApp) -> Result<(), String> {
     assert_eq!(labels["env"], "prod", "expected added label env=prod");
 
     // Verify via GET
-    let resp = client.get("/apis/example.io/v1/Widget/update-labels").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/update-labels").await;
     assert_status(&resp, StatusCode::OK);
     let fetched: Value = parse_body(resp).await;
     let labels = &fetched["metadata"]["labels"];
@@ -133,7 +134,8 @@ pub async fn test_create_schema_with_labels(app: &TestApp) -> Result<(), String>
     );
 
     // GET the schema and verify labels are persisted
-    let resp = client.get("/apis/kapi.io/v1/Schema/Gadget.labels-test.io").await;
+    // Schema name is generated as {targetKind}.{targetGroup}.{targetVersion}
+    let resp = client.get("/apis/kapi.io/v1/Schema/Gadget.labels-test.io.v1").await;
     assert_status(&resp, StatusCode::OK);
     let fetched: Value = parse_body(resp).await;
     assert_eq!(
@@ -158,7 +160,7 @@ pub async fn test_invalid_label_key_format(app: &TestApp) -> Result<(), String> 
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidLabel", "expected InvalidLabel error code");
@@ -180,7 +182,7 @@ pub async fn test_invalid_label_value_format(app: &TestApp) -> Result<(), String
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidLabel", "expected InvalidLabel error code");
@@ -203,7 +205,7 @@ pub async fn test_label_key_exceeds_length(app: &TestApp) -> Result<(), String> 
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidLabel", "expected InvalidLabel error code");
@@ -226,7 +228,7 @@ pub async fn test_label_value_exceeds_length(app: &TestApp) -> Result<(), String
         }
     });
 
-    let resp = client.post("/apis/example.io/v1/Widget", body).await;
+    let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(err["code"], "InvalidLabel", "expected InvalidLabel error code");

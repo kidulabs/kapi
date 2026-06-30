@@ -45,6 +45,7 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
     let schema_list = service
         .list(
             schema_resource_key(),
+            None,
             ListOptions { limit: None, continue_token: None, ..Default::default() },
         )
         .await?;
@@ -102,10 +103,82 @@ pub(crate) async fn build_openapi_spec(service: &ObjectService) -> Result<Value,
 /// - POST /apis/kapi.io/v1/Schema — register a new schema
 /// - GET /apis/kapi.io/v1/Schema/{name} — get a specific schema
 /// - DELETE /apis/kapi.io/v1/Schema/{name} — delete a schema
+///
+/// Schema is a cluster-scoped kind, so only cluster-scoped paths are generated.
 pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
     let schema_error_ref = json!({ "$ref": "#/components/schemas/AppError" });
     let stored_object_ref = json!({ "$ref": "#/components/schemas/StoredObject" });
     let list_response_ref = json!({ "$ref": "#/components/schemas/ListResponse" });
+
+    // Example: list schemas response
+    let schema_list_example = json!({
+        "items": [
+            {
+                "key": { "group": "kapi.io", "version": "v1", "kind": "Schema" },
+                "metadata": { "name": "Widget.example.io.v1", "labels": {}, "annotations": {} },
+                "system": {
+                    "resourceVersion": 1,
+                    "generation": 1,
+                    "createdAt": "2024-06-01T00:00:00Z",
+                    "updatedAt": "2024-06-01T00:00:00Z"
+                },
+                "spec": {
+                    "targetGroup": "example.io",
+                    "targetVersion": "v1",
+                    "targetKind": "Widget",
+                    "specSchema": {
+                        "type": "object",
+                        "properties": {
+                            "color": { "type": "string" },
+                            "size": { "type": "integer" }
+                        }
+                    }
+                }
+            }
+        ],
+        "continueToken": null
+    });
+
+    // Example: create schema request
+    let schema_create_example = json!({
+        "metadata": {
+            "labels": { "team": "backend" }
+        },
+        "targetGroup": "example.io",
+        "targetVersion": "v1",
+        "targetKind": "Widget",
+        "specSchema": {
+            "type": "object",
+            "properties": {
+                "color": { "type": "string" },
+                "size": { "type": "integer" }
+            }
+        }
+    });
+
+    // Example: get schema response
+    let schema_get_example = json!({
+        "key": { "group": "kapi.io", "version": "v1", "kind": "Schema" },
+        "metadata": { "name": "Widget.example.io.v1", "labels": {}, "annotations": {} },
+        "system": {
+            "resourceVersion": 1,
+            "generation": 1,
+            "createdAt": "2024-06-01T00:00:00Z",
+            "updatedAt": "2024-06-01T00:00:00Z"
+        },
+        "spec": {
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "Widget",
+            "specSchema": {
+                "type": "object",
+                "properties": {
+                    "color": { "type": "string" },
+                    "size": { "type": "integer" }
+                }
+            }
+        }
+    });
 
     vec![
         // Combined GET+POST for /apis/kapi.io/v1/Schema
@@ -114,6 +187,7 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
             json!({
                 "get": {
                     "summary": "List all registered Schema objects",
+                    "description": "Schema objects define the API surface. Each Schema registers a new kind (group/version/kind) and provides a JSON Schema for validating objects of that kind. Schemas are cluster-scoped resources.",
                     "operationId": "listSchemas",
                     "parameters": [
                         {
@@ -136,7 +210,8 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "description": "A list of Schema objects",
                             "content": {
                                 "application/json": {
-                                    "schema": list_response_ref
+                                    "schema": list_response_ref,
+                                    "example": schema_list_example
                                 }
                             }
                         }
@@ -144,13 +219,15 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                 },
                 "post": {
                     "summary": "Register a new Schema",
+                    "description": "Register a new API kind by providing target group, version, kind, and a JSON Schema for validating the spec. The schema name is auto-generated as `{targetKind}.{targetGroup}.{targetVersion}`.",
                     "operationId": "createSchema",
                     "parameters": [],
                     "requestBody": {
                         "required": true,
                         "content": {
                             "application/json": {
-                                "schema": schema_create_request_schema()
+                                "schema": schema_create_request_schema(),
+                                "example": schema_create_example
                             }
                         }
                     },
@@ -159,7 +236,8 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "description": "Schema created successfully",
                             "content": {
                                 "application/json": {
-                                    "schema": stored_object_ref
+                                    "schema": stored_object_ref,
+                                    "example": schema_get_example
                                 }
                             }
                         },
@@ -192,7 +270,8 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "in": "path",
                             "required": true,
                             "schema": { "type": "string" },
-                            "description": "The schema name (e.g. Widget.example.io.v1)"
+                            "description": "The schema name (e.g. Widget.example.io.v1)",
+                            "example": "Widget.example.io.v1"
                         }
                     ],
                     "responses": {
@@ -200,7 +279,8 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "description": "The Schema object",
                             "content": {
                                 "application/json": {
-                                    "schema": stored_object_ref
+                                    "schema": stored_object_ref,
+                                    "example": schema_get_example
                                 }
                             }
                         },
@@ -219,7 +299,8 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                             "in": "path",
                             "required": true,
                             "schema": { "type": "string" },
-                            "description": "The schema name (e.g. Widget.example.io.v1)"
+                            "description": "The schema name (e.g. Widget.example.io.v1)",
+                            "example": "Widget.example.io.v1"
                         }
                     ],
                     "responses": {
@@ -287,8 +368,17 @@ pub(crate) fn schema_create_request_schema() -> Value {
 /// - `GET/POST /apis/{group}/{version}/{kind}` — collection (list + create)
 /// - `GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name}` — item (get + update + delete)
 ///
-/// Only `name` on item paths needs a path parameter. The list GET also
-/// documents the optional `?watch=true` query parameter.
+/// For namespaced kinds (scope == "Namespaced"), also generates namespace-scoped variants:
+/// - `GET/POST /apis/{group}/{version}/namespaces/{namespace}/{kind}` — namespace-scoped collection
+/// - `GET/PUT/DELETE /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}` — namespace-scoped item
+///
+/// Only `name` on item paths and `namespace` on namespace-scoped paths need path parameters.
+/// The list GET also documents the optional `?watch=true` query parameter.
+///
+/// Examples are added to operations to show realistic request/response bodies:
+/// - Cluster-scoped list of a namespaced kind shows cross-namespace items (two objects from different namespaces)
+/// - Namespace-scoped list shows items from a single namespace
+/// - Create operations include example request bodies
 pub(crate) fn build_kind_paths(
     schema_data: &crate::object::types::SchemaData,
     comp_name: &str,
@@ -296,89 +386,351 @@ pub(crate) fn build_kind_paths(
     let group = &schema_data.target_group;
     let version = &schema_data.target_version;
     let kind = &schema_data.target_kind;
+    let is_namespaced = schema_data.scope == "Namespaced";
 
-    let collection_path = format!("/apis/{group}/{version}/{kind}");
-    let item_path = format!("/apis/{group}/{version}/{kind}/{{name}}");
-    let status_path = format!("/apis/{group}/{version}/{kind}/{{name}}/status");
-
+    // Reusable refs
     let stored_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}StoredObject") });
     let list_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}ListResponse") });
     let error_ref = json!({ "$ref": "#/components/schemas/AppError" });
     let status_ref =
         json!({ "nullable": true, "description": "Status subresource, or null if not set" });
 
-    vec![
-        // Collection path: GET (list) + POST (create)
-        (
-            collection_path,
+    let name_param = build_name_param("The object name");
+
+    let mut all_paths = Vec::new();
+
+    // ============================================================
+    // 1. Cluster-scoped collection path: GET (list) + POST (create)
+    // ============================================================
+    // Cross-namespace list example: shows objects from multiple namespaces
+    let list_example_cross_ns = if is_namespaced {
+        Some(build_list_response_example(schema_data, comp_name, true))
+    } else {
+        None
+    };
+    // Create example: shows a realistic request body
+    let create_example = Some(build_create_request_example(schema_data));
+    let get_example = Some(build_get_response_example(schema_data, comp_name, None));
+
+    let cluster_collection_path = format!("/apis/{group}/{version}/{kind}");
+    all_paths.push((
+        cluster_collection_path,
+        json!({
+            "get": {
+                "summary": format!("List {} objects{}", kind, if is_namespaced { " (cross-namespace)" } else { "" }),
+                "description": if is_namespaced {
+                    format!("Cross-namespace list of {} objects. Returns objects from all namespaces that the user has access to. Each object includes its `metadata.namespace` field indicating which namespace it belongs to.", kind)
+                } else {
+                    format!("List all {} objects.", kind)
+                },
+                "operationId": format!("list{}", comp_name),
+                "parameters": build_list_parameters(),
+                "responses": {
+                    "200": {
+                        "description": format!("A list of {} objects", kind),
+                        "content": {
+                            "application/json": {
+                                "schema": list_ref,
+                                "example": list_example_cross_ns
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Invalid field selector — unsupported field or malformed syntax. Invalid label selector — malformed syntax.",
+                        "content": { "application/json": { "schema": error_ref } }
+                    }
+                }
+            },
+            "post": {
+                "summary": format!("Create a new {} object (cluster-scoped)", kind),
+                "description": if is_namespaced {
+                    format!("Create a {} object. For namespaced kinds, the namespace is taken from `metadata.namespace` in the request body. Alternatively, use the namespace-scoped POST endpoint at `/apis/{group}/{version}/namespaces/{{namespace}}/{kind}`.", kind)
+                } else {
+                    format!("Create a new {} object.", kind)
+                },
+                "operationId": format!("create{}", comp_name),
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": build_create_request_schema(schema_data),
+                            "example": create_example
+                        }
+                    }
+                },
+                "responses": {
+                    "201": {
+                        "description": format!("{} object created", kind),
+                        "content": {
+                            "application/json": {
+                                "schema": stored_ref,
+                                "example": get_example
+                            }
+                        }
+                    },
+                    "400": {
+                        "description": "Bad request — missing required fields or validation failure",
+                        "content": { "application/json": { "schema": error_ref } }
+                    },
+                    "404": {
+                        "description": "Schema not found for this kind",
+                        "content": { "application/json": { "schema": error_ref } }
+                    },
+                    "409": {
+                        "description": "AlreadyExists — object with same name already exists",
+                        "content": { "application/json": { "schema": error_ref } }
+                    },
+                    "422": {
+                        "description": "Schema validation failed",
+                        "content": { "application/json": { "schema": error_ref } }
+                    }
+                }
+            }
+        }),
+    ));
+
+    // ============================================================
+    // 2. Cluster-scoped item path: GET + PUT + DELETE
+    // ============================================================
+    let cluster_item_path = format!("/apis/{group}/{version}/{kind}/{{name}}");
+    all_paths.push((
+        cluster_item_path,
+        json!({
+            "get": {
+                "summary": format!("Get a {} object by name", kind),
+                "operationId": format!("get{}", comp_name),
+                "parameters": [name_param.clone()],
+                "responses": {
+                    "200": {
+                        "description": format!("The {} object", kind),
+                        "content": {
+                            "application/json": {
+                                "schema": stored_ref,
+                                "example": get_example
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": format!("{} object not found", kind),
+                        "content": { "application/json": { "schema": error_ref } }
+                    }
+                }
+            },
+            "put": {
+                "summary": format!("Update a {} object", kind),
+                "operationId": format!("update{}", comp_name),
+                "parameters": [name_param.clone()],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": stored_ref,
+                            "example": get_example
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": format!("{} object updated", kind),
+                        "content": {
+                            "application/json": {
+                                "schema": stored_ref
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": format!("{} object not found", kind),
+                        "content": { "application/json": { "schema": error_ref } }
+                    },
+                    "409": {
+                        "description": "Conflict — version mismatch",
+                        "content": { "application/json": { "schema": error_ref } }
+                    },
+                    "422": {
+                        "description": "Schema validation failed",
+                        "content": { "application/json": { "schema": error_ref } }
+                    }
+                }
+            },
+            "delete": {
+                "summary": format!("Delete a {} object", kind),
+                "operationId": format!("delete{}", comp_name),
+                "parameters": [name_param.clone()],
+                "responses": {
+                    "200": {
+                        "description": format!("{} object deleted", kind),
+                        "content": {
+                            "application/json": {
+                                "schema": stored_ref
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": format!("{} object not found", kind),
+                        "content": { "application/json": { "schema": error_ref } }
+                    },
+                    "409": {
+                        "description": "Conflict — object has finalizers or is being deleted",
+                        "content": { "application/json": { "schema": error_ref } }
+                    }
+                }
+            }
+        }),
+    ));
+
+    // ============================================================
+    // 3. Cluster-scoped status path: GET + PUT
+    // ============================================================
+    let cluster_status_path = format!("/apis/{group}/{version}/{kind}/{{name}}/status");
+    all_paths.push((
+        cluster_status_path,
+        json!({
+            "get": {
+                "summary": format!("Get the status subresource of a {} object", kind),
+                "operationId": format!("get{}Status", comp_name),
+                "parameters": [name_param.clone()],
+                "responses": {
+                    "200": {
+                        "description": format!("The status of the {} object (null if not set)", kind),
+                        "content": {
+                            "application/json": {
+                                "schema": status_ref
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": format!("{} object not found or status subresource not enabled for this kind", kind),
+                        "content": { "application/json": { "schema": error_ref } }
+                    }
+                }
+            },
+            "put": {
+                "summary": format!("Update the status subresource of a {} object", kind),
+                "operationId": format!("update{}Status", comp_name),
+                "parameters": [name_param.clone()],
+                "requestBody": {
+                    "required": true,
+                    "content": {
+                        "application/json": {
+                            "schema": build_status_update_request_schema(schema_data)
+                        }
+                    }
+                },
+                "responses": {
+                    "200": {
+                        "description": format!("{} status updated", kind),
+                        "content": {
+                            "application/json": {
+                                "schema": stored_ref
+                            }
+                        }
+                    },
+                    "404": {
+                        "description": format!("{} object not found or status subresource not enabled for this kind", kind),
+                        "content": { "application/json": { "schema": error_ref } }
+                    },
+                    "422": {
+                        "description": "Status validation failed against statusSchema",
+                        "content": { "application/json": { "schema": error_ref } }
+                    }
+                }
+            }
+        }),
+    ));
+
+    // ============================================================
+    // 4. Namespace-scoped paths (only for namespaced kinds)
+    // ============================================================
+    if is_namespaced {
+        let namespace_param = build_namespace_param();
+        let ns_name_param = build_name_param("The object name");
+        let ns_get_example =
+            Some(build_get_response_example(schema_data, comp_name, Some("production")));
+
+        // Namespace-scoped collection
+        let ns_collection_path = format!("/apis/{group}/{version}/namespaces/{{namespace}}/{kind}");
+        let ns_list_example = Some(build_list_response_example(schema_data, comp_name, false));
+        all_paths.push((
+            ns_collection_path,
             json!({
                 "get": {
-                    "summary": format!("List {} objects", kind),
-                    "operationId": format!("list{}", comp_name),
+                    "summary": format!("List {} objects in a namespace", kind),
+                    "description": format!("Namespace-scoped list of {} objects. Returns only objects in the specified namespace.", kind),
+                    "operationId": format!("list{}Namespaced", comp_name),
                     "parameters": [
-                        {
+                        namespace_param.clone(),
+                        json!({
                             "name": "watch",
                             "in": "query",
                             "required": false,
                             "schema": { "type": "boolean" },
                             "description": "Enable SSE watch stream"
-                        },
-                        {
+                        }),
+                        json!({
                             "name": "fieldSelector",
                             "in": "query",
                             "required": false,
                             "schema": { "type": "string" },
                             "description": "Filter results by field selector (e.g., metadata.name=my-obj). On list requests, filters the returned objects. On watch requests, filters the event stream."
-                        },
-                        {
+                        }),
+                        json!({
                             "name": "labelSelector",
                             "in": "query",
                             "required": false,
                             "schema": { "type": "string" },
-                            "description": "Filter results by label selector. Supports: key=value (equality), key!=value (inequality), key (existence), !key (non-existence), comma-separated (AND). On list requests, filters the returned objects. On watch requests, filters the event stream. When both fieldSelector and labelSelector are present on watch, they are combined with AND semantics."
-                        }
+                            "description": "Filter results by label selector."
+                        })
                     ],
                     "responses": {
                         "200": {
-                            "description": format!("A list of {} objects", kind),
+                            "description": format!("A list of {} objects in the namespace", kind),
                             "content": {
                                 "application/json": {
-                                    "schema": list_ref
+                                    "schema": list_ref,
+                                    "example": ns_list_example
                                 }
                             }
                         },
                         "400": {
-                            "description": "Invalid field selector — unsupported field or malformed syntax. Invalid label selector — malformed syntax.",
+                            "description": "Invalid field selector or label selector",
                             "content": { "application/json": { "schema": error_ref } }
                         }
                     }
                 },
                 "post": {
-                    "summary": format!("Create a new {} object", kind),
-                    "operationId": format!("create{}", comp_name),
+                    "summary": format!("Create a new {} object in a namespace", kind),
+                    "description": format!("Create a {} object in the specified namespace. The namespace is taken from the URL path parameter, not from the request body.", kind),
+                    "operationId": format!("create{}Namespaced", comp_name),
+                    "parameters": [namespace_param.clone()],
                     "requestBody": {
                         "required": true,
                         "content": {
                             "application/json": {
-                                "schema": build_create_request_schema(schema_data)
+                                "schema": build_create_request_schema(schema_data),
+                                "example": create_example
                             }
                         }
                     },
                     "responses": {
                         "201": {
-                            "description": format!("{} object created", kind),
+                            "description": format!("{} object created in namespace", kind),
                             "content": {
                                 "application/json": {
-                                    "schema": stored_ref
+                                    "schema": stored_ref,
+                                    "example": ns_get_example
                                 }
                             }
+                        },
+                        "400": {
+                            "description": "Bad request — missing required fields or validation failure",
+                            "content": { "application/json": { "schema": error_ref } }
                         },
                         "404": {
                             "description": "Schema not found for this kind",
                             "content": { "application/json": { "schema": error_ref } }
                         },
                         "409": {
-                            "description": "AlreadyExists — object with same name already exists",
+                            "description": "AlreadyExists — object with same name already exists in this namespace",
                             "content": { "application/json": { "schema": error_ref } }
                         },
                         "422": {
@@ -388,49 +740,43 @@ pub(crate) fn build_kind_paths(
                     }
                 }
             }),
-        ),
-        // Item path: GET (get) + PUT (update) + DELETE (delete)
-        (
-            item_path,
+        ));
+
+        // Namespace-scoped item
+        let ns_item_path =
+            format!("/apis/{group}/{version}/namespaces/{{namespace}}/{kind}/{{name}}");
+        all_paths.push((
+            ns_item_path,
             json!({
                 "get": {
-                    "summary": format!("Get a {} object by name", kind),
-                    "operationId": format!("get{}", comp_name),
+                    "summary": format!("Get a {} object by name in a namespace", kind),
+                    "operationId": format!("get{}Namespaced", comp_name),
                     "parameters": [
-                        {
-                            "name": "name",
-                            "in": "path",
-                            "required": true,
-                            "schema": { "type": "string" },
-                            "description": "The object name"
-                        }
+                        namespace_param.clone(),
+                        ns_name_param.clone()
                     ],
                     "responses": {
                         "200": {
-                            "description": format!("The {} object", kind),
+                            "description": format!("The {} object in the namespace", kind),
                             "content": {
                                 "application/json": {
-                                    "schema": stored_ref
+                                    "schema": stored_ref,
+                                    "example": ns_get_example
                                 }
                             }
                         },
                         "404": {
-                            "description": format!("{} object not found", kind),
+                            "description": format!("{} object not found in this namespace", kind),
                             "content": { "application/json": { "schema": error_ref } }
                         }
                     }
                 },
                 "put": {
-                    "summary": format!("Update a {} object", kind),
-                    "operationId": format!("update{}", comp_name),
+                    "summary": format!("Update a {} object in a namespace", kind),
+                    "operationId": format!("update{}Namespaced", comp_name),
                     "parameters": [
-                        {
-                            "name": "name",
-                            "in": "path",
-                            "required": true,
-                            "schema": { "type": "string" },
-                            "description": "The object name"
-                        }
+                        namespace_param.clone(),
+                        ns_name_param.clone()
                     ],
                     "requestBody": {
                         "required": true,
@@ -442,7 +788,7 @@ pub(crate) fn build_kind_paths(
                     },
                     "responses": {
                         "200": {
-                            "description": format!("{} object updated", kind),
+                            "description": format!("{} object updated in namespace", kind),
                             "content": {
                                 "application/json": {
                                     "schema": stored_ref
@@ -450,7 +796,7 @@ pub(crate) fn build_kind_paths(
                             }
                         },
                         "404": {
-                            "description": format!("{} object not found", kind),
+                            "description": format!("{} object not found in this namespace", kind),
                             "content": { "application/json": { "schema": error_ref } }
                         },
                         "409": {
@@ -464,20 +810,15 @@ pub(crate) fn build_kind_paths(
                     }
                 },
                 "delete": {
-                    "summary": format!("Delete a {} object", kind),
-                    "operationId": format!("delete{}", comp_name),
+                    "summary": format!("Delete a {} object in a namespace", kind),
+                    "operationId": format!("delete{}Namespaced", comp_name),
                     "parameters": [
-                        {
-                            "name": "name",
-                            "in": "path",
-                            "required": true,
-                            "schema": { "type": "string" },
-                            "description": "The object name"
-                        }
+                        namespace_param.clone(),
+                        ns_name_param.clone()
                     ],
                     "responses": {
                         "200": {
-                            "description": format!("{} object deleted", kind),
+                            "description": format!("{} object deleted in namespace", kind),
                             "content": {
                                 "application/json": {
                                     "schema": stored_ref
@@ -485,36 +826,34 @@ pub(crate) fn build_kind_paths(
                             }
                         },
                         "404": {
-                            "description": format!("{} object not found", kind),
+                            "description": format!("{} object not found in this namespace", kind),
                             "content": { "application/json": { "schema": error_ref } }
                         },
                         "409": {
-                            "description": "Conflict — schema has objects of this kind",
+                            "description": "Conflict — object has finalizers or is being deleted",
                             "content": { "application/json": { "schema": error_ref } }
                         }
                     }
                 }
             }),
-        ),
-        // Status subresource path: GET (get status) + PUT (update status)
-        (
-            status_path,
+        ));
+
+        // Namespace-scoped status subresource
+        let ns_status_path =
+            format!("/apis/{group}/{version}/namespaces/{{namespace}}/{kind}/{{name}}/status");
+        all_paths.push((
+            ns_status_path,
             json!({
                 "get": {
-                    "summary": format!("Get the status subresource of a {} object", kind),
-                    "operationId": format!("get{}Status", comp_name),
+                    "summary": format!("Get the status subresource of a {} object in a namespace", kind),
+                    "operationId": format!("get{}StatusNamespaced", comp_name),
                     "parameters": [
-                        {
-                            "name": "name",
-                            "in": "path",
-                            "required": true,
-                            "schema": { "type": "string" },
-                            "description": "The object name"
-                        }
+                        namespace_param.clone(),
+                        name_param.clone()
                     ],
                     "responses": {
                         "200": {
-                            "description": format!("The status of the {} object (null if not set)", kind),
+                            "description": format!("The status of the {} object in the namespace (null if not set)", kind),
                             "content": {
                                 "application/json": {
                                     "schema": status_ref
@@ -522,22 +861,17 @@ pub(crate) fn build_kind_paths(
                             }
                         },
                         "404": {
-                            "description": format!("{} object not found or status subresource not enabled for this kind", kind),
+                            "description": format!("{} object not found in this namespace or status subresource not enabled for this kind", kind),
                             "content": { "application/json": { "schema": error_ref } }
                         }
                     }
                 },
                 "put": {
-                    "summary": format!("Update the status subresource of a {} object", kind),
-                    "operationId": format!("update{}Status", comp_name),
+                    "summary": format!("Update the status subresource of a {} object in a namespace", kind),
+                    "operationId": format!("update{}StatusNamespaced", comp_name),
                     "parameters": [
-                        {
-                            "name": "name",
-                            "in": "path",
-                            "required": true,
-                            "schema": { "type": "string" },
-                            "description": "The object name"
-                        }
+                        namespace_param.clone(),
+                        name_param.clone()
                     ],
                     "requestBody": {
                         "required": true,
@@ -549,7 +883,7 @@ pub(crate) fn build_kind_paths(
                     },
                     "responses": {
                         "200": {
-                            "description": format!("{} status updated", kind),
+                            "description": format!("{} status updated in namespace", kind),
                             "content": {
                                 "application/json": {
                                     "schema": stored_ref
@@ -557,7 +891,7 @@ pub(crate) fn build_kind_paths(
                             }
                         },
                         "404": {
-                            "description": format!("{} object not found or status subresource not enabled for this kind", kind),
+                            "description": format!("{} object not found in this namespace or status subresource not enabled for this kind", kind),
                             "content": { "application/json": { "schema": error_ref } }
                         },
                         "422": {
@@ -567,8 +901,10 @@ pub(crate) fn build_kind_paths(
                     }
                 }
             }),
-        ),
-    ]
+        ));
+    }
+
+    all_paths
 }
 
 /// Builds the request body schema for creating an object of a registered kind.
@@ -584,6 +920,11 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
                 "type": "object",
                 "properties": {
                     "name": { "type": "string", "description": "Object name, unique within this kind" },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Optional namespace hint. For namespace-scoped routes, the namespace from the URL takes precedence. For cluster-scoped creates of a namespaced kind, this can be used to specify the namespace.",
+                        "nullable": true
+                    },
                     "labels": {
                         "type": "object",
                         "additionalProperties": { "type": "string" },
@@ -601,6 +942,168 @@ fn build_create_request_schema(schema_data: &crate::object::types::SchemaData) -
         },
         "required": ["metadata", "spec"],
         "additionalProperties": false
+    })
+}
+
+/// Builds an example request body for creating a namespaced object.
+fn build_create_request_example(schema_data: &crate::object::types::SchemaData) -> Value {
+    let example_spec = build_spec_example(&schema_data.spec_schema);
+    json!({
+        "metadata": {
+            "name": "my-widget"
+        },
+        "spec": example_spec
+    })
+}
+
+/// Builds an example response body for a created/get object.
+fn build_get_response_example(
+    schema_data: &crate::object::types::SchemaData,
+    _comp_name: &str,
+    namespace: Option<&str>,
+) -> Value {
+    let example_spec = build_spec_example(&schema_data.spec_schema);
+    let namespace_value = match namespace {
+        Some(ns) => json!(ns),
+        None => Value::Null,
+    };
+    json!({
+        "key": {
+            "group": schema_data.target_group,
+            "version": schema_data.target_version,
+            "kind": schema_data.target_kind
+        },
+        "metadata": {
+            "name": "my-widget",
+            "namespace": namespace_value,
+            "labels": { "app": "example", "env": "production" },
+            "annotations": { "description": "An example widget" }
+        },
+        "system": {
+            "resourceVersion": 1,
+            "generation": 1,
+            "createdAt": "2024-06-01T00:00:00Z",
+            "updatedAt": "2024-06-01T00:00:00Z"
+        },
+        "spec": example_spec
+    })
+}
+
+/// Builds an example list response body, optionally showing cross-namespace items.
+fn build_list_response_example(
+    schema_data: &crate::object::types::SchemaData,
+    _comp_name: &str,
+    cross_namespace: bool,
+) -> Value {
+    let example_spec = build_spec_example(&schema_data.spec_schema);
+
+    if cross_namespace {
+        json!({
+            "items": [
+                {
+                    "key": { "group": schema_data.target_group, "version": schema_data.target_version, "kind": schema_data.target_kind },
+                    "metadata": { "name": "widget-prod", "namespace": "production", "labels": {}, "annotations": {} },
+                    "system": { "resourceVersion": 1, "generation": 1, "createdAt": "2024-06-01T00:00:00Z", "updatedAt": "2024-06-01T00:00:00Z" },
+                    "spec": example_spec
+                },
+                {
+                    "key": { "group": schema_data.target_group, "version": schema_data.target_version, "kind": schema_data.target_kind },
+                    "metadata": { "name": "widget-staging", "namespace": "staging", "labels": {}, "annotations": {} },
+                    "system": { "resourceVersion": 1, "generation": 1, "createdAt": "2024-06-01T00:00:00Z", "updatedAt": "2024-06-01T00:00:00Z" },
+                    "spec": example_spec
+                }
+            ],
+            "continueToken": null
+        })
+    } else {
+        json!({
+            "items": [
+                {
+                    "key": { "group": schema_data.target_group, "version": schema_data.target_version, "kind": schema_data.target_kind },
+                    "metadata": { "name": "my-widget", "namespace": "production", "labels": {}, "annotations": {} },
+                    "system": { "resourceVersion": 1, "generation": 1, "createdAt": "2024-06-01T00:00:00Z", "updatedAt": "2024-06-01T00:00:00Z" },
+                    "spec": example_spec
+                }
+            ],
+            "continueToken": null
+        })
+    }
+}
+
+/// Attempts to build a realistic example value from a JSON Schema.
+/// Falls back to a generic object if schema analysis fails.
+fn build_spec_example(schema: &serde_json::Value) -> serde_json::Value {
+    match schema.get("properties") {
+        Some(props) => {
+            let mut example = serde_json::Map::new();
+            if let Some(obj) = props.as_object() {
+                for (key, prop) in obj.iter().take(3) {
+                    let val = match prop.get("type").and_then(|t| t.as_str()) {
+                        Some("string") => json!("string"),
+                        Some("integer") => json!(42),
+                        Some("number") => json!(1.5),
+                        Some("boolean") => json!(true),
+                        Some("array") => json!([]),
+                        Some("object") => json!({}),
+                        _ => json!("value"),
+                    };
+                    example.insert(key.clone(), val);
+                }
+            }
+            json!(example)
+        }
+        None => json!({ "key": "value" }),
+    }
+}
+
+/// Builds a standard set of parameters for a list operation: watch, fieldSelector, labelSelector.
+fn build_list_parameters() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "watch",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "boolean" },
+            "description": "Enable SSE watch stream"
+        }),
+        json!({
+            "name": "fieldSelector",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Filter results by field selector (e.g., metadata.name=my-obj). On list requests, filters the returned objects. On watch requests, filters the event stream."
+        }),
+        json!({
+            "name": "labelSelector",
+            "in": "query",
+            "required": false,
+            "schema": { "type": "string" },
+            "description": "Filter results by label selector. Supports: key=value (equality), key!=value (inequality), key (existence), !key (non-existence), comma-separated (AND). On list requests, filters the returned objects. On watch requests, filters the event stream. When both fieldSelector and labelSelector are present on watch, they are combined with AND semantics."
+        }),
+    ]
+}
+
+/// Builds standard name path parameter.
+fn build_name_param(description: &str) -> Value {
+    json!({
+        "name": "name",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": description,
+        "example": "my-widget"
+    })
+}
+
+/// Builds standard namespace path parameter.
+fn build_namespace_param() -> Value {
+    json!({
+        "name": "namespace",
+        "in": "path",
+        "required": true,
+        "schema": { "type": "string" },
+        "description": "The namespace of the object",
+        "example": "production"
     })
 }
 

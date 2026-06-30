@@ -9,12 +9,12 @@ WATCH_PID=$(start_watch "?watch=true&fieldSelector=metadata.name=target-widget-$
 sleep 2
 kill -0 $WATCH_PID 2>/dev/null && echo "Watch alive OK" || echo "ERROR: watch died"
 
-curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/Widget \
+curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/Widget \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"name\":\"other-widget-$TEST_RUN\"},\"spec\":{\"color\":\"blue\",\"size\":1}}" > /dev/null
 sleep 1
 
-curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/Widget \
+curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/Widget \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"name\":\"target-widget-$TEST_RUN\"},\"spec\":{\"color\":\"red\",\"size\":2}}" > /dev/null
 sleep 2
@@ -28,7 +28,7 @@ echo "========== TEST 2: Watch lifecycle =========="
 WATCH_PID=$(start_watch "?watch=true" /tmp/t2-watch.log)
 sleep 1
 
-CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/Widget \
+CREATE_RESP=$(curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/Widget \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"name\":\"lifecycle-$TEST_RUN\"},\"spec\":{\"color\":\"green\",\"size\":5}}")
 echo "$CREATE_RESP" | python3 -c "import sys,json;obj=json.load(sys.stdin);f=obj['metadata'].get('finalizers',None);assert f==[],f'Expected finalizers=[],got {f}';print('finalizers=[] OK')"
@@ -36,12 +36,12 @@ echo "$CREATE_RESP" | python3 -c "import sys,json;obj=json.load(sys.stdin);f=obj
 sleep 1
 get_system_fields "lifecycle-$TEST_RUN"
 
-curl -s -X PUT "http://localhost:8080/apis/example.io.$TEST_RUN/v1/Widget/lifecycle-$TEST_RUN" \
+curl -s -X PUT "http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/Widget/lifecycle-$TEST_RUN" \
   -H "Content-Type: application/json" \
   -d "{\"key\":{\"group\":\"example.io.$TEST_RUN\",\"version\":\"v1\",\"kind\":\"Widget\"},\"metadata\":{\"name\":\"lifecycle-$TEST_RUN\"},\"system\":{\"resourceVersion\":$GET_RV,\"createdAt\":\"$GET_CREATED\",\"updatedAt\":\"$GET_UPDATED\"},\"spec\":{\"color\":\"yellow\",\"size\":10}}" > /dev/null
 sleep 1
 
-curl -s -X DELETE "http://localhost:8080/apis/example.io.$TEST_RUN/v1/Widget/lifecycle-$TEST_RUN" > /dev/null
+curl -s -X DELETE "http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/Widget/lifecycle-$TEST_RUN" > /dev/null
 sleep 2
 
 kill $WATCH_PID 2>/dev/null
@@ -58,7 +58,7 @@ sleep 1
 kill -9 $WATCH_PID 2>/dev/null
 echo "Watch killed"
 sleep 1
-curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/Widget \
+curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/Widget \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"name\":\"cleanup-trigger-$TEST_RUN\"},\"spec\":{\"color\":\"black\",\"size\":99}}" > /dev/null
 sleep 2
@@ -70,12 +70,12 @@ NAMED_PID=$(start_watch "?watch=true&fieldSelector=metadata.name=named-$TEST_RUN
 ALL_PID=$(start_watch "?watch=true" /tmp/t4-all.log)
 sleep 1
 
-curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/Widget \
+curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/Widget \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"name\":\"named-$TEST_RUN\"},\"spec\":{\"color\":\"green\",\"size\":3}}" > /dev/null
 sleep 1
 
-curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/Widget \
+curl -s -X POST http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/Widget \
   -H "Content-Type: application/json" \
   -d "{\"metadata\":{\"name\":\"other-$TEST_RUN\"},\"spec\":{\"color\":\"yellow\",\"size\":4}}" > /dev/null
 sleep 2

@@ -51,6 +51,7 @@ impl SQLiteStore {
                 api_version        TEXT    NOT NULL,
                 resource_kind      TEXT    NOT NULL,
                 name               TEXT    NOT NULL,
+                namespace          TEXT    NOT NULL DEFAULT '',
                 spec               TEXT    NOT NULL,
                 status             TEXT,
                 annotations        TEXT,
@@ -60,16 +61,19 @@ impl SQLiteStore {
                 created_at         TEXT    NOT NULL,
                 updated_at         TEXT    NOT NULL,
                 deletion_timestamp TEXT,
-                PRIMARY KEY (resource_group, api_version, resource_kind, name)
+                PRIMARY KEY (resource_group, api_version, resource_kind, namespace, name)
             )",
             [],
         )
         .map_err(|e| AppError::Internal(e.into()))?;
 
+        // Index is implicit via PK; keep for composite lookups
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_objects_gvkn ON objects(resource_group, api_version, resource_kind, name)",
+            "CREATE INDEX IF NOT EXISTS idx_objects_gvknn ON \
+             objects(resource_group, api_version, resource_kind, namespace, name)",
             [],
-        ).map_err(|e| AppError::Internal(e.into()))?;
+        )
+        .map_err(|e| AppError::Internal(e.into()))?;
 
         // Enable foreign key support (required for ON DELETE CASCADE)
         conn.execute("PRAGMA foreign_keys = ON", []).map_err(|e| AppError::Internal(e.into()))?;
@@ -80,20 +84,23 @@ impl SQLiteStore {
                 api_version     TEXT NOT NULL,
                 resource_kind   TEXT NOT NULL,
                 name            TEXT NOT NULL,
+                namespace       TEXT NOT NULL DEFAULT '',
                 label_key       TEXT NOT NULL,
                 label_value     TEXT NOT NULL,
-                PRIMARY KEY (resource_group, api_version, resource_kind, name, label_key),
-                FOREIGN KEY (resource_group, api_version, resource_kind, name)
-                    REFERENCES objects(resource_group, api_version, resource_kind, name)
+                PRIMARY KEY (resource_group, api_version, resource_kind, namespace, name, label_key),
+                FOREIGN KEY (resource_group, api_version, resource_kind, namespace, name)
+                    REFERENCES objects(resource_group, api_version, resource_kind, namespace, name)
                     ON DELETE CASCADE
             )",
             [],
         )
         .map_err(|e| AppError::Internal(e.into()))?;
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_labels_gvkn ON labels(resource_group, api_version, resource_kind, name)",
+            "CREATE INDEX IF NOT EXISTS idx_labels_gvknn ON \
+             labels(resource_group, api_version, resource_kind, namespace, name)",
             [],
-        ).map_err(|e| AppError::Internal(e.into()))?;
+        )
+        .map_err(|e| AppError::Internal(e.into()))?;
         Ok(())
     }
 
@@ -107,6 +114,7 @@ impl SQLiteStore {
         version: String,
         kind: String,
         name: String,
+        namespace: Option<String>,
         spec: String,
         status: Option<String>,
         annotations: Option<String>,
@@ -142,10 +150,14 @@ impl SQLiteStore {
             }
             None => None,
         };
+        // Convert empty string back to None (cluster-scoped)
+        let namespace = namespace.filter(|s| !s.is_empty());
+
         Ok(StoredObject {
             key: ResourceKey { group, version, kind },
             metadata: ObjectMeta {
                 name,
+                namespace,
                 labels: HashMap::new(),
                 annotations: annotations_value,
                 finalizers: finalizers_value,
@@ -163,18 +175,34 @@ impl SQLiteStore {
     }
 
     /// Queries labels from the `labels` table for a single object.
+    /// `namespace` is the Rust representation (None = cluster-scoped).
+    /// Internally, cluster-scoped maps to `""` in SQL.
     fn query_labels(
         conn: &Connection,
         group: &str,
         version: &str,
         kind: &str,
+        namespace: Option<&str>,
         name: &str,
     ) -> Result<HashMap<String, String>, AppError> {
-        let mut stmt = conn.prepare(
-            "SELECT label_key, label_value FROM labels WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4"
-        ).map_err(|e| AppError::Internal(e.into()))?;
+        let ns_sql = namespace.unwrap_or("");
+        let sql = "SELECT label_key, label_value FROM labels \
+             WHERE resource_group = ?1 AND api_version = ?2 \
+             AND resource_kind = ?3 AND namespace = ?4 AND name = ?5"
+            .to_string();
+        let params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+            Box::new(group.to_string()),
+            Box::new(version.to_string()),
+            Box::new(kind.to_string()),
+            Box::new(ns_sql.to_string()),
+            Box::new(name.to_string()),
+        ];
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Internal(e.into()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
         let rows = stmt
-            .query_map(params![group, version, kind, name], |row| {
+            .query_map(params_refs.as_slice(), |row| {
                 let key: String = row.get(0)?;
                 let value: String = row.get(1)?;
                 Ok((key, value))
@@ -189,28 +217,63 @@ impl SQLiteStore {
         Ok(labels)
     }
 
-    /// Batch-fetches labels for multiple objects identified by (group, version, kind, name).
-    /// Returns a map from name → labels (all objects share the same group/version/kind).
+    /// Batch-fetches labels for multiple objects identified by (group, version, kind, namespace, name).
+    ///
+    /// When `namespace` is `Some`, all objects share the same namespace and the map is keyed by `name`.
+    /// When `namespace` is `None` (cross-namespace), the map is keyed by `"ns\x00name"` to disambiguate
+    /// objects with the same name in different namespaces.
     fn batch_query_labels(
         conn: &Connection,
         group: &str,
         version: &str,
         kind: &str,
+        namespace: Option<&str>,
         names: &[String],
     ) -> Result<HashMap<String, HashMap<String, String>>, AppError> {
         if names.is_empty() {
             return Ok(HashMap::new());
         }
 
-        // Build IN clause with placeholders
         let placeholders: Vec<String> = (1..=names.len()).map(|i| format!("?{}", i)).collect();
-        let sql = format!(
-            "SELECT name, label_key, label_value FROM labels WHERE resource_group = ?{} AND api_version = ?{} AND resource_kind = ?{} AND name IN ({})",
-            names.len() + 1,
-            names.len() + 2,
-            names.len() + 3,
-            placeholders.join(", ")
-        );
+        let next_idx = names.len() + 1;
+
+        let (sql, extra_params): (String, Vec<Box<dyn rusqlite::types::ToSql>>) =
+            if let Some(ns) = namespace {
+                let sql = format!(
+                    "SELECT name, label_key, label_value FROM labels \
+                     WHERE resource_group = ?{next_idx} AND api_version = ?{n2} \
+                     AND resource_kind = ?{n3} AND namespace = ?{n4} AND name IN ({})",
+                    placeholders.join(", "),
+                    next_idx = next_idx,
+                    n2 = next_idx + 1,
+                    n3 = next_idx + 2,
+                    n4 = next_idx + 3,
+                );
+                let extra: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+                    Box::new(group.to_string()),
+                    Box::new(version.to_string()),
+                    Box::new(kind.to_string()),
+                    Box::new(ns.to_string()),
+                ];
+                (sql, extra)
+            } else {
+                // Cross-namespace: include namespace in SELECT to build compound key
+                let sql = format!(
+                    "SELECT namespace, name, label_key, label_value FROM labels \
+                     WHERE resource_group = ?{next_idx} AND api_version = ?{n2} \
+                     AND resource_kind = ?{n3} AND name IN ({})",
+                    placeholders.join(", "),
+                    next_idx = next_idx,
+                    n2 = next_idx + 1,
+                    n3 = next_idx + 2,
+                );
+                let extra: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+                    Box::new(group.to_string()),
+                    Box::new(version.to_string()),
+                    Box::new(kind.to_string()),
+                ];
+                (sql, extra)
+            };
 
         let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Internal(e.into()))?;
 
@@ -218,54 +281,89 @@ impl SQLiteStore {
         for name in names {
             params_vec.push(Box::new(name.clone()));
         }
-        params_vec.push(Box::new(group.to_string()));
-        params_vec.push(Box::new(version.to_string()));
-        params_vec.push(Box::new(kind.to_string()));
+        params_vec.extend(extra_params);
 
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_vec.iter().map(|b| b.as_ref()).collect();
 
-        let rows = stmt
-            .query_map(params_refs.as_slice(), |row| {
-                let name: String = row.get(0)?;
-                let key: String = row.get(1)?;
-                let value: String = row.get(2)?;
-                Ok((name, key, value))
-            })
-            .map_err(|e| AppError::Internal(e.into()))?;
+        if let Some(_ns) = namespace {
+            let rows = stmt
+                .query_map(params_refs.as_slice(), |row| {
+                    let name: String = row.get(0)?;
+                    let key: String = row.get(1)?;
+                    let value: String = row.get(2)?;
+                    Ok((name, key, value))
+                })
+                .map_err(|e| AppError::Internal(e.into()))?;
 
-        let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
-        for row in rows {
-            let (name, key, value) = row.map_err(|e| AppError::Internal(e.into()))?;
-            result.entry(name).or_default().insert(key, value);
+            let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
+            for row in rows {
+                let (name, key, value) = row.map_err(|e| AppError::Internal(e.into()))?;
+                result.entry(name).or_default().insert(key, value);
+            }
+            Ok(result)
+        } else {
+            // Cross-namespace: key by "ns\x00name"
+            let rows = stmt
+                .query_map(params_refs.as_slice(), |row| {
+                    let ns: Option<String> = row.get(0)?;
+                    let name: String = row.get(1)?;
+                    let key: String = row.get(2)?;
+                    let value: String = row.get(3)?;
+                    Ok((ns, name, key, value))
+                })
+                .map_err(|e| AppError::Internal(e.into()))?;
+
+            let mut result: HashMap<String, HashMap<String, String>> = HashMap::new();
+            for row in rows {
+                let (ns, name, key, value) = row.map_err(|e| AppError::Internal(e.into()))?;
+                let compound_key = Self::compound_label_key(ns.as_deref(), &name);
+                result.entry(compound_key).or_default().insert(key, value);
+            }
+            Ok(result)
         }
-        Ok(result)
+    }
+
+    /// Builds a compound key for cross-namespace label lookups: `"ns\x00name"`.
+    /// For cluster-scoped objects (namespace=None), the key is `"\x00name"`.
+    fn compound_label_key(namespace: Option<&str>, name: &str) -> String {
+        format!("{}\x00{}", namespace.unwrap_or_default(), name)
     }
 
     /// Fetch an object while holding the connection lock.
     fn fetch_object_locked(
         conn: &Connection,
         key: &ResourceKey,
+        namespace: Option<&str>,
         name: &str,
     ) -> Result<StoredObject, AppError> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, \
-                 annotations, finalizers, resource_version, generation, created_at, \
-                 updated_at, deletion_timestamp \
-                 FROM objects WHERE resource_group = ?1 AND api_version = ?2 \
-                 AND resource_kind = ?3 AND name = ?4",
-            )
-            .map_err(|e| AppError::Internal(e.into()))?;
+        let ns_sql = namespace.unwrap_or("");
+        let sql = "SELECT resource_group, api_version, resource_kind, name, namespace, \
+             spec, status, annotations, finalizers, resource_version, generation, \
+             created_at, updated_at, deletion_timestamp \
+             FROM objects WHERE resource_group = ?1 AND api_version = ?2 \
+             AND resource_kind = ?3 AND namespace = ?4 AND name = ?5"
+            .to_string();
+        let params_vec: Vec<Box<dyn rusqlite::types::ToSql>> = vec![
+            Box::new(key.group.clone()),
+            Box::new(key.version.clone()),
+            Box::new(key.kind.clone()),
+            Box::new(ns_sql.to_string()),
+            Box::new(name.to_string()),
+        ];
+
+        let mut stmt = conn.prepare(&sql).map_err(|e| AppError::Internal(e.into()))?;
+        let params_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params_vec.iter().map(|b| b.as_ref()).collect();
         let mut obj = stmt
-            .query_row(params![key.group, key.version, key.kind, name], row_to_object)
+            .query_row(params_refs.as_slice(), row_to_object)
             .optional()
             .map_err(|e| AppError::Internal(e.into()))?;
 
         match obj {
             Some(ref mut obj) => {
                 obj.metadata.labels =
-                    Self::query_labels(conn, &key.group, &key.version, &key.kind, name)?;
+                    Self::query_labels(conn, &key.group, &key.version, &key.kind, namespace, name)?;
                 Ok(obj.clone())
             }
             None => Err(AppError::NotFound {
@@ -305,15 +403,16 @@ impl SQLiteStore {
 
         tx.execute(
             "INSERT OR REPLACE INTO objects \
-             (resource_group, api_version, resource_kind, name, spec, status, \
+             (resource_group, api_version, resource_kind, name, namespace, spec, status, \
               annotations, finalizers, resource_version, generation, created_at, \
               updated_at, deletion_timestamp) \
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 object.key.group,
                 object.key.version,
                 object.key.kind,
                 object.metadata.name,
+                object.metadata.namespace.as_deref().unwrap_or_default(),
                 spec_json,
                 status_json,
                 annotations_json,
@@ -328,10 +427,17 @@ impl SQLiteStore {
         .map_err(|e| AppError::Internal(e.into()))?;
 
         // Full label replacement: delete all existing, insert new
+        let ns_sql = object.metadata.namespace.as_deref().unwrap_or("");
         tx.execute(
             "DELETE FROM labels WHERE resource_group = ?1 AND api_version = ?2 \
-             AND resource_kind = ?3 AND name = ?4",
-            params![object.key.group, object.key.version, object.key.kind, object.metadata.name,],
+             AND resource_kind = ?3 AND namespace = ?4 AND name = ?5",
+            params![
+                object.key.group,
+                object.key.version,
+                object.key.kind,
+                ns_sql,
+                object.metadata.name,
+            ],
         )
         .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -339,7 +445,8 @@ impl SQLiteStore {
             let mut stmt = tx
                 .prepare(
                     "INSERT INTO labels (resource_group, api_version, resource_kind, \
-                     name, label_key, label_value) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                     name, namespace, label_key, label_value) \
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
                 )
                 .map_err(|e| AppError::Internal(e.into()))?;
             for (label_key, label_value) in &object.metadata.labels {
@@ -348,6 +455,7 @@ impl SQLiteStore {
                     object.key.version,
                     object.key.kind,
                     object.metadata.name,
+                    object.metadata.namespace.as_deref().unwrap_or_default(),
                     label_key,
                     label_value,
                 ])
@@ -360,17 +468,20 @@ impl SQLiteStore {
     }
 
     /// Delete an object while holding the connection lock.
-    /// Labels are removed via ON DELETE CASCADE.
+    /// Labels are removed via ON DELETE CASCADE (namespace is NOT NULL in SQL,
+    /// so FK enforcement always works).
     fn delete_object_locked(
         conn: &Connection,
         key: &ResourceKey,
+        namespace: Option<&str>,
         name: &str,
     ) -> Result<(), AppError> {
+        let ns_sql = namespace.unwrap_or("");
         let rows = conn
             .execute(
                 "DELETE FROM objects WHERE resource_group = ?1 AND api_version = ?2 \
-                 AND resource_kind = ?3 AND name = ?4",
-                params![key.group, key.version, key.kind, name],
+                 AND resource_kind = ?3 AND namespace = ?4 AND name = ?5",
+                params![key.group, key.version, key.kind, ns_sql, name],
             )
             .map_err(|e| AppError::Internal(e.into()))?;
         if rows == 0 {
@@ -389,6 +500,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
     let version: String = row.get("api_version")?;
     let kind: String = row.get("resource_kind")?;
     let name: String = row.get("name")?;
+    let namespace: Option<String> = row.get("namespace")?;
     let spec: String = row.get("spec")?;
     let status: Option<String> = row.get("status")?;
     let annotations: Option<String> = row.get("annotations")?;
@@ -403,6 +515,7 @@ fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
         version,
         kind,
         name,
+        namespace,
         spec,
         status,
         annotations,
@@ -447,11 +560,46 @@ impl ListQueryBuilder {
         }
     }
 
-    /// Adds a `name > ?N` clause for cursor-based pagination.
+    /// Adds a namespace filter clause.
+    ///
+    /// When `namespace` is `Some`, adds `namespace = ?N`.
+    /// When `None`, adds `namespace IS NULL`.
+    fn add_namespace_filter(&mut self, namespace: Option<&str>) {
+        match namespace {
+            Some(ns) => {
+                self.where_clauses.push(format!("namespace = ?{}", self.param_idx));
+                self.params.push(Box::new(ns.to_string()));
+                self.param_idx += 1;
+            }
+            None => {
+                self.where_clauses.push("namespace IS NULL".to_string());
+                // No param needed for IS NULL
+            }
+        }
+    }
+
+    /// Adds a `name > ?N` clause for cursor-based pagination within a namespace.
     fn add_continue_token(&mut self, skip: &str) {
         self.where_clauses.push(format!("name > ?{}", self.param_idx));
         self.params.push(Box::new(skip.to_string()));
         self.param_idx += 1;
+    }
+
+    /// Adds a `(namespace > ?N OR (namespace = ?M AND name > ?P))` clause
+    /// for cross-namespace cursor-based pagination. Works with NOT NULL namespace
+    /// (cluster-scoped = empty string).
+    fn add_cross_namespace_continue_token(&mut self, skip_ns: Option<&str>, skip_name: &str) {
+        let ns_idx = self.param_idx;
+        let ns2_idx = self.param_idx + 1;
+        let name_idx = self.param_idx + 2;
+        self.where_clauses.push(format!(
+            "(namespace > ?{ns_idx} OR (namespace = ?{ns2_idx} AND name > ?{name_idx}))"
+        ));
+        let ns_val = skip_ns.unwrap_or("");
+        self.params.push(Box::new(ns_val.to_string()));
+        self.params.push(Box::new(ns_val.to_string()));
+        self.params.push(Box::new(skip_name.to_string()));
+        self.param_idx += 3;
     }
 
     /// Adds field selector clauses.
@@ -482,7 +630,8 @@ impl ListQueryBuilder {
                     let clause = format!(
                         "EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
                          AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                         AND l.name = o.name AND l.label_key = ?{} AND l.label_value = ?{})",
+                         AND l.namespace = o.namespace AND l.name = o.name \
+                         AND l.label_key = ?{} AND l.label_value = ?{})",
                         self.param_idx,
                         self.param_idx + 1
                     );
@@ -495,10 +644,12 @@ impl ListQueryBuilder {
                     let clause = format!(
                         "(NOT EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
                          AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                         AND l.name = o.name AND l.label_key = ?{}) \
+                         AND l.namespace = o.namespace AND l.name = o.name \
+                         AND l.label_key = ?{}) \
                          OR EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
                          AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                         AND l.name = o.name AND l.label_key = ?{} AND l.label_value != ?{}))",
+                         AND l.namespace = o.namespace AND l.name = o.name \
+                         AND l.label_key = ?{} AND l.label_value != ?{}))",
                         self.param_idx,
                         self.param_idx + 1,
                         self.param_idx + 2
@@ -513,7 +664,8 @@ impl ListQueryBuilder {
                     let clause = format!(
                         "EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
                          AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                         AND l.name = o.name AND l.label_key = ?{})",
+                         AND l.namespace = o.namespace AND l.name = o.name \
+                         AND l.label_key = ?{})",
                         self.param_idx
                     );
                     self.where_clauses.push(clause);
@@ -524,7 +676,8 @@ impl ListQueryBuilder {
                     let clause = format!(
                         "NOT EXISTS (SELECT 1 FROM labels l WHERE l.resource_group = o.resource_group \
                          AND l.api_version = o.api_version AND l.resource_kind = o.resource_kind \
-                         AND l.name = o.name AND l.label_key = ?{})",
+                         AND l.namespace = o.namespace AND l.name = o.name \
+                         AND l.label_key = ?{})",
                         self.param_idx
                     );
                     self.where_clauses.push(clause);
@@ -584,10 +737,11 @@ impl ObjectStore for SQLiteStore {
             let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
 
             let result = tx.execute(
-                "INSERT INTO objects (resource_group, api_version, resource_kind, name, spec, status, annotations, finalizers, resource_version, generation, created_at, updated_at, deletion_timestamp)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                "INSERT INTO objects (resource_group, api_version, resource_kind, name, namespace, spec, status, annotations, finalizers, resource_version, generation, created_at, updated_at, deletion_timestamp)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
                 params![
                     object.key.group, object.key.version, object.key.kind, object.metadata.name,
+                    object.metadata.namespace.as_deref().unwrap_or_default(),
                     spec_json, status_json, annotations_json, finalizers_json,
                     object.system.resource_version as i64, object.system.generation as i64,
                     created_at, updated_at, deletion_timestamp
@@ -599,13 +753,13 @@ impl ObjectStore for SQLiteStore {
                     // Insert labels if non-empty
                     if !object.metadata.labels.is_empty() {
                         let mut stmt = tx.prepare(
-                            "INSERT INTO labels (resource_group, api_version, resource_kind, name, label_key, label_value)
-                             VALUES (?1, ?2, ?3, ?4, ?5, ?6)"
+                            "INSERT INTO labels (resource_group, api_version, resource_kind, name, namespace, label_key, label_value)
+                             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)"
                         ).map_err(|e| AppError::Internal(e.into()))?;
                         for (label_key, label_value) in &object.metadata.labels {
                             stmt.execute(params![
                                 object.key.group, object.key.version, object.key.kind, object.metadata.name,
-                                label_key, label_value
+                                object.metadata.namespace.as_deref().unwrap_or_default(), label_key, label_value
                             ]).map_err(|e| AppError::Internal(e.into()))?;
                         }
                     }
@@ -637,6 +791,7 @@ impl ObjectStore for SQLiteStore {
     fn transaction(
         &self,
         key: &ResourceKey,
+        namespace: Option<&str>,
         name: &str,
         op: Box<dyn FnOnce(&StoredObject) -> TransactionOp + Send>,
     ) -> Result<StoredObject, AppError> {
@@ -645,7 +800,7 @@ impl ObjectStore for SQLiteStore {
         let conn = self.conn.lock().unwrap();
 
         // Read existing object (blocking SQLite call, but we hold the lock)
-        let existing = Self::fetch_object_locked(&conn, key, name)?;
+        let existing = Self::fetch_object_locked(&conn, key, namespace, name)?;
 
         // Execute callback (MUST be fast — no I/O allowed)
         match op(&existing) {
@@ -661,7 +816,7 @@ impl ObjectStore for SQLiteStore {
                 let deleted = existing.clone();
 
                 // Hard delete (blocking SQLite call)
-                Self::delete_object_locked(&conn, key, name)?;
+                Self::delete_object_locked(&conn, key, namespace, name)?;
                 Ok(deleted)
             }
             TransactionOp::Abort(err) => {
@@ -674,29 +829,44 @@ impl ObjectStore for SQLiteStore {
 
     /// Fetches a single object by composite key. Returns `NotFound` if missing.
     /// Labels are queried from the `labels` table and populated on the returned object.
-    async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
+    async fn get(
+        &self,
+        key: &ResourceKey,
+        namespace: Option<&str>,
+        name: &str,
+    ) -> Result<StoredObject, AppError> {
         let key = key.clone();
+        let namespace = namespace.map(|s| s.to_string());
         let name = name.to_string();
         let conn = Arc::clone(&self.conn);
 
         tokio::task::spawn_blocking(move || {
             let c = conn.lock().unwrap();
-            let mut stmt = c.prepare(
-                "SELECT resource_group, api_version, resource_kind, name, spec, status, annotations, finalizers, resource_version, generation, created_at, updated_at, deletion_timestamp
-                 FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3 AND name = ?4",
-            ).map_err(|e| AppError::Internal(e.into()))?;
-            let mut obj = stmt
-                .query_row(
-                    params![key.group, key.version, key.kind, name],
-                    row_to_object,
+            let ns_sql = namespace.as_deref().unwrap_or("");
+            let mut stmt = c
+                .prepare(
+                    "SELECT resource_group, api_version, resource_kind, name, namespace, \
+                     spec, status, annotations, finalizers, resource_version, generation, \
+                     created_at, updated_at, deletion_timestamp \
+                     FROM objects WHERE resource_group = ?1 AND api_version = ?2 \
+                     AND resource_kind = ?3 AND namespace = ?4 AND name = ?5",
                 )
+                .map_err(|e| AppError::Internal(e.into()))?;
+
+            let mut obj = stmt
+                .query_row(params![key.group, key.version, key.kind, ns_sql, name], row_to_object)
                 .optional()
                 .map_err(|e| AppError::Internal(e.into()))?;
 
             match obj {
                 Some(ref mut obj) => {
                     obj.metadata.labels = SQLiteStore::query_labels(
-                        &c, &key.group, &key.version, &key.kind, &name
+                        &c,
+                        &key.group,
+                        &key.version,
+                        &key.kind,
+                        namespace.as_deref(),
+                        &name,
                     )?;
                     Ok(obj.clone())
                 }
@@ -712,16 +882,21 @@ impl ObjectStore for SQLiteStore {
 
     /// Lists objects for a key, sorted by name. Supports limit and cursor-based pagination.
     /// Applies field_selector and label_selector filters before pagination.
-    async fn list(&self, key: &ResourceKey, opts: ListOptions) -> Result<ListResponse, AppError> {
+    ///
+    /// When `namespace` is `Some`, only objects in that namespace are returned (sorted by name).
+    /// When `namespace` is `None`, objects across all namespaces are returned (sorted by namespace, name).
+    async fn list(
+        &self,
+        key: &ResourceKey,
+        namespace: Option<&str>,
+        opts: ListOptions,
+    ) -> Result<ListResponse, AppError> {
         let key = key.clone();
+        let namespace = namespace.map(|s| s.to_string());
         let conn = Arc::clone(&self.conn);
 
         tokio::task::spawn_blocking(move || {
-            let skip_past = opts
-                .continue_token
-                .as_ref()
-                .map(decode_continue_token)
-                .transpose()?;
+            let skip_past = opts.continue_token.as_ref().map(decode_continue_token).transpose()?;
 
             let limit = opts.limit.unwrap_or(usize::MAX);
             // Fetch one extra to detect if more pages exist
@@ -732,8 +907,23 @@ impl ObjectStore for SQLiteStore {
             // Build dynamic SQL with filter WHERE clauses using ListQueryBuilder
             let mut builder = ListQueryBuilder::new(&key);
 
+            // Add namespace filter when namespace is Some
+            if let Some(ref ns) = namespace {
+                builder.add_namespace_filter(Some(ns));
+            }
+
+            // Add continue token (different handling for namespace-scoped vs cross-namespace)
             if let Some(ref skip) = skip_past {
-                builder.add_continue_token(skip);
+                if namespace.is_some() {
+                    // Namespace-scoped: skip by name only
+                    let skip_name = &skip.1;
+                    builder.add_continue_token(skip_name);
+                } else {
+                    // Cross-namespace: skip by (namespace, name)
+                    let skip_ns = skip.0.as_deref();
+                    let skip_name = &skip.1;
+                    builder.add_cross_namespace_continue_token(skip_ns, skip_name);
+                }
             }
 
             if let Some(ref selector) = opts.field_selector {
@@ -749,13 +939,21 @@ impl ObjectStore for SQLiteStore {
             // Add limit parameter
             params_vec.push(Box::new(query_limit as i64));
 
+            let order_clause = if namespace.is_some() {
+                "ORDER BY o.name ASC".to_string()
+            } else {
+                // Cross-namespace: order by namespace then name.
+                // Cluster-scoped objects have namespace='' which sorts before any real namespace.
+                "ORDER BY o.namespace, o.name ASC".to_string()
+            };
+
             let sql = format!(
-                "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.spec, o.status, \
-                 o.annotations, o.finalizers, o.resource_version, o.generation, o.created_at, \
-                 o.updated_at, o.deletion_timestamp \
+                "SELECT o.resource_group, o.api_version, o.resource_kind, o.name, o.namespace, \
+                 o.spec, o.status, o.annotations, o.finalizers, o.resource_version, o.generation, \
+                 o.created_at, o.updated_at, o.deletion_timestamp \
                  FROM objects o \
                  WHERE {where_sql} \
-                 ORDER BY o.name ASC \
+                 {order_clause} \
                  LIMIT ?{limit_param_idx}"
             );
 
@@ -768,40 +966,53 @@ impl ObjectStore for SQLiteStore {
                 .query_map(params_refs.as_slice(), row_to_object)
                 .map_err(|e| AppError::Internal(e.into()))?;
 
-            let items: Vec<StoredObject> = rows
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| AppError::Internal(e.into()))?;
+            let items: Vec<StoredObject> =
+                rows.collect::<Result<Vec<_>, _>>().map_err(|e| AppError::Internal(e.into()))?;
 
             let has_more = items.len() > limit;
-            let mut items: Vec<StoredObject> = if has_more {
-                items[..limit].to_vec()
-            } else {
-                items
-            };
+            let mut items: Vec<StoredObject> =
+                if has_more { items[..limit].to_vec() } else { items };
 
             // Batch-fetch labels for all returned objects
             let names: Vec<String> = items.iter().map(|o| o.metadata.name.clone()).collect();
             let labels_map = SQLiteStore::batch_query_labels(
-                &c, &key.group, &key.version, &key.kind, &names
+                &c,
+                &key.group,
+                &key.version,
+                &key.kind,
+                namespace.as_deref(),
+                &names,
             )?;
-            for item in &mut items {
-                if let Some(labels) = labels_map.get(&item.metadata.name) {
-                    item.metadata.labels = labels.clone();
+
+            if namespace.is_some() {
+                // Namespace-scoped: map keyed by name
+                for item in &mut items {
+                    if let Some(labels) = labels_map.get(&item.metadata.name) {
+                        item.metadata.labels = labels.clone();
+                    }
+                }
+            } else {
+                // Cross-namespace: map keyed by compound key "ns\x00name"
+                for item in &mut items {
+                    let compound_key = SQLiteStore::compound_label_key(
+                        item.metadata.namespace.as_deref(),
+                        &item.metadata.name,
+                    );
+                    if let Some(labels) = labels_map.get(&compound_key) {
+                        item.metadata.labels = labels.clone();
+                    }
                 }
             }
 
             let continue_token = if has_more {
-                items
-                    .last()
-                    .map(|last| encode_continue_token(&last.metadata.name))
+                items.last().map(|last| {
+                    encode_continue_token(last.metadata.namespace.as_deref(), &last.metadata.name)
+                })
             } else {
                 None
             };
 
-            Ok(ListResponse {
-                items,
-                continue_token,
-            })
+            Ok(ListResponse { items, continue_token })
         })
         .await
         .map_err(|e| AppError::Internal(e.into()))?
@@ -825,18 +1036,27 @@ impl ObjectStore for SQLiteStore {
     }
 }
 
-/// Decodes a base64-encoded continue token back to a name string.
-fn decode_continue_token(token: &ContinueToken) -> Result<String, AppError> {
+/// Decodes a base64-encoded continue token back to (namespace, name).
+fn decode_continue_token(token: &ContinueToken) -> Result<(Option<String>, String), AppError> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&token.0)
         .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
-    String::from_utf8(bytes)
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))
+    let json: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
+    let namespace = json.get("namespace").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let name = json.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("invalid continue token: missing name"))
+    })?;
+    Ok((namespace, name.to_string()))
 }
 
-/// Encodes a name string into a base64 continue token.
-fn encode_continue_token(name: &str) -> ContinueToken {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(name);
+/// Encodes (namespace, name) into a base64 continue token.
+fn encode_continue_token(namespace: Option<&str>, name: &str) -> ContinueToken {
+    let json = serde_json::json!({
+        "namespace": namespace,
+        "name": name
+    });
+    let encoded = base64::engine::general_purpose::STANDARD.encode(json.to_string());
     ContinueToken(encoded)
 }
 
@@ -852,6 +1072,7 @@ mod tests {
             key,
             metadata: ObjectMeta {
                 name: name.to_string(),
+                namespace: None,
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
                 finalizers: Vec::new(),
@@ -891,7 +1112,7 @@ mod tests {
         assert_eq!(created.key, key);
         assert_eq!(created.system.resource_version, 1);
 
-        let retrieved = store.get(&key, "my-widget").await.unwrap();
+        let retrieved = store.get(&key, None, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
         assert_eq!(retrieved.spec, created.spec);
         assert_eq!(retrieved.system.resource_version, created.system.resource_version);
@@ -914,7 +1135,7 @@ mod tests {
         let (store, _dir) = temp_store();
         let key = test_key();
 
-        let err = store.get(&key, "nonexistent").await.unwrap_err();
+        let err = store.get(&key, None, "nonexistent").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -928,7 +1149,11 @@ mod tests {
         store.create(test_obj(key.clone(), "b", json!({}))).await.unwrap();
 
         let res = store
-            .list(&key, ListOptions { limit: None, continue_token: None, ..Default::default() })
+            .list(
+                &key,
+                None,
+                ListOptions { limit: None, continue_token: None, ..Default::default() },
+            )
             .await
             .unwrap();
         let names: Vec<&str> = res.items.iter().map(|o| o.metadata.name.as_str()).collect();
@@ -946,7 +1171,11 @@ mod tests {
         }
 
         let res = store
-            .list(&key, ListOptions { limit: Some(2), continue_token: None, ..Default::default() })
+            .list(
+                &key,
+                None,
+                ListOptions { limit: Some(2), continue_token: None, ..Default::default() },
+            )
             .await
             .unwrap();
         assert_eq!(res.items.len(), 2);
@@ -965,7 +1194,11 @@ mod tests {
         }
 
         let first = store
-            .list(&key, ListOptions { limit: Some(2), continue_token: None, ..Default::default() })
+            .list(
+                &key,
+                None,
+                ListOptions { limit: Some(2), continue_token: None, ..Default::default() },
+            )
             .await
             .unwrap();
         let token = first.continue_token.unwrap();
@@ -973,6 +1206,7 @@ mod tests {
         let second = store
             .list(
                 &key,
+                None,
                 ListOptions { limit: Some(2), continue_token: Some(token), ..Default::default() },
             )
             .await
@@ -994,6 +1228,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut updated = existing.clone();
@@ -1015,7 +1250,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(&key, "nonexistent", Box::new(|_| TransactionOp::Delete))
+            .transaction(&key, None, "nonexistent", Box::new(|_| TransactionOp::Delete))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -1027,11 +1262,12 @@ mod tests {
         let created =
             store.create(test_obj(key.clone(), "my-widget", json!({"x": 1}))).await.unwrap();
 
-        let deleted =
-            store.transaction(&key, "my-widget", Box::new(|_| TransactionOp::Delete)).unwrap();
+        let deleted = store
+            .transaction(&key, None, "my-widget", Box::new(|_| TransactionOp::Delete))
+            .unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
 
-        let err = store.get(&key, "my-widget").await.unwrap_err();
+        let err = store.get(&key, None, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -1041,7 +1277,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(&key, "nonexistent", Box::new(|_| TransactionOp::Delete))
+            .transaction(&key, None, "nonexistent", Box::new(|_| TransactionOp::Delete))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -1052,7 +1288,11 @@ mod tests {
         let key = test_key();
 
         let res = store
-            .list(&key, ListOptions { limit: None, continue_token: None, ..Default::default() })
+            .list(
+                &key,
+                None,
+                ListOptions { limit: None, continue_token: None, ..Default::default() },
+            )
             .await
             .unwrap();
         assert!(res.items.is_empty());
@@ -1077,7 +1317,7 @@ mod tests {
         {
             let store = SQLiteStore::new(db_path.to_str().unwrap()).unwrap();
             let key = test_key();
-            let retrieved = store.get(&key, "persistent").await.unwrap();
+            let retrieved = store.get(&key, None, "persistent").await.unwrap();
             assert_eq!(retrieved.spec, json!({"data": "hello"}));
         }
     }
@@ -1096,6 +1336,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     field_selector: Some(FieldSelector::NameEquals("foo".to_string())),
                     ..Default::default()
@@ -1129,6 +1370,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     label_selector: Some(LabelSelector {
                         requirements: vec![LabelRequirement::Equals {
@@ -1167,6 +1409,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     label_selector: Some(LabelSelector {
                         requirements: vec![LabelRequirement::NotEquals {
@@ -1199,6 +1442,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     label_selector: Some(LabelSelector {
                         requirements: vec![LabelRequirement::Exists { key: "gpu".to_string() }],
@@ -1228,6 +1472,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     label_selector: Some(LabelSelector {
                         requirements: vec![LabelRequirement::NotExists {
@@ -1265,6 +1510,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     field_selector: Some(FieldSelector::NameEquals("target".to_string())),
                     label_selector: Some(LabelSelector {
@@ -1300,6 +1546,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     label_selector: Some(LabelSelector {
                         requirements: vec![LabelRequirement::Equals {
@@ -1327,6 +1574,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     field_selector: Some(FieldSelector::NameEquals("nonexistent".to_string())),
                     ..Default::default()
@@ -1360,6 +1608,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     label_selector: Some(LabelSelector {
                         requirements: vec![
@@ -1433,6 +1682,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut updated = existing.clone();
@@ -1456,7 +1706,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(&key, "nonexistent", Box::new(|_| TransactionOp::Delete))
+            .transaction(&key, None, "nonexistent", Box::new(|_| TransactionOp::Delete))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -1471,6 +1721,7 @@ mod tests {
         store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut updated = existing.clone();
@@ -1483,6 +1734,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut updated = existing.clone();
@@ -1506,6 +1758,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut updated = existing.clone();
@@ -1532,6 +1785,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut updated = existing.clone();
@@ -1555,6 +1809,7 @@ mod tests {
         let result = store
             .transaction(
                 &key,
+                None,
                 "test",
                 Box::new(|existing| {
                     let mut updated = existing.clone();
@@ -1580,6 +1835,7 @@ mod tests {
         let err = store
             .transaction(
                 &key,
+                None,
                 "test",
                 Box::new(|_| TransactionOp::Abort(AppError::Internal(anyhow::anyhow!("aborted")))),
             )
@@ -1587,7 +1843,7 @@ mod tests {
         assert!(matches!(err, AppError::Internal { .. }));
 
         // Verify object is unmodified
-        let retrieved = store.get(&key, "test").await.unwrap();
+        let retrieved = store.get(&key, None, "test").await.unwrap();
         assert_eq!(retrieved.system.resource_version, v1);
         assert_eq!(retrieved.spec, json!({"x": 1}));
     }
@@ -1598,9 +1854,179 @@ mod tests {
         let key = test_key();
         store.create(test_obj(key.clone(), "test", json!({"x": 1}))).await.unwrap();
 
-        store.transaction(&key, "test", Box::new(|_| TransactionOp::Delete)).unwrap();
+        store.transaction(&key, None, "test", Box::new(|_| TransactionOp::Delete)).unwrap();
 
-        let err = store.get(&key, "test").await.unwrap_err();
+        let err = store.get(&key, None, "test").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    // --- Namespace tests ---
+
+    fn test_obj_in_ns(
+        key: ResourceKey,
+        name: &str,
+        namespace: &str,
+        spec: serde_json::Value,
+    ) -> StoredObject {
+        let mut obj = test_obj(key, name, spec);
+        obj.metadata.namespace = Some(namespace.to_string());
+        obj
+    }
+
+    #[tokio::test]
+    async fn same_name_different_namespaces_coexist_sqlite() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store.create(test_obj_in_ns(key.clone(), "shared", "ns1", json!({"x": 1}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "shared", "ns2", json!({"x": 2}))).await.unwrap();
+
+        let ns1 = store.get(&key, Some("ns1"), "shared").await.unwrap();
+        assert_eq!(ns1.spec, json!({"x": 1}));
+
+        let ns2 = store.get(&key, Some("ns2"), "shared").await.unwrap();
+        assert_eq!(ns2.spec, json!({"x": 2}));
+    }
+
+    #[tokio::test]
+    async fn namespace_list_with_none_returns_all() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store.create(test_obj_in_ns(key.clone(), "a", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "b", "ns2", json!({}))).await.unwrap();
+        store.create(test_obj(key.clone(), "cluster-scoped", json!({}))).await.unwrap();
+
+        let res = store
+            .list(
+                &key,
+                None,
+                ListOptions { limit: None, continue_token: None, ..Default::default() },
+            )
+            .await
+            .unwrap();
+        // all 3 objects should be returned
+        assert_eq!(res.items.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn namespace_list_with_some_returns_only_that_namespace() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store.create(test_obj_in_ns(key.clone(), "a", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "b", "ns2", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "c", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj(key.clone(), "cluster-scoped", json!({}))).await.unwrap();
+
+        let res = store
+            .list(
+                &key,
+                Some("ns1"),
+                ListOptions { limit: None, continue_token: None, ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 2);
+        assert_eq!(res.items[0].metadata.name, "a");
+        assert_eq!(res.items[1].metadata.name, "c");
+    }
+
+    #[tokio::test]
+    async fn namespace_cross_namespace_pagination_with_continue_token() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        // Create objects across namespaces: ns1/a, ns1/b, ns2/c, ns2/d
+        store.create(test_obj_in_ns(key.clone(), "a", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "b", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "c", "ns2", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "d", "ns2", json!({}))).await.unwrap();
+
+        // First page: namespace=None, limit=2 → sorted by (namespace, name)
+        let page1 = store
+            .list(
+                &key,
+                None,
+                ListOptions { limit: Some(2), continue_token: None, ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.items[0].metadata.namespace.as_deref(), Some("ns1"));
+        assert_eq!(page1.items[0].metadata.name, "a");
+        assert_eq!(page1.items[1].metadata.namespace.as_deref(), Some("ns1"));
+        assert_eq!(page1.items[1].metadata.name, "b");
+        assert!(page1.continue_token.is_some());
+
+        // Second page: resume with continue_token
+        let token = page1.continue_token.unwrap();
+        let page2 = store
+            .list(
+                &key,
+                None,
+                ListOptions { limit: Some(2), continue_token: Some(token), ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page2.items.len(), 2);
+        assert_eq!(page2.items[0].metadata.namespace.as_deref(), Some("ns2"));
+        assert_eq!(page2.items[0].metadata.name, "c");
+        assert_eq!(page2.items[1].metadata.namespace.as_deref(), Some("ns2"));
+        assert_eq!(page2.items[1].metadata.name, "d");
+        assert!(page2.continue_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn namespace_scoped_list_with_continue_token() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        store.create(test_obj_in_ns(key.clone(), "a", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "b", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "c", "ns1", json!({}))).await.unwrap();
+
+        let page1 = store
+            .list(
+                &key,
+                Some("ns1"),
+                ListOptions { limit: Some(2), continue_token: None, ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.items[0].metadata.name, "a");
+        assert_eq!(page1.items[1].metadata.name, "b");
+        assert!(page1.continue_token.is_some());
+
+        let token = page1.continue_token.unwrap();
+        let page2 = store
+            .list(
+                &key,
+                Some("ns1"),
+                ListOptions { limit: Some(2), continue_token: Some(token), ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page2.items.len(), 1);
+        assert_eq!(page2.items[0].metadata.name, "c");
+        assert!(page2.continue_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn namespace_labels_with_labels() {
+        let (store, _dir) = temp_store();
+        let key = test_key();
+
+        let mut labels = HashMap::new();
+        labels.insert("app".to_string(), "nginx".to_string());
+        let mut obj = test_obj_in_ns(key.clone(), "web", "ns1", json!({}));
+        obj.metadata.labels = labels;
+        store.create(obj).await.unwrap();
+
+        // Retrieve and verify labels are set
+        let retrieved = store.get(&key, Some("ns1"), "web").await.unwrap();
+        assert_eq!(retrieved.metadata.labels.get("app").unwrap(), "nginx");
+        assert_eq!(retrieved.metadata.namespace.as_deref(), Some("ns1"));
     }
 }

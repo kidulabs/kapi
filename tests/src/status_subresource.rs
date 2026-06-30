@@ -37,7 +37,7 @@ pub async fn test_status_subresource_update(app: &TestApp) -> Result<(), String>
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
                 "spec": {
@@ -54,7 +54,7 @@ pub async fn test_status_subresource_update(app: &TestApp) -> Result<(), String>
     // Update status via /status endpoint
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/test-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/test-widget/status",
             serde_json::json!({
                 "status": {
                     "phase": "Running",
@@ -69,7 +69,7 @@ pub async fn test_status_subresource_update(app: &TestApp) -> Result<(), String>
     assert_eq!(updated["status"]["message"], "All systems go");
 
     // Get status via /status endpoint
-    let resp = client.get("/apis/example.io/v1/Widget/test-widget/status").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/test-widget/status").await;
     assert_status(&resp, StatusCode::OK);
     let status: Value = parse_body(resp).await;
     // Status is returned as inline JSON value (no `value` wrapper)
@@ -89,7 +89,7 @@ pub async fn test_status_subresource_not_enabled(app: &TestApp) -> Result<(), St
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
                 "spec": {
@@ -102,13 +102,13 @@ pub async fn test_status_subresource_not_enabled(app: &TestApp) -> Result<(), St
     assert_status(&resp, StatusCode::CREATED);
 
     // GET /status should return 404
-    let resp = client.get("/apis/example.io/v1/Widget/test-widget/status").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/test-widget/status").await;
     assert_status(&resp, StatusCode::NOT_FOUND);
 
     // PUT /status should return 404
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/test-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/test-widget/status",
             serde_json::json!({
                 "status": { "phase": "Running" }
             }),
@@ -130,7 +130,7 @@ pub async fn test_status_subresource_invalid_data(app: &TestApp) -> Result<(), S
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
                 "spec": {
@@ -145,7 +145,7 @@ pub async fn test_status_subresource_invalid_data(app: &TestApp) -> Result<(), S
     // Update status with invalid data (phase should be string, not integer)
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/test-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/test-widget/status",
             serde_json::json!({
                 "status": { "phase": 123 }
             }),
@@ -167,7 +167,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
                 "spec": {
@@ -182,7 +182,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
     // Update status (no CAS check)
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/test-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/test-widget/status",
             serde_json::json!({
                 "status": { "phase": "Running" }
             }),
@@ -193,7 +193,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
     assert_eq!(status_updated["status"]["phase"], "Running");
 
     // Verify status persists by getting the object
-    let resp = client.get("/apis/example.io/v1/Widget/test-widget").await;
+    let resp = client.get("/apis/example.io/v1/namespaces/default/Widget/test-widget").await;
     assert_status(&resp, StatusCode::OK);
     let obj: Value = parse_body(resp).await;
     assert_eq!(obj["status"]["phase"], "Running");
@@ -201,7 +201,7 @@ pub async fn test_concurrent_spec_and_status_update(app: &TestApp) -> Result<(),
     // Update status again - should succeed without CAS
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/test-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/test-widget/status",
             serde_json::json!({
                 "status": { "phase": "Completed" }
             }),
@@ -225,7 +225,7 @@ pub async fn test_create_rejects_unknown_top_level_fields(app: &TestApp) -> Resu
     // Create object with "status" as unknown top-level field — should be rejected
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "test-widget" },
                 "spec": {
@@ -258,7 +258,7 @@ pub async fn test_status_update_nonexistent_object(app: &TestApp) -> Result<(), 
     // PUT /status for object that does not exist should return 404 NotFound
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/nonexistent-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/nonexistent-widget/status",
             serde_json::json!({
                 "status": { "phase": "Running" }
             }),
@@ -286,7 +286,7 @@ pub async fn test_status_update_publishes_status_modified_event(
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "event-widget" },
                 "spec": {
@@ -299,13 +299,14 @@ pub async fn test_status_update_publishes_status_modified_event(
     assert_status(&resp, StatusCode::CREATED);
 
     // Start watching BEFORE status update
-    let mut events = watch_events(&client, "/apis/example.io/v1/Widget?watch=true").await;
+    let mut events =
+        watch_events(&client, "/apis/example.io/v1/namespaces/default/Widget?watch=true").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Update status
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/event-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/event-widget/status",
             serde_json::json!({
                 "status": { "phase": "Running" }
             }),
@@ -348,7 +349,7 @@ pub async fn test_status_update_preserves_spec(app: &TestApp) -> Result<(), Stri
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "spec-preserve-widget" },
                 "spec": {
@@ -363,7 +364,7 @@ pub async fn test_status_update_preserves_spec(app: &TestApp) -> Result<(), Stri
     // Update status
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/spec-preserve-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/spec-preserve-widget/status",
             serde_json::json!({
                 "status": { "phase": "Running", "message": "test" }
             }),
@@ -372,7 +373,8 @@ pub async fn test_status_update_preserves_spec(app: &TestApp) -> Result<(), Stri
     assert_status(&resp, StatusCode::OK);
 
     // Get the object and verify spec is unchanged
-    let resp = client.get("/apis/example.io/v1/Widget/spec-preserve-widget").await;
+    let resp =
+        client.get("/apis/example.io/v1/namespaces/default/Widget/spec-preserve-widget").await;
     assert_status(&resp, StatusCode::OK);
     let obj: Value = parse_body(resp).await;
 
@@ -394,7 +396,7 @@ pub async fn test_status_update_bumps_resource_version(app: &TestApp) -> Result<
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "rv-bump-widget" },
                 "spec": {
@@ -413,7 +415,7 @@ pub async fn test_status_update_bumps_resource_version(app: &TestApp) -> Result<
     // Update status
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/rv-bump-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/rv-bump-widget/status",
             serde_json::json!({
                 "status": { "phase": "Running" }
             }),
@@ -475,7 +477,7 @@ pub async fn test_get_status_returns_null_when_not_set(app: &TestApp) -> Result<
     // Create object (status is null)
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "null-status-widget" },
                 "spec": {
@@ -488,7 +490,8 @@ pub async fn test_get_status_returns_null_when_not_set(app: &TestApp) -> Result<
     assert_status(&resp, StatusCode::CREATED);
 
     // GET /status should return null (status not yet set)
-    let resp = client.get("/apis/example.io/v1/Widget/null-status-widget/status").await;
+    let resp =
+        client.get("/apis/example.io/v1/namespaces/default/Widget/null-status-widget/status").await;
     assert_status(&resp, StatusCode::OK);
     let status: Value = parse_body(resp).await;
     assert!(status.is_null(), "status should be null when not yet set, got: {}", status);
@@ -556,7 +559,7 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "replace-widget" },
                 "spec": {
@@ -571,7 +574,7 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
     // Set status with both phase and message
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/replace-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/replace-widget/status",
             serde_json::json!({
                 "status": { "phase": "Running", "message": "initial message" }
             }),
@@ -582,7 +585,7 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
     // Update status with only phase (no message)
     let resp = client
         .put(
-            "/apis/example.io/v1/Widget/replace-widget/status",
+            "/apis/example.io/v1/namespaces/default/Widget/replace-widget/status",
             serde_json::json!({
                 "status": { "phase": "Completed" }
             }),
@@ -591,7 +594,8 @@ pub async fn test_status_update_replaces_not_merges(app: &TestApp) -> Result<(),
     assert_status(&resp, StatusCode::OK);
 
     // Verify message is gone (replaced, not merged)
-    let resp = client.get("/apis/example.io/v1/Widget/replace-widget/status").await;
+    let resp =
+        client.get("/apis/example.io/v1/namespaces/default/Widget/replace-widget/status").await;
     assert_status(&resp, StatusCode::OK);
     let status: Value = parse_body(resp).await;
     assert_eq!(status["phase"], "Completed");
@@ -621,7 +625,7 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(
     // Create object
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             serde_json::json!({
                 "metadata": { "name": "spec-event-widget" },
                 "spec": {
@@ -638,7 +642,8 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(
     let updated_at = created["system"]["updatedAt"].as_str().unwrap_or("").to_string();
 
     // Start watching
-    let mut events = watch_events(&client, "/apis/example.io/v1/Widget?watch=true").await;
+    let mut events =
+        watch_events(&client, "/apis/example.io/v1/namespaces/default/Widget?watch=true").await;
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Update spec (regular PUT)
@@ -648,7 +653,9 @@ pub async fn test_spec_update_publishes_modified_not_status_modified(
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "red", "size": 20 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/spec-event-widget", update_body).await;
+    let resp = client
+        .put("/apis/example.io/v1/namespaces/default/Widget/spec-event-widget", update_body)
+        .await;
     assert_status(&resp, StatusCode::OK);
 
     // Should receive Modified event (not StatusModified)

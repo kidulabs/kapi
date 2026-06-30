@@ -44,10 +44,17 @@ impl AppState {
 /// Builds the router with all object CRUD routes.
 ///
 /// Route structure:
-/// - GET/POST /apis/{group}/{version}/{kind} → list/create
-/// - GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name} → get/update/delete
+/// - Cluster-scoped:
+///   - GET/POST /apis/{group}/{version}/{kind} → list/create
+///   - GET/PUT/DELETE /apis/{group}/{version}/{kind}/{name} → get/update/delete
+///   - GET/PUT /apis/{group}/{version}/{kind}/{name}/status → get_status/update_status
+/// - Namespace-scoped:
+///   - GET/POST /apis/{group}/{version}/namespaces/{namespace}/{kind} → list/create (namespaced)
+///   - GET/PUT/DELETE /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name} → get/update/delete (namespaced)
+///   - GET/PUT /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}/status → get_status/update_status (namespaced)
 pub fn build_router(state: AppState) -> Router {
     Router::new()
+        // === Cluster-scoped routes ===
         // Collection routes: list (GET) and create (POST)
         .route(
             "/apis/{group}/{version}/{kind}",
@@ -62,6 +69,25 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/apis/{group}/{version}/{kind}/{name}/status",
             axum::routing::get(handler::get_status).put(handler::update_status),
+        )
+        // === Namespace-scoped routes ===
+        // Collection routes: list (GET) and create (POST)
+        .route(
+            "/apis/{group}/{version}/namespaces/{namespace}/{kind}",
+            axum::routing::get(handler::list_namespaced).post(handler::create_namespaced),
+        )
+        // Named resource routes: get (GET), update (PUT), delete (DELETE)
+        .route(
+            "/apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}",
+            axum::routing::get(handler::get_namespaced)
+                .put(handler::update_namespaced)
+                .delete(handler::delete_namespaced),
+        )
+        // Status subresource routes: get status (GET), update status (PUT)
+        .route(
+            "/apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}/status",
+            axum::routing::get(handler::get_status_namespaced)
+                .put(handler::update_status_namespaced),
         )
         // OpenAPI spec endpoint: dynamically generated on every request
         .route("/openapi", axum::routing::get(crate::openapi::get_openapi_handler))

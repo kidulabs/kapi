@@ -2,7 +2,15 @@
 
 ## Base URL
 
-All API paths are under `/apis/{group}/{version}/{kind}`.
+API paths follow the pattern `/apis/{group}/{version}/{kind}` for cluster-scoped resources and `/apis/{group}/{version}/namespaces/{namespace}/{kind}` for namespace-scoped resources.
+
+### Scope Model
+
+Each Schema can declare a `scope` of `"Namespaced"` (default) or `"Cluster"`:
+
+- **Namespaced** resources (e.g., `NamespacedWidget`) can be created/managed via namespace-scoped URLs or cluster-scoped URLs (which default to the `"default"` namespace).
+- **Cluster-scoped** resources (e.g., `ClusterWidget`, `Schema`) are only accessible via cluster-scoped URLs. Using a namespace-scoped URL on a cluster-scoped kind returns `400 InvalidRequest`.
+- **Schema** itself is always cluster-scoped — its URLs never include a namespace segment.
 
 ## Schema Registry
 
@@ -112,8 +120,16 @@ DELETE /apis/kapi.io/v1/Schema/{name}
 
 ### Create an Object
 
+Cluster-scoped (for cluster-scoped kinds or cross-namespace):
+
 ```
 POST /apis/{group}/{version}/{kind}
+```
+
+Namespace-scoped (for namespace-scoped kinds):
+
+```
+POST /apis/{group}/{version}/namespaces/{namespace}/{kind}
 ```
 
 **Request body:**
@@ -138,7 +154,12 @@ POST /apis/{group}/{version}/{kind}
 }
 ```
 
-The `metadata.name` field is extracted by the handler. The optional `metadata.labels` field is extracted and validated (see [Label Validation](#label-validation)). The optional `metadata.annotations` field is extracted and validated (see [Annotation Validation](#annotation-validation)). The `spec` field contains the domain data, validated against the registered JSON Schema. Only `metadata` and `spec` are allowed as top-level fields; unknown fields are rejected with 400 Bad Request.
+**Key behaviors:**
+
+- **Scope validation**: The server looks up the schema's scope. Cluster-scoped kinds reject namespace-scoped URLs with `400 InvalidRequest`. Namespaced kinds on cluster-scoped URLs default to the `"default"` namespace.
+- **Namespace precedence**: The namespace from the URL path always takes precedence over any `metadata.namespace` in the request body. The body `namespace` field is ignored if present.
+- The `metadata.name` field is extracted by the handler. The optional `metadata.labels` field is extracted and validated (see [Label Validation](#label-validation)). The optional `metadata.annotations` field is extracted and validated (see [Annotation Validation](#annotation-validation)).
+- The `spec` field contains the domain data, validated against the registered JSON Schema. Only `metadata` and `spec` are allowed as top-level fields; unknown fields are rejected with 400 Bad Request.
 
 **Response:** `201 Created`
 
@@ -170,8 +191,16 @@ The `metadata.name` field is extracted by the handler. The optional `metadata.la
 
 ### List Objects
 
+Cluster-scoped (includes cross-namespace for namespaced kinds):
+
 ```
 GET /apis/{group}/{version}/{kind}
+```
+
+Namespace-scoped:
+
+```
+GET /apis/{group}/{version}/namespaces/{namespace}/{kind}
 ```
 
 **Query parameters:**
@@ -196,7 +225,8 @@ GET /apis/{group}/{version}/{kind}
 ### Get an Object
 
 ```
-GET /apis/{group}/{version}/{kind}/{name}
+GET /apis/{group}/{version}/{kind}/{name}                                         (cluster-scoped)
+GET /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}                  (namespace-scoped)
 ```
 
 **Response:** `200 OK` — single StoredObject
@@ -208,7 +238,8 @@ GET /apis/{group}/{version}/{kind}/{name}
 Requires the full StoredObject with the correct `system.resourceVersion`.
 
 ```
-PUT /apis/{group}/{version}/{kind}/{name}
+PUT /apis/{group}/{version}/{kind}/{name}                                        (cluster-scoped)
+PUT /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}                 (namespace-scoped)
 ```
 
 **Request body:** Full StoredObject with updated `spec` and optionally updated `metadata.labels` and `metadata.annotations`.
@@ -244,7 +275,8 @@ Labels and annotations are updated by the client sending the full `StoredObject`
 ### Delete an Object
 
 ```
-DELETE /apis/{group}/{version}/{kind}/{name}
+DELETE /apis/{group}/{version}/{kind}/{name}                                       (cluster-scoped)
+DELETE /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}                (namespace-scoped)
 ```
 
 **Response:** `200 OK` — the deleted StoredObject
@@ -275,8 +307,13 @@ Controllers watch for objects with `deletionTimestamp` set, perform cleanup, the
 Add `?watch=true` to any list request to receive an SSE stream of real-time events.
 
 ```
-GET /apis/example.io/v1/Widget?watch=true
+GET /apis/example.io/v1/Widget?watch=true                                          (cluster-scoped / cross-namespace)
+GET /apis/example.io/v1/namespaces/staging/NamespacedWidget?watch=true            (namespace-scoped)
 ```
+
+**Namespace-aware watching:**
+- Namespace-scoped watch streams receive only events for objects in the specified namespace
+- Cluster-scoped watch streams receive events from all namespaces (cross-namespace watch)
 
 Stream delivers `WatchEvent` messages:
 
@@ -479,7 +516,8 @@ The status subresource provides a separate write path for controller-runtime sem
 ### Get Status
 
 ```
-GET /apis/{group}/{version}/{kind}/{name}/status
+GET /apis/{group}/{version}/{kind}/{name}/status                                  (cluster-scoped)
+GET /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}/status           (namespace-scoped)
 ```
 
 **Response:** `200 OK` — returns the status as an inline JSON value, or `null` if not set.
@@ -504,7 +542,8 @@ GET /apis/{group}/{version}/{kind}/{name}/status
 ### Update Status
 
 ```
-PUT /apis/{group}/{version}/{kind}/{name}/status
+PUT /apis/{group}/{version}/{kind}/{name}/status                                  (cluster-scoped)
+PUT /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}/status           (namespace-scoped)
 ```
 
 **Request body:**
@@ -576,6 +615,7 @@ All errors follow this format:
 
 | Status | Code | Description |
 |--------|------|-------------|
+| 400 | `InvalidRequest` | Namespace mismatch (URL vs body), or cluster-scoped kind used with namespace URL |
 | 404 | `NotFound` | Resource not found |
 | 404 | `StatusSubresourceNotEnabled` | Status subresource accessed for kind without statusSchema |
 | 409 | `Conflict` | OCC version mismatch or duplicate |

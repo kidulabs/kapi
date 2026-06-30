@@ -40,11 +40,14 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
 
-    let mut events = watch_events(&client, "/apis/example.io/v1/Widget?watch=true").await;
+    let mut events =
+        watch_events(&client, "/apis/example.io/v1/namespaces/default/Widget?watch=true").await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    let resp = client.post("/apis/example.io/v1/Widget", widget("watch-test", "purple", 7)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("watch-test", "purple", 7))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
     let created: Value = parse_body(resp).await;
     let rv = created["system"]["resourceVersion"].as_u64().unwrap_or(0);
@@ -68,7 +71,8 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
         "system": { "resourceVersion": rv, "createdAt": created_at, "updatedAt": updated_at },
         "spec": { "color": "orange", "size": 99 }
     });
-    let resp = client.put("/apis/example.io/v1/Widget/watch-test", update_body).await;
+    let resp =
+        client.put("/apis/example.io/v1/namespaces/default/Widget/watch-test", update_body).await;
     assert_status(&resp, StatusCode::OK);
 
     let modified = timeout(Duration::from_secs(3), events.recv())
@@ -81,7 +85,7 @@ pub async fn test_watch_object_events(app: &TestApp) -> Result<(), String> {
         modified.event_type
     );
 
-    let resp = client.delete("/apis/example.io/v1/Widget/watch-test").await;
+    let resp = client.delete("/apis/example.io/v1/namespaces/default/Widget/watch-test").await;
     assert_status(&resp, StatusCode::OK);
 
     let deleted = timeout(Duration::from_secs(3), events.recv())
@@ -104,19 +108,22 @@ pub async fn test_watch_by_name_matching_events(app: &TestApp) -> Result<(), Str
     // Watch only events for "my-target-widget"
     let mut events = watch_events(
         &client,
-        "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=my-target-widget",
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&fieldSelector=metadata.name=my-target-widget",
     )
     .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create a non-target object — should NOT arrive on this watch
-    let resp = client.post("/apis/example.io/v1/Widget", widget("other-widget", "blue", 1)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("other-widget", "blue", 1))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Create the target object — should arrive
-    let resp =
-        client.post("/apis/example.io/v1/Widget", widget("my-target-widget", "red", 2)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("my-target-widget", "red", 2))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
     // We should receive exactly one event — only for the target name
@@ -140,14 +147,16 @@ pub async fn test_watch_by_name_non_matching_filtered(app: &TestApp) -> Result<(
     // Watch only events for "target"
     let mut events = watch_events(
         &client,
-        "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=target",
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&fieldSelector=metadata.name=target",
     )
     .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create a non-target object — should be filtered out
-    let resp = client.post("/apis/example.io/v1/Widget", widget("other", "blue", 1)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("other", "blue", 1))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
     // Verify no event arrived for the non-target object
@@ -163,13 +172,16 @@ pub async fn test_watch_invalid_field_selector(app: &TestApp) -> Result<(), Stri
 
     // Unsupported field
     let resp = client
-        .get("/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.namespace=default")
+        .get("/apis/example.io/v1/namespaces/default/Widget?watch=true&fieldSelector=metadata.namespace=default")
         .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "expected 400 for unsupported field");
 
     // Malformed field selector
-    let resp =
-        client.get("/apis/example.io/v1/Widget?watch=true&fieldSelector=invalid-format").await;
+    let resp = client
+        .get(
+            "/apis/example.io/v1/namespaces/default/Widget?watch=true&fieldSelector=invalid-format",
+        )
+        .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST, "expected 400 for malformed field selector");
 
     Ok(())
@@ -182,15 +194,18 @@ pub async fn test_watch_by_name_and_watch_all_simultaneously(app: &TestApp) -> R
     // Two simultaneous watches: one filtered by name, one watching all
     let mut named_events = watch_events(
         &client,
-        "/apis/example.io/v1/Widget?watch=true&fieldSelector=metadata.name=named-one",
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&fieldSelector=metadata.name=named-one",
     )
     .await;
-    let mut all_events = watch_events(&client, "/apis/example.io/v1/Widget?watch=true").await;
+    let mut all_events =
+        watch_events(&client, "/apis/example.io/v1/namespaces/default/Widget?watch=true").await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create the named object — both watchers should receive it
-    let resp = client.post("/apis/example.io/v1/Widget", widget("named-one", "green", 3)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("named-one", "green", 3))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
     // All watcher receives the event
@@ -208,7 +223,9 @@ pub async fn test_watch_by_name_and_watch_all_simultaneously(app: &TestApp) -> R
     assert_eq!(named_event.object.metadata.name, "named-one");
 
     // Create an unnamed object — only the all watcher should receive it
-    let resp = client.post("/apis/example.io/v1/Widget", widget("other", "yellow", 4)).await;
+    let resp = client
+        .post("/apis/example.io/v1/namespaces/default/Widget", widget("other", "yellow", 4))
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
     // All watcher receives the event for "other"
@@ -260,6 +277,7 @@ pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<
             key: key.clone(),
             metadata: ObjectMeta {
                 name: "cleanup-test".to_string(),
+                namespace: None,
                 labels: std::collections::HashMap::new(),
                 annotations: std::collections::HashMap::new(),
                 finalizers: Vec::new(),
@@ -286,16 +304,18 @@ pub async fn test_watch_by_label_selector_matching(app: &TestApp) -> Result<(), 
     let client = app.client();
     register_widget_schema(&client).await;
 
-    let mut events =
-        watch_events(&client, "/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx")
-            .await;
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&labelSelector=app=nginx",
+    )
+    .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create object with matching labels
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("matching", "blue", 1, serde_json::json!({"app": "nginx"})),
         )
         .await;
@@ -315,16 +335,18 @@ pub async fn test_watch_by_label_selector_non_matching(app: &TestApp) -> Result<
     let client = app.client();
     register_widget_schema(&client).await;
 
-    let mut events =
-        watch_events(&client, "/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx")
-            .await;
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&labelSelector=app=nginx",
+    )
+    .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create object with non-matching labels
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("non-matching", "red", 2, serde_json::json!({"app": "apache"})),
         )
         .await;
@@ -343,7 +365,7 @@ pub async fn test_watch_by_label_selector_and_combinator(app: &TestApp) -> Resul
 
     let mut events = watch_events(
         &client,
-        "/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,env=prod",
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&labelSelector=app=nginx,env=prod",
     )
     .await;
 
@@ -352,7 +374,7 @@ pub async fn test_watch_by_label_selector_and_combinator(app: &TestApp) -> Resul
     // Create object with both labels
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels(
                 "both-labels",
                 "green",
@@ -380,16 +402,18 @@ pub async fn test_watch_by_label_selector_not_exists(app: &TestApp) -> Result<()
     let client = app.client();
     register_widget_schema(&client).await;
 
-    let mut events =
-        watch_events(&client, "/apis/example.io/v1/Widget?watch=true&labelSelector=!experimental")
-            .await;
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&labelSelector=!experimental",
+    )
+    .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create object without experimental label
     let resp = client
         .post(
-            "/apis/example.io/v1/Widget",
+            "/apis/example.io/v1/namespaces/default/Widget",
             widget_with_labels("no-experimental", "yellow", 4, serde_json::json!({"app": "nginx"})),
         )
         .await;
@@ -414,7 +438,7 @@ pub async fn test_watch_invalid_label_selector(app: &TestApp) -> Result<(), Stri
 
     // Malformed selector (empty segment)
     let resp =
-        client.get("/apis/example.io/v1/Widget?watch=true&labelSelector=app=nginx,,env=prod").await;
+        client.get("/apis/example.io/v1/namespaces/default/Widget?watch=true&labelSelector=app=nginx,,env=prod").await;
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
@@ -422,7 +446,9 @@ pub async fn test_watch_invalid_label_selector(app: &TestApp) -> Result<(), Stri
     );
 
     // Empty value
-    let resp = client.get("/apis/example.io/v1/Widget?watch=true&labelSelector=app=").await;
+    let resp = client
+        .get("/apis/example.io/v1/namespaces/default/Widget?watch=true&labelSelector=app=")
+        .await;
     assert_eq!(
         resp.status(),
         StatusCode::BAD_REQUEST,
@@ -436,14 +462,21 @@ pub async fn test_watch_empty_label_selector(app: &TestApp) -> Result<(), String
     let client = app.client();
     register_widget_schema(&client).await;
 
-    let mut events =
-        watch_events(&client, "/apis/example.io/v1/Widget?watch=true&labelSelector=").await;
+    let mut events = watch_events(
+        &client,
+        "/apis/example.io/v1/namespaces/default/Widget?watch=true&labelSelector=",
+    )
+    .await;
 
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Create any object — should receive event (empty selector matches all)
-    let resp =
-        client.post("/apis/example.io/v1/Widget", widget("empty-selector", "purple", 5)).await;
+    let resp = client
+        .post(
+            "/apis/example.io/v1/namespaces/default/Widget",
+            widget("empty-selector", "purple", 5),
+        )
+        .await;
     assert_status(&resp, StatusCode::CREATED);
 
     let event = timeout(Duration::from_secs(3), events.recv())

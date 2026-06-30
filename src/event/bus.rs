@@ -209,6 +209,7 @@ mod tests {
                 key: make_key(),
                 metadata: ObjectMeta {
                     name: "test".into(),
+                    namespace: None,
                     labels: HashMap::new(),
                     annotations: HashMap::new(),
                     finalizers: Vec::new(),

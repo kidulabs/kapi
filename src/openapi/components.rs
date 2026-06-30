@@ -64,6 +64,11 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                 "type": "object",
                 "properties": {
                     "name": { "type": "string" },
+                    "namespace": {
+                        "type": "string",
+                        "description": "Namespace of the object. Set automatically from the URL for namespace-scoped operations. For cluster-scoped objects, this is omitted. When listing via cluster-scoped route (cross-namespace), objects from multiple namespaces will have different values.",
+                        "nullable": true
+                    },
                     "labels": {
                         "type": "object",
                         "additionalProperties": { "type": "string" }

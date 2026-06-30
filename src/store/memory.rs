@@ -7,7 +7,7 @@ use crate::object::types::{ContinueToken, FieldSelector, ListOptions, ListRespon
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 pub struct InMemoryStore {
-    objects: DashMap<(ResourceKey, String), StoredObject>,
+    objects: DashMap<(ResourceKey, Option<String>, String), StoredObject>,
 }
 
 impl Default for InMemoryStore {
@@ -25,7 +25,8 @@ impl InMemoryStore {
 #[async_trait]
 impl ObjectStore for InMemoryStore {
     async fn create(&self, object: StoredObject) -> Result<StoredObject, AppError> {
-        let entry = (object.key.clone(), object.metadata.name.clone());
+        let entry =
+            (object.key.clone(), object.metadata.namespace.clone(), object.metadata.name.clone());
         if self.objects.contains_key(&entry) {
             return Err(AppError::AlreadyExists {
                 kind: object.key.kind.clone(),
@@ -37,17 +38,43 @@ impl ObjectStore for InMemoryStore {
         Ok(object)
     }
 
-    async fn get(&self, key: &ResourceKey, name: &str) -> Result<StoredObject, AppError> {
-        let entry = (key.clone(), name.to_string());
-        self.objects.get(&entry).map(|r| r.clone()).ok_or_else(|| AppError::NotFound {
-            what: "object".to_string(),
-            identifier: format!("{}/{}", key.kind, name),
+    async fn get(
+        &self,
+        key: &ResourceKey,
+        namespace: Option<&str>,
+        name: &str,
+    ) -> Result<StoredObject, AppError> {
+        let entry = (key.clone(), namespace.map(|s| s.to_string()), name.to_string());
+        self.objects.get(&entry).map(|r| r.clone()).ok_or_else(|| {
+            let ns_prefix = namespace.map(|ns| format!("{ns}/")).unwrap_or_default();
+            AppError::NotFound {
+                what: "object".to_string(),
+                identifier: format!("{}{}/{}", ns_prefix, key.kind, name),
+            }
         })
     }
 
-    async fn list(&self, key: &ResourceKey, opts: ListOptions) -> Result<ListResponse, AppError> {
-        let mut items: Vec<StoredObject> =
-            self.objects.iter().filter(|r| r.key().0 == *key).map(|r| r.clone()).collect();
+    async fn list(
+        &self,
+        key: &ResourceKey,
+        namespace: Option<&str>,
+        opts: ListOptions,
+    ) -> Result<ListResponse, AppError> {
+        let mut items: Vec<StoredObject> = self
+            .objects
+            .iter()
+            .filter(|r| {
+                let (rk, ns, _) = r.key();
+                if *rk != *key {
+                    return false;
+                }
+                match namespace {
+                    Some(ns_filter) => ns.as_deref() == Some(ns_filter),
+                    None => true, // No namespace filter → include all
+                }
+            })
+            .map(|r| r.clone())
+            .collect();
 
         // Apply field_selector filter
         if let Some(ref selector) = opts.field_selector {
@@ -61,13 +88,34 @@ impl ObjectStore for InMemoryStore {
             items.retain(|obj| selector.matches(&obj.metadata.labels));
         }
 
-        // Sort by name (after filtering, before pagination)
-        items.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
+        // Sort after filtering, before pagination
+        if namespace.is_some() {
+            // Namespace-scoped: sort by name only
+            items.sort_by(|a, b| a.metadata.name.cmp(&b.metadata.name));
+        } else {
+            // Cross-namespace: sort by (namespace, name)
+            items.sort_by(|a, b| {
+                a.metadata
+                    .namespace
+                    .cmp(&b.metadata.namespace)
+                    .then_with(|| a.metadata.name.cmp(&b.metadata.name))
+            });
+        }
 
         let skip_past = opts.continue_token.as_ref().map(decode_continue_token).transpose()?;
 
         if let Some(ref skip) = skip_past {
-            items.retain(|item| item.metadata.name > *skip);
+            let skip_ns = &skip.0;
+            let skip_name = &skip.1;
+            if namespace.is_some() {
+                // Namespace-scoped: compare by name only
+                items.retain(|item| item.metadata.name > *skip_name);
+            } else {
+                // Cross-namespace: compare by (namespace, name)
+                items.retain(|item| {
+                    (&item.metadata.namespace, &item.metadata.name) > (skip_ns, skip_name)
+                });
+            }
         }
 
         let limit = opts.limit.unwrap_or(usize::MAX);
@@ -75,7 +123,9 @@ impl ObjectStore for InMemoryStore {
         items.truncate(limit);
 
         let continue_token = if has_more {
-            items.last().map(|last| encode_continue_token(&last.metadata.name))
+            items.last().map(|last| {
+                encode_continue_token(last.metadata.namespace.as_deref(), &last.metadata.name)
+            })
         } else {
             None
         };
@@ -86,16 +136,20 @@ impl ObjectStore for InMemoryStore {
     fn transaction(
         &self,
         key: &ResourceKey,
+        namespace: Option<&str>,
         name: &str,
         op: Box<dyn FnOnce(&StoredObject) -> TransactionOp + Send>,
     ) -> Result<StoredObject, AppError> {
-        let entry = (key.clone(), name.to_string());
+        let entry = (key.clone(), namespace.map(|s| s.to_string()), name.to_string());
 
         // Acquire exclusive lock on this specific object via DashMap's per-key locking.
         // The lock is held for the entire transaction (read → callback → write).
-        let mut guard = self.objects.get_mut(&entry).ok_or_else(|| AppError::NotFound {
-            what: "object".to_string(),
-            identifier: format!("{}/{}", key.kind, name),
+        let mut guard = self.objects.get_mut(&entry).ok_or_else(|| {
+            let ns_prefix = namespace.map(|ns| format!("{ns}/")).unwrap_or_default();
+            AppError::NotFound {
+                what: "object".to_string(),
+                identifier: format!("{}{}/{}", ns_prefix, key.kind, name),
+            }
         })?;
 
         let existing = guard.clone();
@@ -125,16 +179,25 @@ impl ObjectStore for InMemoryStore {
     }
 }
 
-fn decode_continue_token(token: &ContinueToken) -> Result<String, AppError> {
+fn decode_continue_token(token: &ContinueToken) -> Result<(Option<String>, String), AppError> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&token.0)
         .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
-    String::from_utf8(bytes)
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))
+    let json: serde_json::Value = serde_json::from_slice(&bytes)
+        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
+    let namespace = json.get("namespace").and_then(|v| v.as_str()).map(|s| s.to_string());
+    let name = json.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("invalid continue token: missing name"))
+    })?;
+    Ok((namespace, name.to_string()))
 }
 
-fn encode_continue_token(name: &str) -> ContinueToken {
-    let encoded = base64::engine::general_purpose::STANDARD.encode(name);
+fn encode_continue_token(namespace: Option<&str>, name: &str) -> ContinueToken {
+    let json = serde_json::json!({
+        "namespace": namespace,
+        "name": name
+    });
+    let encoded = base64::engine::general_purpose::STANDARD.encode(json.to_string());
     ContinueToken(encoded)
 }
 
@@ -151,6 +214,7 @@ mod tests {
             key,
             metadata: ObjectMeta {
                 name: name.to_string(),
+                namespace: None,
                 labels: HashMap::new(),
                 annotations: HashMap::new(),
                 finalizers: Vec::new(),
@@ -181,7 +245,7 @@ mod tests {
         assert_eq!(created.key, key);
         assert_eq!(created.system.resource_version, 1);
 
-        let retrieved = store.get(&key, "my-widget").await.unwrap();
+        let retrieved = store.get(&key, None, "my-widget").await.unwrap();
         assert_eq!(retrieved.metadata.name, created.metadata.name);
         assert_eq!(retrieved.spec, created.spec);
         assert_eq!(retrieved.system.resource_version, created.system.resource_version);
@@ -204,7 +268,7 @@ mod tests {
         let store = InMemoryStore::new();
         let key = test_key();
 
-        let err = store.get(&key, "nonexistent").await.unwrap_err();
+        let err = store.get(&key, None, "nonexistent").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -218,7 +282,11 @@ mod tests {
         store.create(test_obj(key.clone(), "b", json!({}))).await.unwrap();
 
         let res = store
-            .list(&key, ListOptions { limit: None, continue_token: None, ..Default::default() })
+            .list(
+                &key,
+                None,
+                ListOptions { limit: None, continue_token: None, ..Default::default() },
+            )
             .await
             .unwrap();
         let names: Vec<&str> = res.items.iter().map(|o| o.metadata.name.as_str()).collect();
@@ -236,7 +304,11 @@ mod tests {
         }
 
         let res = store
-            .list(&key, ListOptions { limit: Some(2), continue_token: None, ..Default::default() })
+            .list(
+                &key,
+                None,
+                ListOptions { limit: Some(2), continue_token: None, ..Default::default() },
+            )
             .await
             .unwrap();
         assert_eq!(res.items.len(), 2);
@@ -255,7 +327,11 @@ mod tests {
         }
 
         let first = store
-            .list(&key, ListOptions { limit: Some(2), continue_token: None, ..Default::default() })
+            .list(
+                &key,
+                None,
+                ListOptions { limit: Some(2), continue_token: None, ..Default::default() },
+            )
             .await
             .unwrap();
         let token = first.continue_token.unwrap();
@@ -263,6 +339,7 @@ mod tests {
         let second = store
             .list(
                 &key,
+                None,
                 ListOptions { limit: Some(2), continue_token: Some(token), ..Default::default() },
             )
             .await
@@ -285,6 +362,7 @@ mod tests {
         let result = store
             .transaction(
                 &key,
+                None,
                 "test",
                 Box::new(|existing| {
                     // Caller is responsible for setting metadata before Apply
@@ -307,7 +385,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(&key, "nonexistent", Box::new(|_existing| unreachable!()))
+            .transaction(&key, None, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -321,12 +399,12 @@ mod tests {
             store.create(test_obj(key.clone(), "my-widget", json!({"x": 1}))).await.unwrap();
 
         let deleted = store
-            .transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .transaction(&key, None, "my-widget", Box::new(|_existing| TransactionOp::Delete))
             .unwrap();
         assert_eq!(deleted.metadata.name, created.metadata.name);
         assert_eq!(deleted.spec, created.spec);
 
-        let err = store.get(&key, "my-widget").await.unwrap_err();
+        let err = store.get(&key, None, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
 
@@ -338,12 +416,14 @@ mod tests {
         store.create(test_obj(key.clone(), "my-widget", json!({"x": 1}))).await.unwrap();
         store.create(test_obj(key.clone(), "other", json!({"x": 2}))).await.unwrap();
 
-        store.transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete)).unwrap();
+        store
+            .transaction(&key, None, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .unwrap();
 
-        let err = store.get(&key, "my-widget").await.unwrap_err();
+        let err = store.get(&key, None, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
 
-        let other = store.get(&key, "other").await.unwrap();
+        let other = store.get(&key, None, "other").await.unwrap();
         assert_eq!(other.spec, json!({"x": 2}));
     }
 
@@ -353,7 +433,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(&key, "nonexistent", Box::new(|_existing| unreachable!()))
+            .transaction(&key, None, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -364,7 +444,11 @@ mod tests {
         let key = test_key();
 
         let res = store
-            .list(&key, ListOptions { limit: None, continue_token: None, ..Default::default() })
+            .list(
+                &key,
+                None,
+                ListOptions { limit: None, continue_token: None, ..Default::default() },
+            )
             .await
             .unwrap();
         assert!(res.items.is_empty());
@@ -385,6 +469,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     field_selector: Some(FieldSelector::NameEquals("foo".to_string())),
                     ..Default::default()
@@ -418,6 +503,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     label_selector: Some(LabelSelector {
                         requirements: vec![crate::object::types::LabelRequirement::Equals {
@@ -456,6 +542,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     field_selector: Some(FieldSelector::NameEquals("target".to_string())),
                     label_selector: Some(LabelSelector {
@@ -491,6 +578,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     label_selector: Some(LabelSelector {
                         requirements: vec![crate::object::types::LabelRequirement::Equals {
@@ -518,6 +606,7 @@ mod tests {
         let res = store
             .list(
                 &key,
+                None,
                 ListOptions {
                     field_selector: Some(FieldSelector::NameEquals("nonexistent".to_string())),
                     ..Default::default()
@@ -581,6 +670,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
@@ -605,7 +695,7 @@ mod tests {
         let key = test_key();
 
         let err = store
-            .transaction(&key, "nonexistent", Box::new(|_existing| unreachable!()))
+            .transaction(&key, None, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
     }
@@ -621,6 +711,7 @@ mod tests {
         store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
@@ -634,6 +725,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
@@ -657,6 +749,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
@@ -684,6 +777,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
@@ -714,6 +808,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(move |existing| {
                     let mut obj = existing.clone();
@@ -746,6 +841,7 @@ mod tests {
         let updated = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(move |existing| {
                     let mut obj = existing.clone();
@@ -772,6 +868,7 @@ mod tests {
         let err = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|_existing| {
                     TransactionOp::Abort(AppError::Internal(anyhow::anyhow!("aborted")))
@@ -782,7 +879,7 @@ mod tests {
         assert!(matches!(err, AppError::Internal(_)));
 
         // Object should be unchanged
-        let obj = store.get(&key, "my-widget").await.unwrap();
+        let obj = store.get(&key, None, "my-widget").await.unwrap();
         assert_eq!(obj.spec, json!({"x": 1}));
     }
 
@@ -796,6 +893,7 @@ mod tests {
         let result = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
@@ -811,6 +909,7 @@ mod tests {
         let result2 = store
             .transaction(
                 &key,
+                None,
                 "my-widget",
                 Box::new(|existing| {
                     let mut obj = existing.clone();
@@ -832,10 +931,163 @@ mod tests {
         store.create(test_obj(key.clone(), "my-widget", json!({"x": 1}))).await.unwrap();
 
         // Delete via transaction
-        store.transaction(&key, "my-widget", Box::new(|_existing| TransactionOp::Delete)).unwrap();
+        store
+            .transaction(&key, None, "my-widget", Box::new(|_existing| TransactionOp::Delete))
+            .unwrap();
 
         // Get should now fail with NotFound
-        let err = store.get(&key, "my-widget").await.unwrap_err();
+        let err = store.get(&key, None, "my-widget").await.unwrap_err();
         assert!(matches!(err, AppError::NotFound { .. }));
+    }
+
+    // --- Namespace tests ---
+
+    fn test_obj_in_ns(
+        key: ResourceKey,
+        name: &str,
+        namespace: &str,
+        spec: serde_json::Value,
+    ) -> StoredObject {
+        let mut obj = test_obj(key, name, spec);
+        obj.metadata.namespace = Some(namespace.to_string());
+        obj
+    }
+
+    #[tokio::test]
+    async fn same_name_different_namespaces_coexist() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store.create(test_obj_in_ns(key.clone(), "shared", "ns1", json!({"x": 1}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "shared", "ns2", json!({"x": 2}))).await.unwrap();
+
+        let ns1 = store.get(&key, Some("ns1"), "shared").await.unwrap();
+        assert_eq!(ns1.spec, json!({"x": 1}));
+
+        let ns2 = store.get(&key, Some("ns2"), "shared").await.unwrap();
+        assert_eq!(ns2.spec, json!({"x": 2}));
+    }
+
+    #[tokio::test]
+    async fn list_with_namespace_none_returns_all_namespaces() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store.create(test_obj_in_ns(key.clone(), "a", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "b", "ns2", json!({}))).await.unwrap();
+
+        let res = store
+            .list(
+                &key,
+                None,
+                ListOptions { limit: None, continue_token: None, ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn list_with_namespace_some_returns_only_that_namespace() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store.create(test_obj_in_ns(key.clone(), "a", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "b", "ns2", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "c", "ns1", json!({}))).await.unwrap();
+
+        let res = store
+            .list(
+                &key,
+                Some("ns1"),
+                ListOptions { limit: None, continue_token: None, ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.items.len(), 2);
+        assert_eq!(res.items[0].metadata.name, "a");
+        assert_eq!(res.items[1].metadata.name, "c");
+    }
+
+    #[tokio::test]
+    async fn cross_namespace_pagination_with_continue_token() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        // Create objects across namespaces: ns1/a, ns1/b, ns2/c, ns2/d
+        store.create(test_obj_in_ns(key.clone(), "a", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "b", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "c", "ns2", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "d", "ns2", json!({}))).await.unwrap();
+
+        // First page: namespace=None, limit=2 → sorted by (namespace, name)
+        let page1 = store
+            .list(
+                &key,
+                None,
+                ListOptions { limit: Some(2), continue_token: None, ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page1.items.len(), 2);
+        // Sorted by (namespace, name): ns1/a, ns1/b, ns2/c, ns2/d
+        assert_eq!(page1.items[0].metadata.namespace.as_deref(), Some("ns1"));
+        assert_eq!(page1.items[0].metadata.name, "a");
+        assert_eq!(page1.items[1].metadata.namespace.as_deref(), Some("ns1"));
+        assert_eq!(page1.items[1].metadata.name, "b");
+        assert!(page1.continue_token.is_some());
+
+        // Second page: resume with continue_token
+        let token = page1.continue_token.unwrap();
+        let page2 = store
+            .list(
+                &key,
+                None,
+                ListOptions { limit: Some(2), continue_token: Some(token), ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page2.items.len(), 2);
+        assert_eq!(page2.items[0].metadata.namespace.as_deref(), Some("ns2"));
+        assert_eq!(page2.items[0].metadata.name, "c");
+        assert_eq!(page2.items[1].metadata.namespace.as_deref(), Some("ns2"));
+        assert_eq!(page2.items[1].metadata.name, "d");
+        assert!(page2.continue_token.is_none());
+    }
+
+    #[tokio::test]
+    async fn namespace_scoped_list_with_continue_token() {
+        let store = InMemoryStore::new();
+        let key = test_key();
+
+        store.create(test_obj_in_ns(key.clone(), "a", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "b", "ns1", json!({}))).await.unwrap();
+        store.create(test_obj_in_ns(key.clone(), "c", "ns1", json!({}))).await.unwrap();
+
+        let page1 = store
+            .list(
+                &key,
+                Some("ns1"),
+                ListOptions { limit: Some(2), continue_token: None, ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page1.items.len(), 2);
+        assert_eq!(page1.items[0].metadata.name, "a");
+        assert_eq!(page1.items[1].metadata.name, "b");
+        assert!(page1.continue_token.is_some());
+
+        let token = page1.continue_token.unwrap();
+        let page2 = store
+            .list(
+                &key,
+                Some("ns1"),
+                ListOptions { limit: Some(2), continue_token: Some(token), ..Default::default() },
+            )
+            .await
+            .unwrap();
+        assert_eq!(page2.items.len(), 1);
+        assert_eq!(page2.items[0].metadata.name, "c");
+        assert!(page2.continue_token.is_none());
     }
 }
