@@ -192,9 +192,15 @@ mod tests {
     use serde_json::json;
     use std::collections::HashMap;
 
-    fn make_service() -> (ObjectService, SchemaService) {
+    async fn make_service() -> (ObjectService, SchemaService) {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+
+        // Bootstrap the "default" namespace so namespaced creates succeed.
+        crate::namespace::bootstrap_default_namespace(&store, &event_bus)
+            .await
+            .expect("bootstrap should succeed");
+
         let meta_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
         let schema_registry = SchemaRegistry::new(store.clone(), meta_validator.clone());
@@ -205,7 +211,7 @@ mod tests {
 
     #[tokio::test]
     async fn delete_v1_schema_keeps_v2_cache_intact() {
-        let (object_service, schema_service) = make_service();
+        let (object_service, schema_service) = make_service().await;
         let schema_key = schema_key();
 
         // Register v1 schema
@@ -292,7 +298,7 @@ mod tests {
     // T: Schema create stores object with namespace: None
     #[tokio::test]
     async fn schema_create_stores_with_no_namespace() {
-        let (_object_service, schema_service) = make_service();
+        let (_object_service, schema_service) = make_service().await;
         let schema_key = schema_key();
         let name = "Widget.example.io.v1".to_string();
 
@@ -333,7 +339,7 @@ mod tests {
     // T: Schema create preserves user-specified scope in stored spec
     #[tokio::test]
     async fn schema_create_preserves_user_scope() {
-        let (_object_service, schema_service) = make_service();
+        let (_object_service, schema_service) = make_service().await;
         let schema_key = schema_key();
         let name = "Widget.example.io.v1".to_string();
 
@@ -451,7 +457,7 @@ mod tests {
     // T: Schema update preserves user-specified scope and forces namespace to None
     #[tokio::test]
     async fn schema_update_preserves_scope_and_forces_no_namespace() {
-        let (_object_service, schema_service) = make_service();
+        let (_object_service, schema_service) = make_service().await;
         let schema_key = schema_key();
         let name = "Widget.example.io.v1".to_string();
 

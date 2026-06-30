@@ -1,7 +1,7 @@
 use kapi_tests::{
     TestApp, all_test_stores, finalizers, generation_semantics, list_filtering, namespace,
-    object_annotations, object_crud, object_labels, optimistic_concurrency, schema_deletion,
-    schema_validation, status_subresource, watch_events,
+    namespace_resource, object_annotations, object_crud, object_labels, optimistic_concurrency,
+    schema_deletion, schema_validation, status_subresource, watch_events,
 };
 
 #[tokio::main]
@@ -20,7 +20,7 @@ async fn main() {
         macro_rules! run_test {
             ($name:expr, $test:expr) => {{
                 print!("  {} ... ", $name);
-                let app = TestApp::with_store((store.factory)());
+                let app = TestApp::with_store((store.factory)()).await;
                 match $test(&app).await {
                     Ok(()) => println!("ok"),
                     Err(e) => {
@@ -173,6 +173,46 @@ async fn main() {
             "continue_token_across_ns_boundary",
             namespace::test_continue_token_across_namespace_boundary
         );
+
+        println!();
+        // Namespace resource tests
+        run_test!("create_namespace", namespace_resource::test_create_namespace);
+        run_test!("get_namespace", namespace_resource::test_get_namespace);
+        run_test!("get_nonexistent_namespace", namespace_resource::test_get_nonexistent_namespace);
+        run_test!("list_namespaces", namespace_resource::test_list_namespaces);
+        run_test!("update_namespace", namespace_resource::test_update_namespace);
+        run_test!("default_namespace_exists", namespace_resource::test_default_namespace_exists);
+        run_test!("default_namespace_in_list", namespace_resource::test_default_namespace_in_list);
+        run_test!(
+            "delete_default_rejected",
+            namespace_resource::test_delete_default_namespace_rejected
+        );
+        run_test!(
+            "default_persists_after_delete_attempt",
+            namespace_resource::test_default_namespace_persists_after_delete_attempt
+        );
+        run_test!(
+            "create_in_nonexistent_404",
+            namespace_resource::test_create_in_nonexistent_namespace_404
+        );
+        run_test!(
+            "create_in_default_succeeds",
+            namespace_resource::test_create_in_default_namespace_succeeds
+        );
+        run_test!(
+            "create_after_namespace_creation",
+            namespace_resource::test_create_after_namespace_creation_succeeds
+        );
+        run_test!("delete_non_empty_409", namespace_resource::test_delete_non_empty_namespace_409);
+        run_test!(
+            "delete_non_empty_includes_count",
+            namespace_resource::test_delete_non_empty_namespace_error_includes_count
+        );
+        run_test!(
+            "delete_after_clearing",
+            namespace_resource::test_delete_namespace_after_clearing_objects
+        );
+        run_test!("delete_empty", namespace_resource::test_delete_empty_namespace);
 
         println!();
         run_test!("delete_schema_no_objects", schema_deletion::test_delete_schema_no_objects);

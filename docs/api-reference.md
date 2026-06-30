@@ -12,6 +12,25 @@ Each Schema can declare a `scope` of `"Namespaced"` (default) or `"Cluster"`:
 - **Cluster-scoped** resources (e.g., `ClusterWidget`, `Schema`) are only accessible via cluster-scoped URLs. Using a namespace-scoped URL on a cluster-scoped kind returns `400 InvalidRequest`.
 - **Schema** itself is always cluster-scoped — its URLs never include a namespace segment.
 
+## Namespace Resource
+
+Namespace is a built-in **cluster-scoped** resource (`kind: "Namespace"`, `group: "kapi.io"`, `version: "v1"`). The schema is registered automatically at server startup; the `"default"` namespace is auto-created.
+
+### Lifecycle
+
+- **`"default"`** namespace: auto-created at startup, undeletable (DELETE returns `403 Forbidden`).
+- **Other namespaces**: created via `POST /apis/kapi.io/v1/Namespace`; can be deleted only when empty.
+- **Existence validation**: creating an object in a non-existent namespace returns `404 Not Found` (namespaced kinds only).
+- **Deletion blocking**: deleting a non-empty namespace returns `409 Conflict` with the object count.
+
+### Endpoints
+
+- `GET /apis/kapi.io/v1/Namespace` — list all namespaces
+- `POST /apis/kapi.io/v1/Namespace` — create a namespace
+- `GET /apis/kapi.io/v1/Namespace/{name}` — get a namespace
+- `PUT /apis/kapi.io/v1/Namespace/{name}` — update a namespace (e.g., labels)
+- `DELETE /apis/kapi.io/v1/Namespace/{name}` — delete a namespace (default is protected, non-empty returns 409)
+
 ## Schema Registry
 
 Schemas define the JSON Schema that objects of a given kind must conform to. They are themselves stored as objects of kind `Schema` in group `kapi.io`.

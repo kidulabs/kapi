@@ -10,8 +10,10 @@ use dashmap::DashMap;
 use serde_json::Value;
 
 use crate::error::AppError;
-use crate::object::types::SchemaData;
-use crate::schema::{JsonSchemaValidator, SchemaValidator, schema_cache_key, schema_key};
+use crate::object::types::{ListOptions, SchemaData};
+use crate::schema::{
+    JsonSchemaValidator, SCOPE_NAMESPACED, SchemaValidator, schema_cache_key, schema_key,
+};
 use crate::store::{ObjectStore, ResourceKey};
 
 /// Result of schema validation and compilation: parsed data, spec validator, optional status validator.
@@ -316,6 +318,35 @@ impl SchemaRegistry {
         );
 
         Ok(scope)
+    }
+
+    /// Returns [`ResourceKey`]s for all registered namespaced kinds.
+    ///
+    /// Queries Schema objects from the store, filters to those with
+    /// `scope == "Namespaced"`, and constructs a `ResourceKey` from each
+    /// schema's `target_group`, `target_version`, and `target_kind`.
+    pub async fn list_namespaced_keys(&self) -> Result<Vec<ResourceKey>, AppError> {
+        let schema_key = schema_key();
+        let resp = self
+            .store
+            .list(&schema_key, None, ListOptions { limit: Some(usize::MAX), ..Default::default() })
+            .await?;
+        let mut keys = Vec::new();
+        for obj in &resp.items {
+            let schema_data: SchemaData =
+                serde_json::from_value(obj.spec.clone()).map_err(|e| {
+                    AppError::InvalidSchema(format!("failed to parse schema data: {}", e))
+                })?;
+            if schema_data.scope != SCOPE_NAMESPACED {
+                continue;
+            }
+            keys.push(ResourceKey {
+                group: schema_data.target_group,
+                version: schema_data.target_version,
+                kind: schema_data.target_kind,
+            });
+        }
+        Ok(keys)
     }
 }
 

@@ -12,6 +12,13 @@ API="$BASE/apis/$GROUP/v1"
 register_cluster_schema "$GROUP" "v1" "$KIND_CL"
 register_namespaced_schema "$GROUP" "v1" "$KIND_NS"
 
+# Pre-create the namespaces used in this test (Namespace existence is now required)
+NS_API="$BASE/apis/kapi.io/v1/Namespace"
+for ns in ns-a ns-b staging; do
+  curl -s -X POST "$NS_API" -H "Content-Type: application/json" \
+    -d "{\"metadata\":{\"name\":\"$ns\"},\"spec\":{\"annotations\":{}}}" > /dev/null
+done
+
 echo "========== TEST 77: Cluster-Scoped Kind Rejects Namespace in URL =========="
 curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST "$API/namespaces/some-ns/$KIND_CL" \
   -H "Content-Type: application/json" \

@@ -61,6 +61,17 @@ pub enum AppError {
     #[error("object '{name}' is being deleted; only finalizer modifications are allowed")]
     ObjectBeingDeleted { name: String },
 
+    // Attempting to delete the protected "default" namespace.
+    // Maps to HTTP 403 Forbidden in into_response.
+    #[error("the '{name}' namespace is protected and cannot be deleted")]
+    ProtectedNamespace { name: String },
+
+    // Attempting to delete a namespace that still contains objects.
+    // Maps to HTTP 409 Conflict in into_response. The caller must delete
+    // all contained objects first (Phase 2 will introduce cascade deletion).
+    #[error("namespace '{namespace}' is not empty: contains {object_count} object(s)")]
+    NamespaceNotEmpty { namespace: String, object_count: usize },
+
     // Status subresource is not enabled for this kind (no statusSchema defined)
     #[error("status subresource not enabled for kind '{kind}'")]
     StatusSubresourceNotEnabled { kind: String },
@@ -184,6 +195,20 @@ impl IntoResponse for AppError {
                     "object '{name}' is being deleted; only finalizer modifications are allowed"
                 ),
                 json!({ "name": name }),
+            ),
+            // ProtectedNamespace maps to HTTP 403 Forbidden
+            AppError::ProtectedNamespace { name } => (
+                StatusCode::FORBIDDEN,
+                "ProtectedNamespace",
+                format!("the '{name}' namespace is protected and cannot be deleted"),
+                json!({ "name": name }),
+            ),
+            // NamespaceNotEmpty maps to HTTP 409 Conflict
+            AppError::NamespaceNotEmpty { namespace, object_count } => (
+                StatusCode::CONFLICT,
+                "NamespaceNotEmpty",
+                format!("namespace '{namespace}' is not empty: contains {object_count} object(s)"),
+                json!({ "namespace": namespace, "objectCount": object_count }),
             ),
             AppError::Internal(_err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,

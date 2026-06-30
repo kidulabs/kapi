@@ -10,6 +10,34 @@ pub const SCHEMA_KIND: &str = "Schema";
 pub const SCHEMA_GROUP: &str = "kapi.io";
 pub const SCHEMA_VERSION: &str = "v1";
 
+// Namespace resource constants.
+// Namespace is a built-in core type registered at server startup.
+// It is always cluster-scoped (uses group/version above) and has
+// `kind: "Namespace"`. The `"default"` namespace is auto-created at
+// startup and protected from deletion.
+pub const NAMESPACE_KIND: &str = "Namespace";
+pub const NAMESPACE_GROUP: &str = "kapi.io";
+pub const NAMESPACE_VERSION: &str = "v1";
+pub const DEFAULT_NAMESPACE: &str = "default";
+
+/// Scope value for namespaced resources.
+pub const SCOPE_NAMESPACED: &str = "Namespaced";
+
+/// Scope value for cluster-scoped resources.
+pub const SCOPE_CLUSTER: &str = "Cluster";
+
+/// Returns the [`ResourceKey`] for the built-in Namespace resource.
+///
+/// Cluster-scoped — all Namespace operations pass `namespace: None`
+/// to the store, regardless of any namespace in the URL path.
+pub fn namespace_key() -> ResourceKey {
+    ResourceKey {
+        group: NAMESPACE_GROUP.to_string(),
+        version: NAMESPACE_VERSION.to_string(),
+        kind: NAMESPACE_KIND.to_string(),
+    }
+}
+
 /// Generates the cache key for a schema validator.
 ///
 /// The key format is `"{kind}.{group}.{version}"`, which is used as both the

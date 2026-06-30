@@ -7,7 +7,7 @@ use axum::http::StatusCode;
 use serde_json::Value;
 
 use crate::{
-    DEFAULT_NS, TestApp, assert_status, parse_body, register_schema_with_scope,
+    DEFAULT_NS, TestApp, assert_status, parse_body, register_namespace, register_schema_with_scope,
     register_widget_schema, widget, widget_collection_url, widget_item_url,
 };
 
@@ -19,6 +19,11 @@ use crate::{
 pub async fn test_cross_namespace_list_all_namespaces(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
+
+    // Register the test namespaces first (default is auto-bootstrapped)
+    for ns in &["ns-a", "ns-b", "ns-c"] {
+        register_namespace(&client, ns).await;
+    }
 
     // Create objects in different namespaces
     for ns in &["ns-a", "ns-b", "ns-c"] {
@@ -65,6 +70,8 @@ pub async fn test_cross_namespace_list_all_namespaces(app: &TestApp) -> Result<(
 pub async fn test_cross_namespace_list_with_pagination(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
+    register_namespace(&client, "ns-a").await;
+    register_namespace(&client, "ns-b").await;
 
     // Create objects across namespaces with controlled names for ordering
     for ns in &["ns-a", "ns-b"] {
@@ -134,6 +141,8 @@ pub async fn test_cross_namespace_list_with_pagination(app: &TestApp) -> Result<
 pub async fn test_same_name_different_namespaces(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
+    register_namespace(&client, "ns-a").await;
+    register_namespace(&client, "ns-b").await;
 
     let name = "shared-name";
 
@@ -177,6 +186,8 @@ pub async fn test_same_name_different_namespaces(app: &TestApp) -> Result<(), St
 pub async fn test_delete_one_namespace_does_not_affect_other(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
+    register_namespace(&client, "ns-a").await;
+    register_namespace(&client, "ns-b").await;
 
     let name = "shared-delete-test";
 
@@ -290,6 +301,7 @@ pub async fn test_namespaced_defaults_to_default_namespace(app: &TestApp) -> Res
 pub async fn test_namespaced_uses_provided_namespace(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
+    register_namespace(&client, "custom-ns").await;
 
     // Create via namespace-scoped route with a custom namespace
     let resp = client
@@ -322,6 +334,9 @@ pub async fn test_namespaced_uses_provided_namespace(app: &TestApp) -> Result<()
 pub async fn test_continue_token_across_namespace_boundary(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
+    for ns in &["ns-a", "ns-b", "ns-c"] {
+        register_namespace(&client, ns).await;
+    }
 
     // Create objects across three namespaces with specific ordering
     // Namespace "ns-a": obj-aa, obj-ab

@@ -7,8 +7,10 @@
 - [ ] **Watch bookmarks** — Periodic bookmark events with current resourceVersion
 - [ ] **Field selector variants** — `FieldSelector::NameNotEquals`, `FieldSelector::NameIn` for more expressive field-based filtering
 - [ ] **Zombie watcher cleanup** — Dead watchers (client disconnected) are only cleaned up lazily on next `publish()` for that `ResourceKey`. If no objects of a kind ever exist, watchers accumulate unbounded. Preferred: periodic background cleanup task. Secondary: `Drop` impl on `EventBus` entries.
-- [ ] **Add Finalizer Support** — add finalizer support
+- [ ] **Namespace cascade deletion (Phase 2)** — `deletion_timestamp`-based cascade: when a Namespace is deleted with objects, set `deletion_timestamp`, controllers finalize their objects, then hard-delete. Currently namespace deletion is hard-blocked (409) until empty.
+- [x] **Add Finalizer Support** — add finalizer support
 - [x] **Status OCC decision** — Status updates are unconditional (no OCC). The status subresource exists to eliminate spec/status write conflicts; OCC on status would reintroduce them. The `generation` field provides staleness detection; controllers should be idempotent. Revisit if controller-runtime ships with multi-controller status writes AND silent clobbering causes demonstrable problems.
+- [x] **Namespace-as-resource (Phase 1)** — Namespace is a first-class cluster-scoped core type. `"default"` namespace is auto-created and undeletable. Namespace existence is validated on object CREATE. Non-empty namespaces cannot be deleted. `WatchFilter::Namespace(String)` for namespace-scoped watch.
 
 ## Deferred Improvements
 

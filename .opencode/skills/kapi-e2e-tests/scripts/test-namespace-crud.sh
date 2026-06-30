@@ -7,8 +7,15 @@ GROUP="ns-crud.$TEST_RUN"
 KIND="NamespacedWidget"
 BASE="http://localhost:8080"
 API="$BASE/apis/$GROUP/v1"
+NS_API="$BASE/apis/kapi.io/v1/Namespace"
 
 register_namespaced_schema "$GROUP" "v1" "$KIND"
+
+# Pre-create the namespaces used in this test (Namespace existence is now required)
+for ns in staging production development defaults-test; do
+  curl -s -X POST "$NS_API" -H "Content-Type: application/json" \
+    -d "{\"metadata\":{\"name\":\"$ns\"},\"spec\":{\"annotations\":{}}}" > /dev/null
+done
 
 echo "========== TEST 60: Create Object in Namespace =========="
 curl -s -w "\nHTTP_STATUS: %{http_code}\n" -X POST "$API/namespaces/staging/$KIND" \

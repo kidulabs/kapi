@@ -17,70 +17,39 @@ The ObjectService SHALL NOT handle Schema lifecycle operations (Schema create, u
 - **THEN** the service SHALL be constructed with the provided SchemaRegistry
 - **AND** the registry's cache SHALL be shared with SchemaService
 
-### Requirement: create validates spec against schema and sets metadata
-The `create(key, meta, spec)` method SHALL:
-1. Validate `meta.labels` using label validation rules (key format, value format, length limits)
-2. Validate `meta.annotations` using annotation validation rules (key format, total size limit)
-3. Call `schema_registry.get_validator(&key)` to obtain the validator for the object's kind
-4. Validate `spec` against the compiled schema validator
-5. Construct a `StoredObject` with `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`
-6. Call `store.create()` to persist
-7. Call `event_bus.publish()` with an `Added` event
+### Requirement: create validates scope, namespace existence, spec, and sets metadata
+The `create(key, namespace, meta, spec)` method SHALL:
+1. Look up the Schema scope for the kind
+2. Validate namespace vs scope:
+   - If scope is "Cluster" and namespace is Some, reject with error
+   - If scope is "Namespaced" and namespace is None, set namespace to "default"
+3. **Validate namespace existence**: if scope is "Namespaced", check that the namespace exists by looking up the Namespace object. If not found, return 404 Not Found.
+4. Validate `meta.labels` using label validation rules
+5. Validate `meta.annotations` using annotation validation rules
+6. Call `schema_registry.get_validator(&key)` to obtain the validator
+7. Validate `spec` against the compiled schema validator
+8. Construct a `StoredObject` with `metadata.namespace = namespace`, `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`
+9. Call `store.create()` to persist
+10. Call `event_bus.publish()` with an `Added` event
 
-The service SHALL construct the complete `StoredObject` with all system metadata before calling `store.create()`. The store SHALL persist the object as-is.
+#### Scenario: Create object in existing namespace
+- **WHEN** creating an object in namespace "production" and the namespace exists
+- **THEN** the object SHALL be created successfully
 
-The service SHALL set `StoredObject.spec` to the `serde_json::Value` directly. There SHALL be no `SpecData { value: ... }` construction anywhere in the service.
+#### Scenario: Create object in non-existent namespace
+- **WHEN** creating an object in namespace "nonexistent" and the namespace does not exist
+- **THEN** the service SHALL return 404 Not Found
 
-Label and annotation validation SHALL occur in the service to ensure non-HTTP callers (tests, future gRPC/CLI) receive the same validation guarantees. If validation fails, an `AppError::InvalidLabel` or `AppError::InvalidAnnotation` error SHALL be returned with a descriptive message.
+#### Scenario: Create object in "default" namespace
+- **WHEN** creating an object without explicit namespace (defaults to "default")
+- **THEN** the object SHALL be created successfully (since "default" always exists)
 
-#### Scenario: Create object with initial metadata
-- **WHEN** creating a regular object
-- **THEN** the service SHALL set `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`, with `spec` set to the validated `Value` directly
-- **AND** the store SHALL persist the object with those exact metadata values
-
-#### Scenario: Create object for unregistered kind
-- **WHEN** creating an object for a kind with no registered Schema
-- **THEN** the error is `NotFound` (no schema found for this kind)
-
-#### Scenario: Create object with invalid spec
-- **WHEN** creating an object whose spec fails schema validation
-- **THEN** the error is `SchemaValidation` with the list of validation errors
-
-#### Scenario: Create duplicate object
-- **WHEN** creating an object with a name that already exists
-- **THEN** the store returns `AlreadyExists` and no event is published
-
-#### Scenario: Create object with schema not in cache but in store
-- **WHEN** creating an object for a kind whose Schema exists in the store but is not in the cache
-- **THEN** `schema_registry.get_validator()` fetches the schema from the store, compiles it on-demand, caches it, and the object is validated against it
-
-#### Scenario: Create object with stored schema that fails compilation
-- **WHEN** creating an object for a kind whose Schema exists in the store but whose `jsonSchema` fails compilation
-- **THEN** `schema_registry.get_validator()` returns `AppError::StoredSchemaCompilationFailed`
-- **AND** no object is created
-
-#### Scenario: Create with valid labels
-- **WHEN** `create()` is called with valid labels
-- **THEN** validation SHALL pass and the object SHALL be persisted with labels
-
-#### Scenario: Create with invalid label key
-- **WHEN** `create()` is called with a label key that violates format rules
-- **THEN** an `AppError::InvalidLabel` error SHALL be returned with a descriptive message
-
-#### Scenario: Create with invalid label value
-- **WHEN** `create()` is called with a label value that violates format rules
-- **THEN** an `AppError::InvalidLabel` error SHALL be returned with a descriptive message
-
-#### Scenario: Create with empty labels map
-- **WHEN** `create()` is called with an empty labels `HashMap`
-- **THEN** validation SHALL pass and the object SHALL be persisted
-
-#### Scenario: Create with invalid annotations
-- **WHEN** `create()` is called with annotations that violate format rules (empty key, key exceeding 256 chars, or total size exceeding 256KB)
-- **THEN** an `AppError::InvalidAnnotation` error SHALL be returned with a descriptive message
+#### Scenario: Create cluster-scoped object skips namespace check
+- **WHEN** creating a cluster-scoped object
+- **THEN** namespace existence SHALL NOT be checked (cluster-scoped objects have no metadata.namespace)
 
 ### Requirement: get delegates to store
-The `get(key, name)` method SHALL delegate to `store.get(key, name)` without additional validation.
+The `get(key, namespace, name)` method SHALL delegate to `store.get(key, namespace, name)` without additional validation.
 
 #### Scenario: Get existing object
 - **WHEN** `get` is called for an existing object
@@ -91,7 +60,7 @@ The `get(key, name)` method SHALL delegate to `store.get(key, name)` without add
 - **THEN** the error is `NotFound`
 
 ### Requirement: list delegates to store
-The `list(key, opts)` method SHALL delegate to `store.list(key, opts)` without additional validation.
+The `list(key, namespace, opts)` method SHALL delegate to `store.list(key, namespace, opts)` without additional validation.
 
 #### Scenario: List objects with pagination
 - **WHEN** `list` is called with limit and continue token
@@ -148,7 +117,7 @@ Label and annotation validation SHALL occur in the service to ensure non-HTTP ca
 - **THEN** an `AppError::InvalidAnnotation` error SHALL be returned and no persistence SHALL occur
 
 ### Requirement: delete handles finalizer lifecycle for regular objects
-The `delete(key, name)` method SHALL handle the finalizer-based deletion lifecycle for regular (non-Schema) objects:
+The `delete(key, namespace, name)` method SHALL handle the finalizer-based deletion lifecycle for regular (non-Schema) objects:
 1. Fetch the existing object from the store
 2. If `finalizers` is empty: hard-delete via `store.transaction()` with `TransactionOp::Delete`, publish `Deleted` event
 3. If `finalizers` is non-empty and `deletion_timestamp` is None: mark for deletion via `store.transaction()`, set `deletion_timestamp`, publish `Modified` event

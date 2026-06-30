@@ -351,12 +351,26 @@ async fn list_impl(
 
     // Branch on watch parameter
     if query.watch == Some(true) {
-        // Combine field and label selectors with WatchFilter::And when both present
-        let filter = match (field_filter, label_filter) {
+        // Build the inner selector filter from field/label selectors.
+        // Combined with WatchFilter::And when both are present.
+        let selector_filter = match (field_filter, label_filter) {
             (Some(f), Some(l)) => WatchFilter::And(Box::new(f), Box::new(l)),
             (Some(f), None) => f,
             (None, Some(l)) => l,
             (None, None) => WatchFilter::All,
+        };
+
+        // For namespace-scoped routes, restrict events to the URL's namespace
+        // by composing WatchFilter::Namespace(ns) with the selector filter.
+        // For cluster-scoped routes, the selector_filter alone is used
+        // (WatchFilter::All means cross-namespace watch).
+        // Optimization: And(Namespace(ns), All) is equivalent to Namespace(ns) alone.
+        let filter = match namespace {
+            Some(ns) => match selector_filter {
+                WatchFilter::All => WatchFilter::Namespace(ns),
+                other => WatchFilter::And(Box::new(WatchFilter::Namespace(ns)), Box::new(other)),
+            },
+            None => selector_filter,
         };
         return Ok(watch(state, key, filter).into_response());
     }
@@ -648,33 +662,49 @@ mod tests {
 
     use crate::event::EventBus;
     use crate::event::EventPublisher;
-    use crate::object::schema_service::SchemaService;
-    use crate::object::service::ObjectService;
     use crate::object::types::LabelRequirement;
-    use crate::routes::build_router;
-    use crate::schema::SchemaValidator;
-    use crate::schema::meta_schema::compile_meta_schema;
     use crate::store::ObjectStore;
     use crate::store::memory::InMemoryStore;
 
     /// Builds a test router with an in-memory store for handler-level tests.
-    fn test_router() -> Router {
+    /// Bootstraps the "default" namespace and registers the Namespace schema
+    /// (via `crate::create_app`) so namespaced creates and Namespace CRUD succeed.
+    async fn test_router() -> Router {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         let event_bus: Arc<dyn EventPublisher> = Arc::new(EventBus::default());
-        let meta_validator: Arc<dyn SchemaValidator> =
-            Arc::new(compile_meta_schema().expect("meta-schema should compile"));
+        let config =
+            crate::AppConfig { port: 0, store: store.clone(), event_bus: event_bus.clone() };
+        crate::create_app(&config).await.expect("failed to build test app")
+    }
 
-        let schema_service =
-            Arc::new(SchemaService::new(store.clone(), event_bus.clone(), meta_validator.clone()));
-
-        let object_service = Arc::new(ObjectService::new(
-            store.clone(),
-            event_bus.clone(),
-            crate::schema::SchemaRegistry::new(store, meta_validator),
-        ));
-
-        let state = AppState::new(object_service, schema_service);
-        build_router(state)
+    /// Creates a Namespace object via the test router. Used by tests that
+    /// reference non-default namespaces. Requires the test_router to have
+    /// bootstrapped the Namespace schema (it does by default).
+    async fn register_namespace(router: &Router, name: &str) {
+        // Namespace objects require a non-empty spec (handler validation).
+        // The Namespace schema accepts any object, so we use an empty-but-non-empty
+        // workaround. Note: the spec field is just a no-op for Namespace objects.
+        let body = serde_json::json!({
+            "metadata": { "name": name },
+            "spec": { "annotations": {} }
+        });
+        let req = Request::builder()
+            .method(Method::POST)
+            .uri("/apis/kapi.io/v1/Namespace")
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::to_string(&body).unwrap()))
+            .unwrap();
+        let resp = router.clone().oneshot(req).await.unwrap();
+        let status = resp.status();
+        let body_bytes =
+            http_body_util::BodyExt::collect(resp.into_body()).await.unwrap().to_bytes();
+        let body: serde_json::Value =
+            serde_json::from_slice(&body_bytes).unwrap_or(serde_json::json!({}));
+        assert_eq!(
+            status,
+            StatusCode::CREATED,
+            "namespace {name} registration should succeed, got {status}: {body}"
+        );
     }
 
     /// Sends a request via a cloned router (consuming the clone) and returns response.
@@ -730,7 +760,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_invalid_label_key_before_service() {
-        let router = test_router();
+        let router = test_router().await;
         register_schema(&router).await;
 
         // Create with invalid label key containing '!'
@@ -758,7 +788,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_rejects_annotations_exceeding_size_limit_before_service() {
-        let router = test_router();
+        let router = test_router().await;
         register_schema(&router).await;
 
         // Create with annotations exceeding 256KB
@@ -788,7 +818,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_rejects_invalid_label_key_before_service() {
-        let router = test_router();
+        let router = test_router().await;
         register_schema(&router).await;
 
         // First create a valid object
@@ -1111,8 +1141,9 @@ mod tests {
 
     #[tokio::test]
     async fn create_via_namespaced_route_stores_with_namespace() {
-        let router = test_router();
+        let router = test_router().await;
         register_namespaced_schema(&router).await;
+        register_namespace(&router, "my-namespace").await;
 
         let body = json!({
             "metadata": { "name": "test-widget" },
@@ -1139,8 +1170,9 @@ mod tests {
 
     #[tokio::test]
     async fn get_via_namespaced_route_returns_object() {
-        let router = test_router();
+        let router = test_router().await;
         register_namespaced_schema(&router).await;
+        register_namespace(&router, "test-ns").await;
 
         // First create via namespaced route
         let create_body = json!({
@@ -1171,8 +1203,10 @@ mod tests {
 
     #[tokio::test]
     async fn get_via_namespaced_route_returns_404_for_wrong_namespace() {
-        let router = test_router();
+        let router = test_router().await;
         register_namespaced_schema(&router).await;
+        register_namespace(&router, "ns-a").await;
+        register_namespace(&router, "ns-b").await;
 
         // Create in ns-a
         let create_body = json!({
@@ -1201,8 +1235,9 @@ mod tests {
 
     #[tokio::test]
     async fn update_via_namespaced_route_returns_updated_object() {
-        let router = test_router();
+        let router = test_router().await;
         register_namespaced_schema(&router).await;
+        register_namespace(&router, "test-ns").await;
 
         // Create
         let create_body = json!({
@@ -1253,8 +1288,9 @@ mod tests {
 
     #[tokio::test]
     async fn delete_via_namespaced_route_returns_deleted_object() {
-        let router = test_router();
+        let router = test_router().await;
         register_namespaced_schema(&router).await;
+        register_namespace(&router, "test-ns").await;
 
         // Create
         let create_body = json!({
@@ -1294,8 +1330,10 @@ mod tests {
 
     #[tokio::test]
     async fn list_via_namespaced_route_returns_only_objects_in_namespace() {
-        let router = test_router();
+        let router = test_router().await;
         register_namespaced_schema(&router).await;
+        register_namespace(&router, "ns-a").await;
+        register_namespace(&router, "ns-b").await;
 
         // Create objects in different namespaces
         for ns in &["ns-a", "ns-b"] {
@@ -1330,8 +1368,11 @@ mod tests {
 
     #[tokio::test]
     async fn cross_namespace_list_returns_all_namespaces() {
-        let router = test_router();
+        let router = test_router().await;
         register_namespaced_schema(&router).await;
+        register_namespace(&router, "ns-a").await;
+        register_namespace(&router, "ns-b").await;
+        register_namespace(&router, "ns-c").await;
 
         // Create objects in different namespaces
         for ns in &["ns-a", "ns-b", "ns-c"] {
@@ -1364,7 +1405,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_via_namespaced_route_rejects_cluster_scoped_kind() {
-        let router = test_router();
+        let router = test_router().await;
         register_schema(&router).await; // Cluster-scoped Widget schema
 
         // Try to create a cluster-scoped Widget via namespaced route

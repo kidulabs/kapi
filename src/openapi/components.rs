@@ -255,6 +255,12 @@ pub(crate) fn build_static_components() -> Vec<(String, Value)> {
                     "statusSchema": {
                         "type": "object",
                         "description": "Optional JSON Schema for validating the status subresource. When present, enables GET/PUT /status endpoints for objects of this kind."
+                    },
+                    "scope": {
+                        "type": "string",
+                        "enum": ["Namespaced", "Cluster"],
+                        "default": "Namespaced",
+                        "description": "Whether objects of this kind are cluster-scoped or namespaced. Cluster-scoped kinds reject namespace in the URL; namespaced kinds default to the \"default\" namespace when no namespace is provided."
                     }
                 },
                 "required": ["targetGroup", "targetVersion", "targetKind", "specSchema"]

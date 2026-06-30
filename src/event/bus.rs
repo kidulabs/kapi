@@ -196,6 +196,7 @@ mod tests {
     use crate::schema::SCHEMA_KIND;
     use chrono::Utc;
     use std::collections::HashMap;
+    use std::time::Duration;
     use tokio_stream::StreamExt;
 
     fn make_key() -> ResourceKey {
@@ -337,5 +338,58 @@ mod tests {
 
         // No watchers were created
         assert_eq!(bus.watcher_count(&key), None);
+    }
+
+    // Helper: produce a WatchEvent for a namespaced object.
+    fn make_namespaced_event(name: &str, namespace: Option<&str>) -> WatchEvent {
+        WatchEvent {
+            event_type: WatchEventType::Added,
+            object: StoredObject {
+                key: make_key(),
+                metadata: ObjectMeta {
+                    name: name.into(),
+                    namespace: namespace.map(String::from),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                system: SystemMetadata {
+                    resource_version: 1,
+                    generation: 1,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                    deletion_timestamp: None,
+                },
+                spec: serde_json::json!({}),
+                status: None,
+            },
+        }
+    }
+
+    // WatchFilter::Namespace delivers only events in the target namespace.
+    #[tokio::test]
+    async fn namespace_scoped_watcher_receives_matching_events() {
+        let bus = EventBus::default();
+        let key = make_key();
+
+        let mut production_stream =
+            bus.subscribe(&key, WatchFilter::Namespace("production".into()));
+        let mut all_stream = bus.subscribe(&key, WatchFilter::All);
+
+        // Publish an event in "production" — both watchers receive it
+        bus.publish(&key, make_namespaced_event("obj-1", Some("production")));
+        let ev1 = production_stream.next().await;
+        let ev2 = all_stream.next().await;
+        assert!(ev1.is_some(), "production watcher should receive production event");
+        assert!(ev2.is_some(), "all watcher should receive production event");
+
+        // Publish an event in "staging" — only All watcher receives it
+        bus.publish(&key, make_namespaced_event("obj-2", Some("staging")));
+        // Production watcher should not receive — use timeout
+        let received =
+            tokio::time::timeout(Duration::from_millis(100), production_stream.next()).await;
+        assert!(received.is_err(), "production watcher should NOT receive staging event");
+        let ev3 = all_stream.next().await;
+        assert!(ev3.is_some(), "all watcher should receive staging event");
     }
 }

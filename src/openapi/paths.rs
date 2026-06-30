@@ -126,6 +126,7 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
                     "targetGroup": "example.io",
                     "targetVersion": "v1",
                     "targetKind": "Widget",
+                    "scope": "Namespaced",
                     "specSchema": {
                         "type": "object",
                         "properties": {
@@ -147,6 +148,7 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
         "targetGroup": "example.io",
         "targetVersion": "v1",
         "targetKind": "Widget",
+        "scope": "Namespaced",
         "specSchema": {
             "type": "object",
             "properties": {
@@ -170,6 +172,7 @@ pub(crate) fn build_static_paths() -> Vec<(String, Value)> {
             "targetGroup": "example.io",
             "targetVersion": "v1",
             "targetKind": "Widget",
+            "scope": "Namespaced",
             "specSchema": {
                 "type": "object",
                 "properties": {
@@ -386,7 +389,7 @@ pub(crate) fn build_kind_paths(
     let group = &schema_data.target_group;
     let version = &schema_data.target_version;
     let kind = &schema_data.target_kind;
-    let is_namespaced = schema_data.scope == "Namespaced";
+    let is_namespaced = schema_data.scope == crate::schema::SCOPE_NAMESPACED;
 
     // Reusable refs
     let stored_ref = json!({ "$ref": format!("#/components/schemas/{comp_name}StoredObject") });

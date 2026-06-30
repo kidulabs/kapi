@@ -10,6 +10,13 @@ API="$BASE/apis/$GROUP/v1"
 
 register_namespaced_schema "$GROUP" "v1" "$KIND"
 
+# Pre-create the namespaces (Namespace existence is now required)
+NS_API="$BASE/apis/kapi.io/v1/Namespace"
+for ns in ns-alpha ns-beta ns-gamma; do
+  curl -s -X POST "$NS_API" -H "Content-Type: application/json" \
+    -d "{\"metadata\":{\"name\":\"$ns\"},\"spec\":{\"annotations\":{}}}" > /dev/null
+done
+
 # Create test objects across multiple namespaces
 echo "Setting up test data..."
 for ns_info in "ns-alpha|obj-a-$TEST_RUN|blue|1" "ns-alpha|obj-b-$TEST_RUN|red|2" "ns-beta|obj-c-$TEST_RUN|green|3" "ns-gamma|obj-d-$TEST_RUN|yellow|4" "ns-gamma|obj-e-$TEST_RUN|purple|5"; do

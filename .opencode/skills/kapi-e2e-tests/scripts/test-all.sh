@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test Area: All Tests (1-83)
+# Test Area: All Tests (1-93)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 echo "Running all kapi e2e tests..."
@@ -50,24 +50,29 @@ echo "=== Phase 11: Schema Scope ==="
 bash "$SCRIPT_DIR/test-schema-scope.sh"
 echo ""
 
-echo "=== Phase 12: Namespace CRUD ==="
+echo "=== Phase 12: Namespace Resource (NEW) ==="
+bash "$SCRIPT_DIR/test-namespace-resource.sh"
+echo ""
+
+echo "=== Phase 13: Namespace CRUD ==="
 bash "$SCRIPT_DIR/test-namespace-crud.sh"
 echo ""
 
-echo "=== Phase 13: Cross-Namespace List ==="
+echo "=== Phase 14: Cross-Namespace List ==="
 bash "$SCRIPT_DIR/test-cross-namespace.sh"
 echo ""
 
-echo "=== Phase 14: Cluster-Scoped Resources ==="
+echo "=== Phase 15: Cluster-Scoped Resources ==="
 bash "$SCRIPT_DIR/test-cluster-scoped.sh"
 echo ""
 
-echo "=== Phase 15: Scope Validation ==="
+echo "=== Phase 16: Scope Validation ==="
 bash "$SCRIPT_DIR/test-scope-validation.sh"
 echo ""
 
-echo "=== Phase 16: Namespace Watch ==="
+echo "=== Phase 17: Namespace Watch ==="
 bash "$SCRIPT_DIR/test-namespace-watch.sh"
 echo ""
 
 echo "========== ALL TESTS COMPLETE =========="
+

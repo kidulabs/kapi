@@ -188,6 +188,9 @@ pub enum WatchFilter {
     All,
     FieldSelector(FieldSelector),
     LabelSelector(LabelSelector),
+    /// Filter to events for objects in the given namespace. Cluster-scoped
+    /// objects (with `metadata.namespace = None`) do not match.
+    Namespace(String),
     And(Box<WatchFilter>, Box<WatchFilter>),
 }
 
@@ -195,6 +198,7 @@ impl WatchFilter {
     // Returns true if the event should be delivered to a watcher with this filter
     // All matches everything; FieldSelector delegates to field-level comparison;
     // LabelSelector delegates to label-level comparison;
+    // Namespace matches events whose object's namespace equals the filter's namespace;
     // And requires both sub-filters to match (short-circuit)
     pub fn matches(&self, event: &WatchEvent) -> bool {
         match self {
@@ -203,6 +207,7 @@ impl WatchFilter {
                 FieldSelector::NameEquals(name) => event.object.metadata.name == *name,
             },
             WatchFilter::LabelSelector(ls) => ls.matches(&event.object.metadata.labels),
+            WatchFilter::Namespace(ns) => event.object.metadata.namespace.as_deref() == Some(ns),
             WatchFilter::And(a, b) => a.matches(event) && b.matches(event),
         }
     }
@@ -238,7 +243,7 @@ pub struct SchemaData {
 }
 
 fn default_scope() -> String {
-    "Namespaced".to_string()
+    crate::schema::SCOPE_NAMESPACED.to_string()
 }
 
 /// User-controlled metadata for stored objects.
@@ -771,6 +776,132 @@ mod tests {
             },
         };
         assert!(combined.matches(&event));
+    }
+
+    // --- WatchFilter::Namespace tests ---
+
+    fn make_namespaced_event(namespace: Option<&str>) -> WatchEvent {
+        WatchEvent {
+            event_type: WatchEventType::Added,
+            object: StoredObject {
+                key: ResourceKey {
+                    group: "test.io".into(),
+                    version: "v1".into(),
+                    kind: "Test".into(),
+                },
+                metadata: ObjectMeta {
+                    name: "test".into(),
+                    namespace: namespace.map(String::from),
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                system: SystemMetadata {
+                    resource_version: 1,
+                    generation: 1,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
+                },
+                spec: serde_json::json!({}),
+                status: None,
+            },
+        }
+    }
+
+    #[test]
+    fn watch_filter_namespace_matches_event_in_same_namespace() {
+        let filter = WatchFilter::Namespace("production".to_string());
+        let event = make_namespaced_event(Some("production"));
+        assert!(filter.matches(&event));
+    }
+
+    #[test]
+    fn watch_filter_namespace_rejects_event_in_different_namespace() {
+        let filter = WatchFilter::Namespace("production".to_string());
+        let event = make_namespaced_event(Some("staging"));
+        assert!(!filter.matches(&event));
+    }
+
+    #[test]
+    fn watch_filter_namespace_rejects_cluster_scoped_event() {
+        let filter = WatchFilter::Namespace("production".to_string());
+        let event = make_namespaced_event(None);
+        assert!(!filter.matches(&event));
+    }
+
+    #[test]
+    fn watch_filter_namespace_composable_with_and() {
+        let ns_filter = WatchFilter::Namespace("production".to_string());
+        let label_filter = WatchFilter::LabelSelector(LabelSelector {
+            requirements: vec![LabelRequirement::Equals {
+                key: "app".into(),
+                value: "nginx".into(),
+            }],
+        });
+        let combined = WatchFilter::And(Box::new(ns_filter), Box::new(label_filter));
+
+        // Event matches both
+        let mut labels = HashMap::new();
+        labels.insert("app".into(), "nginx".into());
+        let event = WatchEvent {
+            event_type: WatchEventType::Added,
+            object: StoredObject {
+                key: ResourceKey {
+                    group: "test.io".into(),
+                    version: "v1".into(),
+                    kind: "Test".into(),
+                },
+                metadata: ObjectMeta {
+                    name: "test".into(),
+                    namespace: Some("production".into()),
+                    labels,
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                system: SystemMetadata {
+                    resource_version: 1,
+                    generation: 1,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
+                },
+                spec: serde_json::json!({}),
+                status: None,
+            },
+        };
+        assert!(combined.matches(&event));
+
+        // Event in wrong namespace — namespace filter rejects
+        let mut labels = HashMap::new();
+        labels.insert("app".into(), "nginx".into());
+        let wrong_ns_event = WatchEvent {
+            event_type: WatchEventType::Added,
+            object: StoredObject {
+                key: ResourceKey {
+                    group: "test.io".into(),
+                    version: "v1".into(),
+                    kind: "Test".into(),
+                },
+                metadata: ObjectMeta {
+                    name: "test".into(),
+                    namespace: Some("staging".into()),
+                    labels,
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                system: SystemMetadata {
+                    resource_version: 1,
+                    generation: 1,
+                    created_at: chrono::Utc::now(),
+                    updated_at: chrono::Utc::now(),
+                    deletion_timestamp: None,
+                },
+                spec: serde_json::json!({}),
+                status: None,
+            },
+        };
+        assert!(!combined.matches(&wrong_ns_event));
     }
 
     // --- Status subresource tests ---

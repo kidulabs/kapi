@@ -32,12 +32,13 @@ The tests are organized into these areas:
 | `persistence` | 10, 49 | SQLite persistence: labels/annotations and finalizers survive restart |
 | `concurrent` | 50, 51 | Concurrent spec/status updates, failed ops don't publish events |
 | `schema-scope` | 52-59 | Schema registration: scope field, cluster-scoped Schema |
+| `namespace-resource` | 84-93 | Namespace-as-resource: CRUD, default protection, existence validation, deletion blocking |
 | `namespace-crud` | 60-68 | Namespace-scoped CRUD: create, get, list, update, delete |
 | `cross-namespace` | 69-71 | Cross-namespace list: all namespaces, pagination, comparison |
 | `cluster-scoped` | 72-76 | Cluster-scoped resources: CRUD with namespace=null |
 | `scope-validation` | 77-81 | Scope validation: reject cluster+ns, default ns, same name diff ns |
 | `namespace-watch` | 82-83 | Namespace-aware watch: scoped and cross-namespace |
-| `all` | 1-83 | Run all tests |
+| `all` | 1-93 | Run all tests |
 
 ## Workflow
 
@@ -50,26 +51,25 @@ Determine which test area(s) to run based on user request:
 - "run all tests" → `all`
 - "test labels and annotations" → `labels`, `annotations`
 
-### 2. Check Server State
+### 2. Clean Up Previous Runs
+
+Always clean up stale state from previous test runs before starting:
 
 ```bash
-# Check if server is running
-lsof -ti :8080 2>/dev/null && echo "RUNNING" || echo "NOT_RUNNING"
+# Kill any existing server
+kill $(lsof -ti :8080) 2>/dev/null || true
+sleep 1
+
+# Delete DB files and logs from previous runs
+rm -f /tmp/watch-*.log /tmp/kapi-server*.log /tmp/kapi-test.db /tmp/kapi-persist-*.db ./kapi.db
+unset KAPI_DB_PATH
 ```
 
-### 3. Setup (if needed)
-
-If server is not running:
+### 3. Build and Start Server
 
 ```bash
 # Build
 cargo build
-
-# Clean up from previous runs
-kill $(lsof -ti :8080) 2>/dev/null || true
-sleep 1
-rm -f /tmp/watch-*.log /tmp/kapi-server*.log /tmp/kapi-test.db /tmp/kapi-persist-*.db ./kapi.db
-unset KAPI_DB_PATH
 
 # Start server with trace logging
 RUST_LOG=kapi=trace cargo run > /tmp/kapi-server.log 2>&1 &

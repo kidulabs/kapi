@@ -1,7 +1,9 @@
+pub mod bootstrap;
 pub mod config;
 pub mod error;
 pub mod event;
 pub mod middleware;
+pub mod namespace;
 pub mod object;
 pub mod openapi;
 pub mod routes;
@@ -20,6 +22,7 @@ use axum::Router;
 use tokio::net::TcpListener;
 use tracing::info;
 
+use crate::bootstrap::bootstrap_builtins;
 use crate::object::schema_service::SchemaService;
 use crate::object::service::ObjectService;
 use crate::routes::{AppState, build_router};
@@ -29,8 +32,17 @@ use crate::schema::meta_schema::compile_meta_schema;
 /// Construct the full application [`Router`] from the given config.
 ///
 /// Compiles the meta-schema, wires up the store, event bus, and
-/// service layer, then composes all routes and middleware.
-pub fn create_app(config: &AppConfig) -> anyhow::Result<Router> {
+/// service layer, runs built-in bootstrap (Namespace schema +
+/// "default" namespace), then composes all routes and middleware.
+///
+/// Bootstrap failure causes `create_app` to return an error,
+/// preventing the server from starting in an inconsistent state.
+///
+/// This function is async because bootstrap requires async operations
+/// (registering the Namespace schema, creating the default namespace).
+/// Callers running in a sync context should use
+/// `tokio::runtime::Handle::current().block_on(create_app(&config))`.
+pub async fn create_app(config: &AppConfig) -> anyhow::Result<Router> {
     let meta_validator: Arc<dyn SchemaValidator> = Arc::new(compile_meta_schema()?);
     info!("Meta-schema compiled successfully");
 
@@ -48,6 +60,12 @@ pub fn create_app(config: &AppConfig) -> anyhow::Result<Router> {
         crate::schema::SchemaRegistry::new(config.store.clone(), meta_validator),
     ));
 
+    // Run built-in bootstrap (Namespace schema + "default" namespace).
+    // Errors propagate to the caller — server startup fails fast.
+    bootstrap_builtins(&schema_service, &config.store, &config.event_bus)
+        .await
+        .map_err(|e| anyhow::anyhow!("bootstrap failed: {e}"))?;
+
     let app_state = AppState::new(object_service, schema_service);
     let app: Router = build_router(app_state);
 
@@ -59,7 +77,7 @@ pub fn create_app(config: &AppConfig) -> anyhow::Result<Router> {
 /// Calls [`create_app`] internally, binds to `0.0.0.0:{port}`,
 /// and serves requests until the process is signalled to stop.
 pub async fn run(config: AppConfig) -> anyhow::Result<()> {
-    let app = create_app(&config)?;
+    let app = create_app(&config).await?;
 
     let listener = TcpListener::bind(format!("0.0.0.0:{}", config.port)).await?;
     info!("Server listening on port {}", config.port);

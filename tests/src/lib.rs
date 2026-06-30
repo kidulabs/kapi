@@ -22,6 +22,7 @@ pub mod finalizers;
 pub mod generation_semantics;
 pub mod list_filtering;
 pub mod namespace;
+pub mod namespace_resource;
 pub mod object_annotations;
 pub mod object_crud;
 pub mod object_labels;
@@ -38,12 +39,12 @@ pub struct TestApp {
 }
 
 impl TestApp {
-    pub fn with_store(store: Arc<dyn ObjectStore>) -> Self {
+    pub async fn with_store(store: Arc<dyn ObjectStore>) -> Self {
         let event_bus: Arc<dyn EventPublisher> = Arc::new(EventBus::default());
 
         let config = AppConfig { port: 0, store: store.clone(), event_bus: event_bus.clone() };
 
-        let router = kapi::create_app(&config).expect("failed to build app");
+        let router = kapi::create_app(&config).await.expect("failed to build app");
 
         Self { router, store, event_bus }
     }
@@ -270,6 +271,18 @@ pub async fn watch_events(client: &TestClient, uri: &str) -> mpsc::Receiver<Watc
 
 pub async fn register_widget_schema(client: &TestClient) {
     let resp = client.post("/apis/kapi.io/v1/Schema", widget_namespaced_schema()).await;
+    assert_status(&resp, StatusCode::CREATED);
+}
+
+/// Creates a Namespace object via the test client. Used by tests that
+/// reference non-default namespaces. Requires the test app to have
+/// bootstrapped the Namespace schema (it does by default via kapi::create_app).
+pub async fn register_namespace(client: &TestClient, name: &str) {
+    let body = serde_json::json!({
+        "metadata": { "name": name },
+        "spec": { "annotations": {} }
+    });
+    let resp = client.post("/apis/kapi.io/v1/Namespace", body).await;
     assert_status(&resp, StatusCode::CREATED);
 }
 

@@ -9,15 +9,16 @@ use serde_json::Value;
 
 use crate::error::AppError;
 use crate::event::EventPublisher;
+use crate::namespace::namespace_key;
 use crate::object::finalizer;
 use crate::object::helpers;
 use crate::object::types::{
     ListOptions, ListResponse, ObjectMeta, StoredObject, SystemMetadata, WatchEventType,
     WatchFilter,
 };
-use crate::schema::SchemaRegistry;
 #[cfg(test)]
 use crate::schema::schema_key;
+use crate::schema::{DEFAULT_NAMESPACE, SCOPE_CLUSTER, SCOPE_NAMESPACED, SchemaRegistry};
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 use crate::validation::{validate_annotations, validate_finalizers, validate_labels};
 
@@ -107,6 +108,12 @@ impl ObjectService {
 
     /// Deletes an object with finalizer support.
     ///
+    /// Special handling for Namespace objects:
+    /// 1. The `"default"` namespace cannot be deleted (rejected with 403).
+    /// 2. Other namespaces can only be deleted when empty (rejected with 409
+    ///    if any object exists in the namespace).
+    ///
+    /// Standard delete flow (after namespace checks pass):
     /// 1. If `finalizers` is empty → hard delete, publish Deleted
     /// 2. If `deletion_timestamp` is already set → idempotent no-op (200, no event)
     /// 3. Otherwise → set `deletion_timestamp`, publish Modified (mark for deletion)
@@ -120,6 +127,19 @@ impl ObjectService {
         namespace: Option<&str>,
         name: String,
     ) -> Result<StoredObject, AppError> {
+        // Namespace-specific lifecycle rules.
+        if key == namespace_key() {
+            // The "default" namespace is protected from deletion.
+            if name == DEFAULT_NAMESPACE {
+                return Err(AppError::ProtectedNamespace { name });
+            }
+            // Other namespaces can only be deleted when empty.
+            let object_count = self.count_objects_in_namespace(&name).await?;
+            if object_count > 0 {
+                return Err(AppError::NamespaceNotEmpty { namespace: name, object_count });
+            }
+        }
+
         let action = Arc::new(Mutex::new(finalizer::DeleteAction::HardDeleted));
         let action_clone = action.clone();
         let result = self.store.transaction(
@@ -234,6 +254,9 @@ impl ObjectService {
     /// - Cluster-scoped kinds reject a provided namespace.
     /// - Namespaced kinds default to "default" when no namespace is provided.
     ///
+    /// For namespaced kinds, validates that the namespace exists by looking up
+    /// the corresponding Namespace object. Returns 404 if not found.
+    ///
     /// The resolved namespace is set in `metadata.namespace`.
     async fn validate_and_create_object(
         &self,
@@ -249,7 +272,7 @@ impl ObjectService {
 
         // Resolve namespace from scope and URL namespace parameter
         let resolved_namespace = match scope.as_str() {
-            "Cluster" => {
+            SCOPE_CLUSTER => {
                 if namespace.is_some() {
                     return Err(AppError::InvalidRequest(format!(
                         "cluster-scoped kind '{}' does not accept namespace",
@@ -258,11 +281,21 @@ impl ObjectService {
                 }
                 None
             }
-            "Namespaced" => Some(namespace.unwrap_or_else(|| "default".to_string())),
+            SCOPE_NAMESPACED => Some(namespace.unwrap_or_else(|| "default".to_string())),
             _ => {
                 return Err(AppError::Internal(anyhow::anyhow!("unknown scope: {}", scope)));
             }
         };
+
+        // Validate namespace existence for namespaced kinds.
+        // Cluster-scoped kinds have no namespace and skip this check.
+        // The "default" namespace always exists (auto-created at startup),
+        // so this check is effectively a fast no-op for default-namespace creates.
+        if scope == SCOPE_NAMESPACED
+            && let Some(ns) = resolved_namespace.as_deref()
+        {
+            self.ensure_namespace_exists(ns).await?;
+        }
 
         if !validator.is_valid(&spec) {
             let errors = helpers::map_validation_errors(validator.validate(&spec));
@@ -281,6 +314,48 @@ impl ObjectService {
             .await?;
         helpers::publish_event(self.event_bus.as_ref(), &key, WatchEventType::Added, &stored);
         Ok(stored)
+    }
+
+    /// Verifies that a Namespace object with the given name exists.
+    ///
+    /// Used by [`validate_and_create_object`] to enforce that objects can only
+    /// be created in known namespaces. Returns [`AppError::NotFound`] (with
+    /// `what: "namespace"`) if the Namespace object is missing.
+    ///
+    /// This is a single `store.get` call against the Namespace kind (which is
+    /// cluster-scoped, so `namespace: None` is used).
+    async fn ensure_namespace_exists(&self, namespace: &str) -> Result<(), AppError> {
+        match self.store.get(&namespace_key(), None, namespace).await {
+            Ok(_) => Ok(()),
+            Err(AppError::NotFound { .. }) => Err(AppError::NotFound {
+                what: "namespace".to_string(),
+                identifier: namespace.to_string(),
+            }),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Counts the number of objects in the given namespace across all kinds.
+    ///
+    /// Used by [`delete`] to enforce that a Namespace can only be deleted when
+    /// empty. Returns the total object count in the namespace (cluster-scoped
+    /// objects are not counted because they don't belong to any namespace).
+    ///
+    /// Delegates schema enumeration to [`SchemaRegistry::list_namespaced_keys`].
+    async fn count_objects_in_namespace(&self, namespace: &str) -> Result<usize, AppError> {
+        let mut count = 0usize;
+        for key in self.schema_registry.list_namespaced_keys().await? {
+            let resp = self
+                .store
+                .list(
+                    &key,
+                    Some(namespace),
+                    ListOptions { limit: Some(usize::MAX), ..Default::default() },
+                )
+                .await?;
+            count += resp.items.len();
+        }
+        Ok(count)
     }
 
     /// Validates and updates a regular object.
@@ -304,7 +379,7 @@ impl ObjectService {
 
         // Resolve namespace from scope
         let resolved_namespace = match scope.as_str() {
-            "Cluster" => {
+            SCOPE_CLUSTER => {
                 if object.metadata.namespace.is_some() {
                     return Err(AppError::InvalidRequest(format!(
                         "cluster-scoped kind '{}' does not accept namespace",
@@ -313,7 +388,7 @@ impl ObjectService {
                 }
                 None
             }
-            "Namespaced" => {
+            SCOPE_NAMESPACED => {
                 let ns = object.metadata.namespace.get_or_insert_with(|| "default".to_string());
                 // If a namespace was passed from URL, validate it matches
                 if let Some(expected_ns) = namespace
@@ -414,9 +489,17 @@ mod tests {
 
     // Helper to create services with a fresh store and event bus.
     // Returns (ObjectService, SchemaService) sharing the same store and event_bus.
-    fn make_services() -> (ObjectService, SchemaService) {
+    // Bootstraps the "default" namespace so namespaced creates succeed.
+    async fn make_services() -> (ObjectService, SchemaService) {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+
+        // Bootstrap the "default" namespace BEFORE constructing services, while
+        // we still have a clean handle to store and event_bus.
+        crate::namespace::bootstrap_default_namespace(&store, &event_bus)
+            .await
+            .expect("bootstrap should succeed");
+
         let meta_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
         let schema_registry = SchemaRegistry::new(store.clone(), meta_validator.clone());
@@ -465,7 +548,7 @@ mod tests {
     // T19: Create valid Schema → stored, cached, event published
     #[tokio::test]
     async fn create_valid_schema_stored_cached_event_published() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
@@ -511,7 +594,7 @@ mod tests {
     // T20: Create Schema with invalid meta-schema → InvalidSchema, nothing stored
     #[tokio::test]
     async fn create_schema_invalid_meta_schema_returns_error() {
-        let (_service, schema_service) = make_services();
+        let (_service, schema_service) = make_services().await;
         let schema_key = schema_key();
         // Missing required fields
         let invalid_data = json!({ "targetGroup": "example.io" });
@@ -535,7 +618,7 @@ mod tests {
     // T21: Create Schema with uncompileable specSchema → InvalidSchema, nothing stored
     #[tokio::test]
     async fn create_schema_uncompileable_spec_schema_returns_error() {
-        let (_service, schema_service) = make_services();
+        let (_service, schema_service) = make_services().await;
         let schema_key = schema_key();
         // specSchema with invalid content (not a valid JSON Schema)
         let invalid_schema = json!({
@@ -565,7 +648,7 @@ mod tests {
     // T22: Create object for unregistered kind → NotFound
     #[tokio::test]
     async fn create_object_unregistered_kind_returns_not_found() {
-        let (service, _schema_service) = make_services();
+        let (service, _schema_service) = make_services().await;
         let widget_key = ResourceKey {
             group: "example.io".to_string(),
             version: "v1".to_string(),
@@ -592,7 +675,7 @@ mod tests {
     // T23: Create object with invalid data → SchemaValidation
     #[tokio::test]
     async fn create_object_invalid_data_returns_schema_validation() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -623,7 +706,7 @@ mod tests {
     // T24: Update with correct version → success, Modified event published
     #[tokio::test]
     async fn update_correct_version_succeeds() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -660,7 +743,7 @@ mod tests {
     // T25: Update with wrong version → Conflict
     #[tokio::test]
     async fn update_with_wrong_version_returns_conflict() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -696,7 +779,7 @@ mod tests {
     // T26: Delete Schema with no objects → success, cache evicted, Deleted event published
     #[tokio::test]
     async fn delete_schema_no_objects_succeeds() {
-        let (_service, schema_service) = make_services();
+        let (_service, schema_service) = make_services().await;
         let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
@@ -727,7 +810,7 @@ mod tests {
     // T27: Delete Schema with existing objects → SchemaHasObjects, nothing deleted
     #[tokio::test]
     async fn delete_schema_with_objects_returns_conflict() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         // Create an object of the registered kind
@@ -761,7 +844,7 @@ mod tests {
     // T28: Delete regular object → success, Deleted event published
     #[tokio::test]
     async fn delete_regular_object_succeeds() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -793,7 +876,7 @@ mod tests {
     // T29: Failed create (duplicate) → no Added event published
     #[tokio::test]
     async fn create_duplicate_no_event_published() {
-        let (_service, schema_service) = make_services();
+        let (_service, schema_service) = make_services().await;
         let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
@@ -836,7 +919,7 @@ mod tests {
     // T30: Schema cache eviction on Schema delete
     #[tokio::test]
     async fn schema_cache_eviction_on_delete() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         let schema_key = schema_key();
         let schema_data = json!({
             "targetGroup": "example.io",
@@ -883,7 +966,7 @@ mod tests {
     // (meta-schema requires targetKind as a required field)
     #[tokio::test]
     async fn create_schema_missing_target_kind_returns_error() {
-        let (_service, schema_service) = make_services();
+        let (_service, schema_service) = make_services().await;
         let schema_key = schema_key();
         // Missing targetKind
         let schema_data = json!({
@@ -912,7 +995,7 @@ mod tests {
     // (meta-schema requires targetGroup as a required field)
     #[tokio::test]
     async fn create_schema_missing_target_group_returns_error() {
-        let (_service, schema_service) = make_services();
+        let (_service, schema_service) = make_services().await;
         let schema_key = schema_key();
         // Missing targetGroup
         let schema_data = json!({
@@ -942,6 +1025,10 @@ mod tests {
     async fn object_creation_after_restart_with_empty_cache_succeeds() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+        // Bootstrap the "default" namespace so namespaced creates succeed.
+        crate::namespace::bootstrap_default_namespace(&store, &event_bus)
+            .await
+            .expect("bootstrap should succeed");
         let meta_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
@@ -1026,6 +1113,10 @@ mod tests {
     async fn cache_miss_triggers_compilation_and_subsequent_uses_cache() {
         let store: Arc<dyn ObjectStore> = Arc::new(InMemoryStore::new());
         let event_bus: Arc<dyn EventPublisher> = Arc::new(crate::event::EventBus::default());
+        // Bootstrap the "default" namespace so namespaced creates succeed.
+        crate::namespace::bootstrap_default_namespace(&store, &event_bus)
+            .await
+            .expect("bootstrap should succeed");
         let meta_validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
@@ -1348,7 +1439,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_status_with_status_schema_succeeds() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema_with_status(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1388,7 +1479,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_status_without_status_schema_returns_error() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         // Register schema WITHOUT statusSchema
         register_test_schema(&schema_service).await;
 
@@ -1427,7 +1518,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_status_invalid_status_returns_validation_error() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema_with_status(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1461,7 +1552,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_status_not_found() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema_with_status(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1484,7 +1575,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_status_with_status_schema_returns_status() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema_with_status(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1532,7 +1623,7 @@ mod tests {
 
     #[tokio::test]
     async fn get_status_without_status_schema_returns_error() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1565,7 +1656,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_strips_status_from_body() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema_with_status(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1597,7 +1688,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_with_metadata_increments_rv() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1634,7 +1725,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_with_metadata_preserves_created_at() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1667,7 +1758,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_with_metadata_bumps_generation_on_spec_change() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1703,7 +1794,7 @@ mod tests {
 
     #[tokio::test]
     async fn apply_with_metadata_preserves_generation_on_no_spec_change() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1745,7 +1836,7 @@ mod tests {
 
     #[tokio::test]
     async fn occ_check_passes_with_matching_version() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1780,7 +1871,7 @@ mod tests {
 
     #[tokio::test]
     async fn occ_check_fails_with_mismatched_version() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1818,7 +1909,7 @@ mod tests {
 
     #[tokio::test]
     async fn update_status_does_not_require_occ() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema_with_status(&schema_service).await;
 
         let widget_key = ResourceKey {
@@ -1870,7 +1961,7 @@ mod tests {
 
     #[tokio::test]
     async fn multi_version_schemas_register_cache_independently() {
-        let (object_service, schema_service) = make_services();
+        let (object_service, schema_service) = make_services().await;
         let schema_key = schema_key();
 
         // Register v1 schema
@@ -1985,7 +2076,7 @@ mod tests {
 
     #[tokio::test]
     async fn multi_version_status_validators_cache_independently() {
-        let (object_service, schema_service) = make_services();
+        let (object_service, schema_service) = make_services().await;
         let schema_key = schema_key();
 
         // Register v1 schema with statusSchema
@@ -2075,7 +2166,7 @@ mod tests {
     // Helper to register a Namespaced Widget schema
     #[tokio::test]
     async fn create_cluster_scoped_kind_with_namespace_rejected() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await; // Cluster-scoped Widget
 
         let widget_key = ResourceKey {
@@ -2105,7 +2196,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_cluster_scoped_kind_without_namespace_stores_none() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await; // Cluster-scoped Widget (all schemas are now cluster-scoped)
 
         let widget_key = ResourceKey {
@@ -2136,7 +2227,7 @@ mod tests {
 
     #[tokio::test]
     async fn create_cluster_scoped_kind_with_namespace_rejected_alternate() {
-        let (service, schema_service) = make_services();
+        let (service, schema_service) = make_services().await;
         register_test_schema(&schema_service).await; // All schemas are now cluster-scoped
 
         let widget_key = ResourceKey {
@@ -2162,5 +2253,288 @@ mod tests {
         assert!(
             matches!(result, Err(AppError::InvalidRequest(msg)) if msg.contains("cluster-scoped"))
         );
+    }
+
+    // ──────────────────────────────────────────────
+    // Namespace resource tests
+    // ──────────────────────────────────────────────
+
+    /// Registers a namespaced Widget schema (scope=Namespaced) for namespace tests.
+    async fn register_namespaced_test_schema(schema_service: &SchemaService) {
+        let schema_key = schema_key();
+        let schema_data = json!({
+            "targetGroup": "example.io",
+            "targetVersion": "v1",
+            "targetKind": "NamespacedWidget",
+            "scope": "Namespaced",
+            "specSchema": {
+                "type": "object",
+                "properties": {
+                    "color": { "type": "string" },
+                    "size": { "type": "integer" }
+                },
+                "required": ["color", "size"]
+            }
+        });
+        schema_service
+            .create(
+                schema_key,
+                ObjectMeta {
+                    name: "NamespacedWidget.example.io.v1".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                schema_data,
+            )
+            .await
+            .expect("namespaced schema registration should succeed");
+    }
+
+    fn namespaced_widget_key() -> ResourceKey {
+        ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "NamespacedWidget".to_string(),
+        }
+    }
+
+    /// Create a Namespace object via the store directly (bypassing the handler's
+    /// empty-spec check). The Namespace schema allows any object spec.
+    async fn create_test_namespace(store: &Arc<dyn ObjectStore>, name: &str) {
+        use crate::object::types::{StoredObject, SystemMetadata};
+        let key = namespace_key();
+        store
+            .create(StoredObject {
+                key,
+                metadata: ObjectMeta {
+                    name: name.to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                system: SystemMetadata::initial(),
+                spec: json!({}),
+                status: None,
+            })
+            .await
+            .expect("namespace creation should succeed");
+    }
+
+    #[tokio::test]
+    async fn create_object_in_existing_namespace_succeeds() {
+        let (service, schema_service) = make_services().await;
+        register_namespaced_test_schema(&schema_service).await;
+        // Create the "production" namespace
+        create_test_namespace(&service.store, "production").await;
+
+        let result = service
+            .create(
+                namespaced_widget_key(),
+                Some("production".to_string()),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "red", "size": 1}),
+            )
+            .await;
+        assert!(result.is_ok(), "create in existing namespace should succeed");
+    }
+
+    #[tokio::test]
+    async fn create_object_in_nonexistent_namespace_returns_404() {
+        let (service, schema_service) = make_services().await;
+        register_namespaced_test_schema(&schema_service).await;
+
+        let result = service
+            .create(
+                namespaced_widget_key(),
+                Some("nonexistent".to_string()),
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "red", "size": 1}),
+            )
+            .await;
+        match result {
+            Err(AppError::NotFound { what, identifier }) => {
+                assert_eq!(what, "namespace");
+                assert_eq!(identifier, "nonexistent");
+            }
+            other => panic!("expected NotFound for namespace, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn create_object_in_default_namespace_succeeds() {
+        // The "default" namespace is bootstrapped by make_services.
+        let (service, schema_service) = make_services().await;
+        register_namespaced_test_schema(&schema_service).await;
+
+        let result = service
+            .create(
+                namespaced_widget_key(),
+                None, // defaults to "default"
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "red", "size": 1}),
+            )
+            .await;
+        assert!(result.is_ok(), "create in default namespace should succeed");
+    }
+
+    #[tokio::test]
+    async fn create_cluster_scoped_object_skips_namespace_check() {
+        // register_test_schema creates a cluster-scoped widget. The "nonexistent"
+        // namespace should not be checked because cluster-scoped kinds have no namespace.
+        let (service, schema_service) = make_services().await;
+        register_test_schema(&schema_service).await;
+
+        let widget_key = ResourceKey {
+            group: "example.io".to_string(),
+            version: "v1".to_string(),
+            kind: "Widget".to_string(),
+        };
+        let result = service
+            .create(
+                widget_key,
+                None,
+                ObjectMeta {
+                    name: "my-widget".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "red", "size": 1}),
+            )
+            .await;
+        assert!(result.is_ok(), "cluster-scoped create should skip namespace check");
+    }
+
+    #[tokio::test]
+    async fn delete_default_namespace_returns_403() {
+        let (service, _schema_service) = make_services().await;
+        // make_services bootstraps the "default" namespace
+        let result = service.delete(namespace_key(), None, "default".to_string()).await;
+        assert!(
+            matches!(result, Err(AppError::ProtectedNamespace { ref name }) if name == "default"),
+            "expected ProtectedNamespace error, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_non_empty_namespace_returns_409() {
+        let (service, schema_service) = make_services().await;
+        // Create a non-default namespace
+        create_test_namespace(&service.store, "production").await;
+
+        // Create an object in "production" so the namespace is non-empty
+        register_namespaced_test_schema(&schema_service).await;
+        service
+            .create(
+                namespaced_widget_key(),
+                Some("production".to_string()),
+                ObjectMeta {
+                    name: "widget-1".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "red", "size": 1}),
+            )
+            .await
+            .expect("create in production should succeed");
+
+        // Try to delete the namespace — should fail with NamespaceNotEmpty
+        let result = service.delete(namespace_key(), None, "production".to_string()).await;
+        match result {
+            Err(AppError::NamespaceNotEmpty { namespace, object_count }) => {
+                assert_eq!(namespace, "production");
+                assert!(object_count >= 1);
+            }
+            other => panic!("expected NamespaceNotEmpty, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_empty_namespace_succeeds() {
+        let (service, _schema_service) = make_services().await;
+        // Create an empty non-default namespace
+        create_test_namespace(&service.store, "empty-ns").await;
+
+        // Deleting an empty namespace should succeed
+        let result = service.delete(namespace_key(), None, "empty-ns".to_string()).await;
+        assert!(result.is_ok(), "delete empty namespace should succeed, got {result:?}");
+    }
+
+    #[tokio::test]
+    async fn count_objects_in_namespace_finds_objects_across_kinds() {
+        let (service, schema_service) = make_services().await;
+        // Register two kinds
+        register_test_schema(&schema_service).await; // cluster-scoped Widget
+        register_namespaced_test_schema(&schema_service).await; // namespaced NamespacedWidget
+
+        // Create a "production" namespace
+        create_test_namespace(&service.store, "production").await;
+
+        // Create objects in production
+        service
+            .create(
+                namespaced_widget_key(),
+                Some("production".to_string()),
+                ObjectMeta {
+                    name: "obj-1".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "red", "size": 1}),
+            )
+            .await
+            .unwrap();
+        service
+            .create(
+                namespaced_widget_key(),
+                Some("production".to_string()),
+                ObjectMeta {
+                    name: "obj-2".to_string(),
+                    namespace: None,
+                    labels: HashMap::new(),
+                    annotations: HashMap::new(),
+                    finalizers: Vec::new(),
+                },
+                json!({"color": "blue", "size": 2}),
+            )
+            .await
+            .unwrap();
+
+        let count = service.count_objects_in_namespace("production").await.unwrap();
+        assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn count_objects_in_namespace_returns_zero_for_empty() {
+        let (service, _schema_service) = make_services().await;
+        create_test_namespace(&service.store, "empty").await;
+        let count = service.count_objects_in_namespace("empty").await.unwrap();
+        assert_eq!(count, 0);
     }
 }
