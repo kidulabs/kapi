@@ -6,49 +6,63 @@ Define the `ObjectService` that orchestrates validation, storage, and event publ
 The system SHALL define an `ObjectService` struct containing:
 - `store: Arc<dyn ObjectStore>` — the storage backend
 - `event_bus: Arc<dyn EventPublisher>` — the per-kind event bus for watch notifications
-- `schema_registry: SchemaRegistry` — schema compilation, caching, and lookup collaborator (received from SchemaService or constructed independently)
+- `schema_registry: SchemaRegistry` — schema compilation, caching, and lookup collaborator
 
 The service SHALL be the single owner of system metadata manipulation (resource_version, generation, timestamps) for regular objects. The store SHALL NOT modify these fields. The service SHALL operate on `spec` and `status` as `serde_json::Value` directly, with no `SpecData` envelope construction or unwrapping.
 
 The ObjectService SHALL NOT handle Schema lifecycle operations (Schema create, update, delete). Those are the responsibility of SchemaService.
 
+The service SHALL be responsible for scope validation: checking that the URL namespace matches the Schema scope and rejecting invalid combinations.
+
 #### Scenario: Service construction with SchemaRegistry
 - **WHEN** `ObjectService::new(store, event_bus, schema_registry)` is called
 - **THEN** the service SHALL be constructed with the provided SchemaRegistry
-- **AND** the registry's cache SHALL be shared with SchemaService
 
-### Requirement: create validates scope, namespace existence, spec, and sets metadata
+### Requirement: create validates scope, namespace, spec, and sets metadata
 The `create(key, namespace, meta, spec)` method SHALL:
 1. Look up the Schema scope for the kind
 2. Validate namespace vs scope:
    - If scope is "Cluster" and namespace is Some, reject with error
    - If scope is "Namespaced" and namespace is None, set namespace to "default"
-3. **Validate namespace existence**: if scope is "Namespaced", check that the namespace exists by looking up the Namespace object. If not found, return 404 Not Found.
-4. Validate `meta.labels` using label validation rules
-5. Validate `meta.annotations` using annotation validation rules
-6. Call `schema_registry.get_validator(&key)` to obtain the validator
-7. Validate `spec` against the compiled schema validator
-8. Construct a `StoredObject` with `metadata.namespace = namespace`, `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`
-9. Call `store.create()` to persist
-10. Call `event_bus.publish()` with an `Added` event
+3. Validate `meta.labels` using label validation rules
+4. Validate `meta.annotations` using annotation validation rules
+5. Call `schema_registry.get_validator(&key)` to obtain the validator
+6. Validate `spec` against the compiled schema validator
+7. Construct a `StoredObject` with `metadata.namespace = namespace`, `system.resource_version = 1`, `system.generation = 1`, `system.created_at = Utc::now()`, `system.updated_at = Utc::now()`
+8. Call `store.create()` to persist
+9. Call `event_bus.publish()` with an `Added` event
 
-#### Scenario: Create object in existing namespace
-- **WHEN** creating an object in namespace "production" and the namespace exists
+The service SHALL discard any `namespace` from the input `meta` — the URL namespace (or "default") takes precedence.
+
+#### Scenario: Create namespaced object with URL namespace
+- **WHEN** creating an object with `namespace = Some("production")`
+- **THEN** the object SHALL be stored with `metadata.namespace = Some("production")`
+
+#### Scenario: Create namespaced object without namespace defaults to "default"
+- **WHEN** creating an object with `namespace = None` for a namespaced kind
+- **THEN** the object SHALL be stored with `metadata.namespace = Some("default")`
+
+#### Scenario: Create cluster-scoped object
+- **WHEN** creating an object with `namespace = None` for a cluster-scoped kind
+- **THEN** the object SHALL be stored with `metadata.namespace = None`
+
+#### Scenario: Create cluster-scoped object with namespace rejected
+- **WHEN** creating an object with `namespace = Some("production")` for a cluster-scoped kind
+- **THEN** the service SHALL reject with an error
+
+#### Scenario: Create object with invalid spec
+- **WHEN** creating an object whose spec fails schema validation
+- **THEN** the error is `SchemaValidation` with the list of validation errors
+
+#### Scenario: Create duplicate object in same namespace
+- **WHEN** creating an object with a name that already exists in the same namespace
+- **THEN** the store returns `AlreadyExists` and no event is published
+
+#### Scenario: Create object with same name in different namespace
+- **WHEN** creating an object with a name that exists in a different namespace
 - **THEN** the object SHALL be created successfully
 
-#### Scenario: Create object in non-existent namespace
-- **WHEN** creating an object in namespace "nonexistent" and the namespace does not exist
-- **THEN** the service SHALL return 404 Not Found
-
-#### Scenario: Create object in "default" namespace
-- **WHEN** creating an object without explicit namespace (defaults to "default")
-- **THEN** the object SHALL be created successfully (since "default" always exists)
-
-#### Scenario: Create cluster-scoped object skips namespace check
-- **WHEN** creating a cluster-scoped object
-- **THEN** namespace existence SHALL NOT be checked (cluster-scoped objects have no metadata.namespace)
-
-### Requirement: get delegates to store
+### Requirement: get delegates to store with namespace
 The `get(key, namespace, name)` method SHALL delegate to `store.get(key, namespace, name)` without additional validation.
 
 #### Scenario: Get existing object
@@ -59,34 +73,36 @@ The `get(key, namespace, name)` method SHALL delegate to `store.get(key, namespa
 - **WHEN** `get` is called for a non-existent object
 - **THEN** the error is `NotFound`
 
-### Requirement: list delegates to store
-The `list(key, namespace, opts)` method SHALL delegate to `store.list(key, namespace, opts)` without additional validation.
+### Requirement: list delegates to store with namespace
+The `list(key, namespace, opts)` method SHALL delegate to `store.list(key, namespace, opts)` without additional validation. When `namespace` is `None`, objects from all namespaces are returned.
 
-#### Scenario: List objects with pagination
-- **WHEN** `list` is called with limit and continue token
-- **THEN** the paginated `ListResponse` is returned
+#### Scenario: List objects in namespace
+- **WHEN** `list` is called with `namespace = Some("production")`
+- **THEN** only objects in "production" namespace are returned
 
-### Requirement: update validates spec and uses centralized metadata
+#### Scenario: List objects across all namespaces
+- **WHEN** `list` is called with `namespace = None`
+- **THEN** objects from all namespaces are returned
+
+### Requirement: update validates scope, namespace, spec, and uses centralized metadata
 The `update(object)` method SHALL:
-1. Validate `object.metadata.labels` using label validation rules
-2. Validate `object.metadata.annotations` using annotation validation rules
-3. Call `schema_registry.get_validator(&key)` to obtain the validator
-4. Validate spec against the compiled schema validator
-5. Use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata
+1. Look up the Schema scope for the kind
+2. Validate namespace vs scope (same rules as create)
+3. Validate `object.metadata.labels` using label validation rules
+4. Validate `object.metadata.annotations` using annotation validation rules
+5. Call `schema_registry.get_validator(&key)` to obtain the validator
+6. Validate spec against the compiled schema validator
+7. Use `store.transaction()` with a callback that performs OCC check and returns `TransactionOp::Apply` with updated metadata
 
-The service SHALL use a centralized metadata wrapper that automatically handles:
-- `resource_version = existing.resource_version + 1`
-- `generation = existing.generation + 1` if `existing.spec != new_obj.spec` (direct `Value` equality), else `existing.generation`
-- `updated_at = Utc::now()`
-- `created_at = existing.created_at` (preserved)
+The service SHALL validate that `object.metadata.namespace` matches the expected namespace (from URL). If they don't match, reject with error.
 
-The service SHALL perform OCC (optimistic concurrency control) check inside the transaction callback: if `object.system.resource_version != existing.system.resource_version`, return `TransactionOp::Abort(AppError::Conflict)`.
+#### Scenario: Update with correct namespace
+- **WHEN** `update` is called with matching namespace
+- **THEN** the update proceeds normally
 
-Label and annotation validation SHALL occur in the service to ensure non-HTTP callers receive the same validation guarantees. If validation fails, an `AppError::InvalidLabel` or `AppError::InvalidAnnotation` error SHALL be returned and no persistence SHALL occur.
-
-#### Scenario: Update object with schema not in cache but in store
-- **WHEN** updating an object for a kind whose Schema exists in the store but is not in the cache
-- **THEN** `schema_registry.get_validator()` compiles the schema on-demand, caches it, and the object is validated against it
+#### Scenario: Update with mismatched namespace
+- **WHEN** `update` is called with `metadata.namespace` that doesn't match the expected namespace
+- **THEN** the service SHALL reject with an error
 
 #### Scenario: Update with correct version
 - **WHEN** `update` is called with a matching `resourceVersion`
@@ -96,46 +112,20 @@ Label and annotation validation SHALL occur in the service to ensure non-HTTP ca
 - **WHEN** `update` is called with a stale `resourceVersion`
 - **THEN** the transaction callback SHALL return `TransactionOp::Abort(AppError::Conflict)` and no event is published
 
-#### Scenario: Update with same spec does not bump generation
-- **WHEN** `update` is called with the same `spec` (direct `Value` equality) but different `metadata.labels`
-- **THEN** the centralized metadata wrapper SHALL preserve `generation` (not increment it)
-
-#### Scenario: Update with different spec bumps generation
-- **WHEN** `update` is called with a different `spec` `Value`
-- **THEN** the centralized metadata wrapper SHALL increment `generation` by 1
-
-#### Scenario: Update with valid labels
-- **WHEN** `update()` is called with valid labels
-- **THEN** validation SHALL pass and the object SHALL be persisted with updated labels
-
-#### Scenario: Update with invalid labels
-- **WHEN** `update()` is called with invalid labels
-- **THEN** an `AppError::InvalidLabel` error SHALL be returned and no persistence SHALL occur
-
-#### Scenario: Update with invalid annotations
-- **WHEN** `update()` is called with annotations that violate format rules
-- **THEN** an `AppError::InvalidAnnotation` error SHALL be returned and no persistence SHALL occur
-
-### Requirement: delete handles finalizer lifecycle for regular objects
+### Requirement: delete handles finalizer lifecycle with namespace
 The `delete(key, namespace, name)` method SHALL handle the finalizer-based deletion lifecycle for regular (non-Schema) objects:
-1. Fetch the existing object from the store
+1. Fetch the existing object from the store using `(key, namespace, name)`
 2. If `finalizers` is empty: hard-delete via `store.transaction()` with `TransactionOp::Delete`, publish `Deleted` event
 3. If `finalizers` is non-empty and `deletion_timestamp` is None: mark for deletion via `store.transaction()`, set `deletion_timestamp`, publish `Modified` event
 4. If `deletion_timestamp` is already set: return the object without changes, no event published (idempotent)
 
-The ObjectService SHALL NOT handle Schema deletion. Schema deletion is the responsibility of SchemaService.
-
 #### Scenario: Delete regular object without finalizers
 - **WHEN** deleting a non-Schema object with empty finalizers
-- **THEN** the object SHALL be hard-deleted, a `Deleted` event SHALL be published, and the deleted object SHALL be returned
+- **THEN** the object SHALL be hard-deleted, a `Deleted` event SHALL be published
 
 #### Scenario: Delete regular object with finalizers marks for deletion
 - **WHEN** deleting a non-Schema object with non-empty finalizers
-- **THEN** the object SHALL remain in storage with `system.deletionTimestamp` set, a `Modified` event SHALL be published
-
-#### Scenario: Idempotent delete on already-deleting object
-- **WHEN** deleting an object that already has `deletionTimestamp` set
-- **THEN** the object SHALL remain unchanged, no event SHALL be published, and the response SHALL be 200 OK with the object
+- **THEN** the object SHALL remain in storage with `system.deletionTimestamp` set
 ### Requirement: Service provides subscribe() with WatchFilter for SSE watch
 The system SHALL provide an `ObjectService::subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream` method that delegates to the internal `EventPublisher::subscribe(key, filter)`.
 

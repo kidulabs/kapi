@@ -572,8 +572,8 @@ impl ListQueryBuilder {
                 self.param_idx += 1;
             }
             None => {
-                self.where_clauses.push("namespace IS NULL".to_string());
-                // No param needed for IS NULL
+                // Cluster-scoped objects have namespace = '' (empty string) in the DB
+                self.where_clauses.push("namespace = ''".to_string());
             }
         }
     }

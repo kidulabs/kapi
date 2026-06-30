@@ -3,7 +3,7 @@
 Define the `ObjectStore` trait and its `InMemoryStore` implementation for persisting, retrieving, listing, and deleting `StoredObject` instances identified by `ResourceKey` and name.
 ## Requirements
 ### Requirement: ObjectStore trait defines the storage contract
-The system SHALL define an `ObjectStore` async trait with methods `create`, `get`, `list`, `transaction`, and `exists` that operate on `StoredObject` instances. The trait SHALL require `Send + Sync`. The `create` method SHALL accept a complete `StoredObject` and persist it as-is. The `transaction` method SHALL accept a callback that returns a `TransactionOp`. The store SHALL NOT modify system metadata (resource_version, generation, timestamps) — it SHALL persist objects exactly as provided. The `exists` method SHALL accept a `ResourceKey` and return `Result<bool, AppError>` indicating whether any objects exist for that key.
+The system SHALL define an `ObjectStore` async trait with methods `create`, `get`, `list`, `transaction`, and `exists` that operate on `StoredObject` instances. The trait SHALL require `Send + Sync`. The `create` method SHALL accept a complete `StoredObject` and persist it as-is. The `get` method SHALL accept `(key, namespace, name)` where `namespace: Option<&str>`. The `list` method SHALL accept `(key, namespace, opts)` where `namespace: Option<&str>` — `None` means all namespaces. The `transaction` method SHALL accept `(key, namespace, name, op)` where `namespace: Option<&str>`. The store SHALL NOT modify system metadata (resource_version, generation, timestamps) — it SHALL persist objects exactly as provided. The `exists` method SHALL accept a `ResourceKey` and return `Result<bool, AppError>` indicating whether any objects exist for that key.
 
 #### Scenario: Trait is object-safe and thread-safe
 - **WHEN** a type implements `ObjectStore`
@@ -17,8 +17,24 @@ The system SHALL define an `ObjectStore` async trait with methods `create`, `get
 - **WHEN** a caller invokes `exists(key)` with a `ResourceKey`
 - **THEN** the implementation returns `Ok(true)` if any objects exist for that key, `Ok(false)` otherwise
 
+#### Scenario: get accepts namespace parameter
+- **WHEN** a caller invokes `get(key, namespace, name)`
+- **THEN** the implementation looks up the object by `(key, namespace, name)`
+
+#### Scenario: list with namespace=None returns all namespaces
+- **WHEN** a caller invokes `list(key, None, opts)`
+- **THEN** the implementation returns objects from all namespaces
+
+#### Scenario: list with namespace=Some returns scoped results
+- **WHEN** a caller invokes `list(key, Some("production"), opts)`
+- **THEN** the implementation returns only objects in the "production" namespace
+
+#### Scenario: transaction accepts namespace parameter
+- **WHEN** a caller invokes `transaction(key, namespace, name, op)`
+- **THEN** the implementation performs the transaction on the object at `(key, namespace, name)`
+
 ### Requirement: create stores a new object without modifying metadata
-The `create` method SHALL store the provided `StoredObject` as-is. It SHALL NOT modify `system.resource_version`, `system.generation`, `system.created_at`, or `system.updated_at`. The caller (service layer) is responsible for setting all system metadata before calling `create`. If an object with the same key and name already exists, it SHALL return `AppError::AlreadyExists`.
+The `create` method SHALL store the provided `StoredObject` as-is. It SHALL NOT modify `system.resource_version`, `system.generation`, `system.created_at`, or `system.updated_at`. The caller (service layer) is responsible for setting all system metadata before calling `create`. If an object with the same key, namespace, and name already exists, it SHALL return `AppError::AlreadyExists`.
 
 #### Scenario: Successful create persists object with caller-provided metadata
 - **WHEN** `create` is called with a `StoredObject` that has `system.resource_version = 1`, `system.generation = 1`, and timestamps set
@@ -26,16 +42,12 @@ The `create` method SHALL store the provided `StoredObject` as-is. It SHALL NOT 
 - **AND** the returned `StoredObject` SHALL match the input
 
 #### Scenario: Duplicate create returns AlreadyExists
-- **WHEN** `create` is called for a key/name pair that already exists
+- **WHEN** `create` is called for a key/namespace/name triple that already exists
 - **THEN** the error is `AppError::AlreadyExists` with the resource kind and name populated
 
-#### Scenario: Create object with labels
-- **WHEN** `create()` is called with an object that has labels `{"app": "nginx", "env": "prod"}`
-- **THEN** the object SHALL be stored with those labels in `metadata.labels`
-
-#### Scenario: Create object without labels
-- **WHEN** `create()` is called with an object that has empty labels
-- **THEN** the object SHALL be stored with an empty `HashMap` in `metadata.labels`
+#### Scenario: Same name different namespaces succeeds
+- **WHEN** `create` is called with the same name but different namespace than an existing object
+- **THEN** the object SHALL be stored successfully
 
 ### Requirement: Store implementations do not maintain global state
 Store implementations SHALL NOT maintain a global version counter or any other global mutable state for metadata generation. `InMemoryStore` SHALL NOT have an `AtomicU64` field. `SQLiteStore` SHALL NOT have an `init_version_counter()` method or restore version state on startup.
@@ -49,78 +61,65 @@ Store implementations SHALL NOT maintain a global version counter or any other g
 - **THEN** it SHALL NOT query `MAX(resource_version)` or restore any global counter
 
 ### Requirement: get retrieves an existing object
-The `get` method SHALL return the `StoredObject` for the given `ResourceKey` and name, including any labels stored with the object. If no such object exists, it SHALL return `AppError::NotFound`.
+The `get` method SHALL accept `(key, namespace, name)` and return the `StoredObject` for the given key, namespace, and name, including any labels stored with the object. If no such object exists, it SHALL return `AppError::NotFound`.
 
 #### Scenario: Successful get returns the stored object
-- **WHEN** `get` is called for a key/name pair that exists
+- **WHEN** `get` is called for a key/namespace/name triple that exists
 - **THEN** the returned `StoredObject` matches the stored data and includes labels in `metadata.labels`
 
 #### Scenario: Get for missing object returns NotFound
-- **WHEN** `get` is called for a key/name pair that does not exist
+- **WHEN** `get` is called for a key/namespace/name triple that does not exist
 - **THEN** the error is `AppError::NotFound` with `what` and `identifier` fields populated
 
-#### Scenario: Get object with labels
-- **WHEN** `get()` is called for an object that has labels
-- **THEN** the returned `StoredObject` SHALL have those labels in `metadata.labels`
-
-#### Scenario: Get object without labels
-- **WHEN** `get()` is called for an object with no labels
-- **THEN** the returned `StoredObject` SHALL have an empty `HashMap` in `metadata.labels`
+#### Scenario: Get with wrong namespace returns NotFound
+- **WHEN** `get` is called for a name that exists but in a different namespace
+- **THEN** the error is `AppError::NotFound`
 
 ### Requirement: list returns paginated objects for a resource kind
-The `list` method SHALL return all `StoredObject` instances matching the given `ResourceKey`, sorted by name in ascending order. Each returned object SHALL include its labels in `metadata.labels`. When `ListOptions.limit` is `Some(n)`, it SHALL return at most `n` items. When `ListOptions.continue_token` is `Some(token)`, it SHALL skip entries up to and including the name encoded in the token. The returned `ListResponse` SHALL include a `continue_token` if more items remain beyond the returned batch. When `ListOptions.field_selector` and/or `ListOptions.label_selector` are set, the store SHALL apply those filters before pagination.
+The `list` method SHALL accept `(key, namespace, opts)` and return all `StoredObject` instances matching the given `ResourceKey` and namespace. When `namespace` is `None`, objects from all namespaces SHALL be returned. Results SHALL be sorted by `(namespace, name)` in ascending order. Each returned object SHALL include its labels in `metadata.labels`. When `ListOptions.limit` is `Some(n)`, it SHALL return at most `n` items. When `ListOptions.continue_token` is `Some(token)`, it SHALL skip entries up to and including the `(namespace, name)` encoded in the token. The returned `ListResponse` SHALL include a `continue_token` if more items remain beyond the returned batch. When `ListOptions.field_selector` and/or `ListOptions.label_selector` are set, the store SHALL apply those filters before pagination.
 
-#### Scenario: List returns all objects sorted by name
-- **WHEN** `list` is called with no limit or continue token
-- **THEN** all objects for the key are returned in ascending name order, each with their labels
+#### Scenario: List returns all objects sorted by namespace then name
+- **WHEN** `list` is called with `namespace = None` and no limit or continue token
+- **THEN** all objects for the key are returned sorted by (namespace, name) ascending
+
+#### Scenario: List with namespace returns only that namespace
+- **WHEN** `list` is called with `namespace = Some("production")`
+- **THEN** only objects in "production" namespace are returned, sorted by name
 
 #### Scenario: List with limit returns partial results with continue token
 - **WHEN** `list` is called with `limit = Some(2)` and 5 objects exist
 - **THEN** exactly 2 items are returned and `continue_token` is `Some`
 
 #### Scenario: List with continue token resumes from correct position
-- **WHEN** `list` is called with a continue token encoding name "b"
-- **THEN** objects with names <= "b" are skipped and results start from the next name
+- **WHEN** `list` is called with a continue token encoding namespace "b" and name "foo"
+- **THEN** objects with (namespace, name) <= ("b", "foo") are skipped
 
 #### Scenario: List with no matching objects returns empty list
 - **WHEN** `list` is called for a key with no stored objects
 - **THEN** the response has an empty `items` vector and `continue_token` is `None`
 
-#### Scenario: List objects with mixed labels
-- **WHEN** `list()` is called and some objects have labels while others do not
-- **THEN** each returned `StoredObject` SHALL have its correct labels (or empty map)
-
-#### Scenario: Filter applied before pagination
-- **WHEN** `list()` is called with a filter and `limit=10`
-- **THEN** the filter SHALL be applied first, then the result truncated to 10 items
-
-#### Scenario: Filter with continue token
-- **WHEN** `list()` is called with a filter and a continue token
-- **THEN** the filter SHALL be applied, then the cursor skip, then truncation
-
 ### Requirement: InMemoryStore uses DashMap for concurrent access
-The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore` using `DashMap<(ResourceKey, String), StoredObject>` as its backing store, and `SQLiteStore` using a SQLite database file with `rusqlite` as its backing store. Both SHALL implement the `ObjectStore` trait and produce identical behavior for all trait methods. Neither implementation SHALL maintain global state for metadata generation. Both SHALL persist `StoredObject.spec` and `StoredObject.status` as `serde_json::Value` directly, with no envelope wrapper.
+The `ObjectStore` trait SHALL have at least two implementations: `InMemoryStore` using `DashMap<(ResourceKey, Option<String>, String), StoredObject>` as its backing store, and `SQLiteStore` using a SQLite database file with `rusqlite` as its backing store. Both SHALL implement the `ObjectStore` trait and produce identical behavior for all trait methods. Neither implementation SHALL maintain global state for metadata generation. Both SHALL persist `StoredObject.spec` and `StoredObject.status` as `serde_json::Value` directly, with no envelope wrapper.
 
-`InMemoryStore::list()` SHALL apply field and label filters in Rust after collecting objects but before sorting and pagination (order: collect → filter → sort → skip → truncate).
+`InMemoryStore::list()` SHALL apply field and label filters in Rust after collecting objects but before sorting and pagination (order: collect → filter → sort → skip → truncate). When `namespace` is `None`, all objects for the key are collected regardless of namespace. When `namespace` is `Some`, only objects matching that namespace are collected.
 
-`SQLiteStore::list()` SHALL apply field and label filters as SQL WHERE clauses before pagination. Field filters SHALL use `AND name = ?` bindings. Label filters SHALL use `EXISTS`/`NOT EXISTS` subqueries on the `labels` table for each label requirement. Multiple label requirements SHALL be combined with AND semantics (multiple subqueries). All filtering SHALL happen before ORDER BY and LIMIT in the SQL query.
+`SQLiteStore::list()` SHALL apply field and label filters as SQL WHERE clauses before pagination. When `namespace` is `None`, no namespace filter is applied. When `namespace` is `Some`, the SQL query SHALL include `AND namespace = ?`. Field filters SHALL use `AND name = ?` bindings. Label filters SHALL use `EXISTS`/`NOT EXISTS` subqueries on the `labels` table for each label requirement. All filtering SHALL happen before ORDER BY and LIMIT in the SQL query.
 
 #### Scenario: Concurrent creates from multiple threads succeed
 - **WHEN** multiple threads call `create` with different names simultaneously
 - **THEN** all creates succeed without deadlock or data corruption
 
-#### Scenario: Concurrent reads do not block each other
-- **WHEN** multiple threads call `get` simultaneously
-- **THEN** all reads complete without blocking each other
-
 #### Scenario: Both implementations satisfy the same trait
 - **WHEN** either `InMemoryStore` or `SQLiteStore` is used as `Arc<dyn ObjectStore>`
 - **THEN** all trait methods behave identically for the same inputs
 
-#### Scenario: Stores persist spec and status as inline JSON values
-- **WHEN** `create` is called with a `StoredObject` whose `spec` and `status` are `serde_json::Value`
-- **THEN** the stores SHALL persist the values as-is, with no wrapper or envelope
-- **AND** `get` SHALL return `StoredObject` with `spec` and `status` as the same `serde_json::Value` instances (or semantically equivalent parsed values)
+#### Scenario: InMemoryStore list with namespace=None returns all
+- **WHEN** `list(key, None, opts)` is called on InMemoryStore
+- **THEN** objects from all namespaces are returned
+
+#### Scenario: InMemoryStore list with namespace=Some returns scoped
+- **WHEN** `list(key, Some("production"), opts)` is called on InMemoryStore
+- **THEN** only objects in "production" namespace are returned
 
 ### Requirement: InMemoryStore visibility restricted to crate
 The `InMemoryStore` module SHALL be declared `pub(crate)` in `src/store/mod.rs` so it is visible only within the `kapi` crate, not to external consumers.

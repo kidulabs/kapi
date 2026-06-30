@@ -6,14 +6,13 @@ Define the `SchemaRegistry` collaborator that manages JSON Schema compilation, c
 The system SHALL define a `SchemaRegistry` struct containing:
 - `store: Arc<dyn ObjectStore>` — the storage backend for cache-miss lookups
 - `meta_validator: Arc<dyn SchemaValidator>` — compiled meta-schema for Schema validation
-- `cache: DashMap<String, Arc<dyn SchemaValidator>>` — compiled user schemas keyed by versioned schema name (e.g., `"Widget.example.io.v1"`)
+- `cache: DashMap<String, CachedSchema>` — compiled user schemas keyed by versioned schema name
 
-The registry SHALL cache status validators alongside spec validators. The cache key for status validators SHALL be `{kind}.{group}.{version}.status`.
+The `CachedSchema` struct SHALL contain `validator: Arc<dyn SchemaValidator>`, `status_validator: Option<Arc<dyn SchemaValidator>>`, and `scope: String`. The cache key for spec validators SHALL be `{kind}.{group}.{version}`. The cache key for status validators SHALL be `{kind}.{group}.{version}.status`.
 
 #### Scenario: Registry construction
 - **WHEN** `SchemaRegistry::new(store, meta_validator)` is called
 - **THEN** the registry is constructed with an empty `cache`
-- **AND** no store query is performed during construction
 
 ### Requirement: validate_and_compile validates meta-schema and compiles jsonSchema
 The `validate_and_compile(data: &Value)` method SHALL:
@@ -41,47 +40,51 @@ This method SHALL NOT insert the compiled validator into the cache. Cache insert
 - **WHEN** `validate_and_compile` is called with data that passes meta-schema validation but cannot be parsed as `SchemaData`
 - **THEN** the method returns `Err(AppError::InvalidSchema)` with a parse error message
 
-### Requirement: get_validator returns cached or lazily compiled validator
+### Requirement: get_validator returns cached or lazily compiled validator with scope
 The `get_validator(key: &ResourceKey)` method SHALL:
-1. Compute the cache key as `"{kind}.{group}.{version}"` from the provided `ResourceKey`
-2. Check the cache for an existing validator
-3. On cache hit, return the cached validator
-4. On cache miss, fetch the Schema from the store using `schema_key()` and name `"{kind}.{group}.{version}"`
-5. Parse the fetched Schema's data into `SchemaData`
+1. Compute the cache key as `"{kind}.{group}.{version}"`
+2. Check the cache for an existing entry
+3. On cache hit, return the cached validator and scope
+4. On cache miss, fetch the Schema from the store
+5. Parse the Schema's data into `SchemaData` (including scope)
 6. Compile `schema_data.json_schema`
-7. Insert the compiled validator into the cache
-8. Return the compiled validator
+7. Insert the compiled validator and scope into the cache
+8. Return the compiled validator and scope
 
-#### Scenario: Cache hit returns cached validator
+The method SHALL return `(Arc<dyn SchemaValidator>, String)` where the string is the scope.
+
+#### Scenario: Cache hit returns cached validator and scope
 - **WHEN** `get_validator` is called for a key whose validator exists in the cache
-- **THEN** the cached validator is returned without any store access
+- **THEN** the cached validator and scope are returned without store access
 
-#### Scenario: Cache miss compiles and caches validator
-- **WHEN** `get_validator` is called for a key whose validator is not in the cache but whose Schema exists in the store
-- **THEN** the Schema is fetched from the store, compiled, inserted into the cache, and the compiled validator is returned
+#### Scenario: Cache miss compiles and caches validator with scope
+- **WHEN** `get_validator` is called for a key not in cache but in store
+- **THEN** the Schema is fetched, compiled, cached with scope, and validator + scope returned
 
-#### Scenario: Cache miss with no Schema in store returns NotFound
-- **WHEN** `get_validator` is called for a key whose Schema does not exist in the store
-- **THEN** the method returns `Err(AppError::NotFound { what: "schema", identifier: schema_name })`
+### Requirement: get_scope returns scope for a kind
+The `SchemaRegistry` SHALL provide a `get_scope(key: &ResourceKey) -> Result<String, AppError>` method that returns the scope for the given kind. On cache hit, it returns the cached scope. On cache miss, it fetches the Schema from the store, extracts the scope, caches it, and returns it.
 
-#### Scenario: Cache miss with uncompilable stored schema returns StoredSchemaCompilationFailed
-- **WHEN** `get_validator` is called for a key whose Schema exists in the store but whose `jsonSchema` fails compilation
-- **THEN** the method returns `Err(AppError::StoredSchemaCompilationFailed { schema_name, reason })`
+#### Scenario: Get scope for cached kind
+- **WHEN** `get_scope` is called for a kind in cache
+- **THEN** the scope is returned without store access
+
+#### Scenario: Get scope for uncached kind
+- **WHEN** `get_scope` is called for a kind not in cache
+- **THEN** the Schema is fetched, scope extracted, cached, and returned
+
+### Requirement: insert adds validator and scope to cache
+The `insert(name: &str, validator: Arc<dyn SchemaValidator>, scope: &str)` method SHALL insert the validator and scope into the cache under the given name, replacing any existing entry.
+
+#### Scenario: Insert new validator with scope
+- **WHEN** `insert("Widget.example.io.v1", validator, "Namespaced")` is called
+- **THEN** the validator and scope are stored in the cache
 
 ### Requirement: SchemaRegistry caches status validators
-When a Schema with `statusSchema` is created or updated, the status validator SHALL be compiled and cached. The cache key for status validators SHALL be `{kind}.{group}.{version}.status`. When a Schema is deleted, both spec and status cache entries SHALL be evicted.
+When a Schema with `statusSchema` is created or updated, the status validator SHALL be compiled and cached alongside the scope. When a Schema is deleted, both spec and status cache entries SHALL be evicted.
 
-#### Scenario: Schema with statusSchema caches both validators
-- **WHEN** a Schema with `statusSchema` is registered
-- **THEN** the spec validator is cached under `{kind}.{group}.{version}` and the status validator is cached under `{kind}.{group}.{version}.status`
-
-#### Scenario: Schema without statusSchema caches only spec validator
-- **WHEN** a Schema without `statusSchema` is registered
-- **THEN** only the spec validator is cached under `{kind}.{group}.{version}`
-
-#### Scenario: Schema deletion evicts both validators
-- **WHEN** a Schema with `statusSchema` is deleted
-- **THEN** both `{kind}.{group}.{version}` and `{kind}.{group}.{version}.status` cache entries are evicted
+#### Scenario: Schema with statusSchema caches both validators and scope
+- **WHEN** a Schema with `statusSchema` and `scope: "Cluster"` is registered
+- **THEN** the spec validator, status validator, and scope are cached
 
 ### Requirement: SchemaRegistry get_status_validator method
 The `SchemaRegistry` SHALL provide a `get_status_validator(&self, key: &ResourceKey)` method that returns the cached status validator for the given kind+version. The cache key SHALL be `{kind}.{group}.{version}.status`. On cache miss, it SHALL fetch the Schema from the store using name `{kind}.{group}.{version}`, parse `status_schema`, compile it, cache it under the status key, and return it. If the Schema has no `status_schema`, it SHALL return `AppError::StatusSubresourceNotEnabled`.
@@ -97,17 +100,6 @@ The `SchemaRegistry` SHALL provide a `get_status_validator(&self, key: &Resource
 #### Scenario: Get status validator cache miss
 - **WHEN** `get_status_validator` is called and the cache does not contain the status validator
 - **THEN** the Schema is fetched from the store, `status_schema` is compiled, cached, and returned
-
-### Requirement: insert adds validator to cache
-The `insert(name: &str, validator: Arc<dyn SchemaValidator>)` method SHALL insert the validator into the cache under the given name, replacing any existing entry.
-
-#### Scenario: Insert new validator
-- **WHEN** `insert("Widget.example.io.v1", validator)` is called and no entry exists for that name
-- **THEN** the validator is stored in the cache under `"Widget.example.io.v1"`
-
-#### Scenario: Insert replaces existing validator
-- **WHEN** `insert("Widget.example.io.v1", new_validator)` is called and an entry already exists for that name
-- **THEN** the existing entry is replaced with `new_validator`
 
 ### Requirement: evict removes validator from cache
 The `evict(name: &str)` method SHALL remove the spec validator entry for the given name from the cache. It SHALL also remove the status validator entry for `{name}.status`. If no entry exists, this is a no-op.

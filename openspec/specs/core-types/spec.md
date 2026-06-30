@@ -10,75 +10,42 @@ The system SHALL define a `ResourceKey` struct with `group`, `version`, and `kin
 - **THEN** they SHALL be equal and produce the same hash
 
 ### Requirement: StoredObject represents a persisted custom object
-The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `metadata: ObjectMeta`, `system: SystemMetadata`, `spec: serde_json::Value`, and `status: Option<serde_json::Value>`. The `status` field SHALL be `None` for kinds without a `statusSchema` and `Some(Value)` for kinds with one. The `ObjectMeta` struct SHALL contain `name: String` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. The `SystemMetadata` struct SHALL contain `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>` and derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `StoredObject` SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize`. The `spec` and `status` fields SHALL be the user-supplied JSON directly, with no wrapper envelope.
+The system SHALL define a `StoredObject` struct containing `key: ResourceKey`, `metadata: ObjectMeta`, `system: SystemMetadata`, `spec: serde_json::Value`, and `status: Option<serde_json::Value>`. The `status` field SHALL be `None` for kinds without a `statusSchema` and `Some(Value)` for kinds with one. The `ObjectMeta` struct SHALL contain `name: String`, `namespace: Option<String>`, `labels: HashMap<String, String>`, `annotations: HashMap<String, String>`, and `finalizers: Vec<String>`. The `namespace` field SHALL use `#[serde(skip_serializing_if = "Option::is_none")]`. The `SystemMetadata` struct SHALL contain `resource_version: u64`, `generation: u64`, `created_at: DateTime<Utc>`, `updated_at: DateTime<Utc>`, and `deletion_timestamp: Option<DateTime<Utc>>`. All structs SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`.
 
-#### Scenario: Object carries versioning timestamps
-- **WHEN** an object is created or updated
-- **THEN** `system.created_at` and `system.updated_at` SHALL be populated by the storage layer
+#### Scenario: StoredObject serializes with namespace
+- **WHEN** a `StoredObject` with `metadata.namespace = Some("production")` is serialized
+- **THEN** the JSON contains `"namespace": "production"` in the metadata
 
-#### Scenario: Resource version for optimistic concurrency
-- **WHEN** an object is created or updated
-- **THEN** `system.resource_version` SHALL be updated by the storage layer
-- **WHEN** an update is performed with a stale `system.resource_version`
-- **THEN** the storage layer SHALL reject the update, returning a `Conflict` error
+#### Scenario: StoredObject serializes without namespace (cluster-scoped)
+- **WHEN** a `StoredObject` with `metadata.namespace = None` is serialized
+- **THEN** the JSON does NOT contain a `namespace` key in the metadata
 
-#### Scenario: StoredObject serializes with correct field grouping
-- **WHEN** a `StoredObject` is serialized to JSON
-- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, `spec`, and `status`
-- **AND** `metadata` contains `name`
-- **AND** `system` contains `resourceVersion`, `createdAt`, `updatedAt`
-- **AND** `spec` contains the user-supplied spec JSON directly (no `value` wrapper)
-- **AND** `status` contains the user-supplied status JSON directly (no `value` wrapper) or `null`
+#### Scenario: StoredObject deserializes with namespace
+- **WHEN** JSON with `"namespace": "production"` in metadata is deserialized
+- **THEN** the resulting `StoredObject` has `metadata.namespace = Some("production")`
 
-#### Scenario: StoredObject serializes with status field
-- **WHEN** a `StoredObject` with `status: Some(Value::Object({"phase": "Running"}))` is serialized to JSON
-- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, `spec`, and `status`
-- **AND** `status` contains `{"phase": "Running"}` (the inner value directly, no wrapper)
-
-#### Scenario: StoredObject serializes with null status
-- **WHEN** a `StoredObject` with `status: None` is serialized to JSON
-- **THEN** the JSON contains top-level keys `key`, `metadata`, `system`, `spec`, and `status`
-- **AND** `status` is `null`
-
-#### Scenario: StoredObject deserializes from JSON
-- **WHEN** JSON with keys `key`, `metadata`, `system`, and `spec` is deserialized
-- **THEN** the resulting `StoredObject` has `metadata.name`, `system.resource_version`, `system.created_at`, and `system.updated_at` populated
-- **AND** `spec` is the JSON value at the `spec` key directly (no `value` wrapper expected or required)
-
-#### Scenario: StoredObject deserializes with status
-- **WHEN** JSON with keys `key`, `metadata`, `system`, `spec`, and `status` is deserialized
-- **THEN** the resulting `StoredObject` has `status` populated as `Some(Value)` containing the JSON at the `status` key directly
-
-#### Scenario: StoredObject deserializes with null status
-- **WHEN** JSON with `status: null` is deserialized
-- **THEN** the resulting `StoredObject` has `status` as `None`
+#### Scenario: StoredObject deserializes without namespace
+- **WHEN** JSON without `namespace` in metadata is deserialized
+- **THEN** the resulting `StoredObject` has `metadata.namespace = None`
 
 ### Requirement: ObjectMeta groups user-controlled metadata fields
-`ObjectMeta` SHALL contain a `name` field of type `String`, a `labels` field of type `HashMap<String, String>`, and an `annotations` field of type `HashMap<String, String>`. All fields SHALL use `camelCase` serialization via `#[serde(rename_all = "camelCase")]`. The `annotations` field SHALL use `#[serde(default)]` to default to an empty map when absent.
+`ObjectMeta` SHALL contain a `name` field of type `String`, a `namespace` field of type `Option<String>`, a `labels` field of type `HashMap<String, String>`, an `annotations` field of type `HashMap<String, String>`, and a `finalizers` field of type `Vec<String>`. All fields SHALL use `camelCase` serialization. The `namespace` field SHALL use `#[serde(skip_serializing_if = "Option::is_none")]`. The `annotations` and `finalizers` fields SHALL use `#[serde(default)]`.
 
-#### Scenario: ObjectMeta serialization with labels and annotations
-- **WHEN** an `ObjectMeta` with `name: "my-widget"`, `labels: {"app": "nginx"}`, and `annotations: {"description": "my widget"}` is serialized
-- **THEN** the JSON output SHALL be `{"name": "my-widget", "labels": {"app": "nginx"}, "annotations": {"description": "my widget"}}`
+#### Scenario: ObjectMeta serialization with namespace
+- **WHEN** an `ObjectMeta` with `name: "my-widget"`, `namespace: Some("production")`, `labels: {"app": "nginx"}` is serialized
+- **THEN** the JSON output SHALL include `"namespace": "production"`
 
-#### Scenario: ObjectMeta serialization without labels or annotations
-- **WHEN** an `ObjectMeta` with `name: "my-widget"` and empty labels and annotations is serialized
-- **THEN** the JSON output SHALL be `{"name": "my-widget", "labels": {}, "annotations": {}}`
+#### Scenario: ObjectMeta serialization without namespace
+- **WHEN** an `ObjectMeta` with `name: "my-widget"`, `namespace: None` is serialized
+- **THEN** the JSON output SHALL NOT include a `namespace` key
 
-#### Scenario: ObjectMeta deserialization with labels and annotations
-- **WHEN** JSON `{"name": "my-widget", "labels": {"env": "prod"}, "annotations": {"owner": "team"}}` is deserialized into `ObjectMeta`
-- **THEN** the resulting struct SHALL have `name = "my-widget"`, `labels = {"env": "prod"}`, and `annotations = {"owner": "team"}`
+#### Scenario: ObjectMeta deserialization with namespace
+- **WHEN** JSON `{"name": "my-widget", "namespace": "production"}` is deserialized
+- **THEN** the resulting struct SHALL have `namespace = Some("production")`
 
-#### Scenario: ObjectMeta deserialization without labels or annotations fields
-- **WHEN** JSON `{"name": "my-widget"}` is deserialized into `ObjectMeta`
-- **THEN** the resulting struct SHALL have `name = "my-widget"`, `labels` as an empty `HashMap`, and `annotations` as an empty `HashMap`
-
-#### Scenario: ObjectMeta deserialization with only labels
-- **WHEN** JSON `{"name": "my-widget", "labels": {"app": "nginx"}}` is deserialized into `ObjectMeta`
-- **THEN** the resulting struct SHALL have `name = "my-widget"`, `labels = {"app": "nginx"}`, and `annotations` as an empty `HashMap`
-
-#### Scenario: ObjectMeta deserialization with only annotations
-- **WHEN** JSON `{"name": "my-widget", "annotations": {"description": "test"}}` is deserialized into `ObjectMeta`
-- **THEN** the resulting struct SHALL have `name = "my-widget"`, `labels` as an empty `HashMap`, and `annotations = {"description": "test"}`
+#### Scenario: ObjectMeta deserialization without namespace
+- **WHEN** JSON `{"name": "my-widget"}` is deserialized
+- **THEN** the resulting struct SHALL have `namespace = None`
 
 ### Requirement: SystemMetadata groups server-managed lifecycle fields
 The system SHALL define a `SystemMetadata` struct containing `resource_version: u64`, `created_at: DateTime<Utc>`, and `updated_at: DateTime<Utc>`. This struct SHALL derive `Debug`, `Clone`, `Serialize`, and `Deserialize` with `#[serde(rename_all = "camelCase")]`. `SystemMetadata` represents the portion of object metadata that the server controls; clients read these values but do not set them on create (they may echo `resourceVersion` on update for optimistic concurrency).
@@ -144,12 +111,20 @@ The system SHALL define `ListOptions` with `limit: Option<usize>` and `continue_
 - **WHEN** `ListOptions.continue_token` is provided
 - **THEN** the storage layer SHALL resume listing from the encoded offset
 
-### Requirement: ContinueToken is an opaque string newtype
-The system SHALL define `ContinueToken(pub String)` to prevent accidental mixing of raw strings with pagination tokens.
+### Requirement: ContinueToken encodes namespace and name
+The `ContinueToken` SHALL encode both `namespace: Option<String>` and `name: String` to support cross-namespace pagination. The token format SHALL be a base64-encoded JSON object `{"namespace": "...", "name": "..."}` where namespace is `null` for cluster-scoped objects.
 
-#### Scenario: Token construction
-- **WHEN** the storage layer creates a continuation token
-- **THEN** it SHALL be wrapped in `ContinueToken` before returning to the client
+#### Scenario: ContinueToken with namespace
+- **WHEN** a continue token is created for namespace "production" and name "foo"
+- **THEN** the encoded token SHALL contain `{"namespace": "production", "name": "foo"}`
+
+#### Scenario: ContinueToken without namespace (cluster-scoped)
+- **WHEN** a continue token is created for namespace `None` and name "foo"
+- **THEN** the encoded token SHALL contain `{"namespace": null, "name": "foo"}`
+
+#### Scenario: ContinueToken roundtrip
+- **WHEN** a ContinueToken is encoded and then decoded
+- **THEN** the namespace and name SHALL be preserved
 
 ### Requirement: WatchEvent supports real-time change notifications
 The system SHALL define `WatchEventType` as an enum with `Added`, `Modified`, `Deleted`, and `StatusModified` variants, and `WatchEvent` as a struct with `event_type: WatchEventType` and `object: StoredObject`.
