@@ -243,9 +243,11 @@ pub async fn test_watch_by_name_and_watch_all_simultaneously(app: &TestApp) -> R
 }
 
 pub async fn test_watcher_cleanup_on_client_disconnect(app: &TestApp) -> Result<(), String> {
-    use kapi::event::EventPublisher;
-    use kapi::object::types::{ObjectMeta, StoredObject, SystemMetadata, WatchEvent, WatchFilter};
-    use kapi::store::ResourceKey;
+    use kapi_server::event::EventPublisher;
+    use kapi_server::object::types::{
+        ObjectMeta, StoredObject, SystemMetadata, WatchEvent, WatchFilter,
+    };
+    use kapi_server::store::ResourceKey;
 
     let key = ResourceKey {
         group: "example.io".to_string(),

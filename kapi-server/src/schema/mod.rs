@@ -49,7 +49,7 @@ pub fn namespace_key() -> ResourceKey {
 /// # Examples
 ///
 /// ```
-/// # use kapi::schema::schema_cache_key;
+/// # use kapi_server::schema::schema_cache_key;
 /// assert_eq!(schema_cache_key("Widget", "example.io", "v1"), "Widget.example.io.v1");
 /// assert_eq!(schema_cache_key("Widget", "example.io", "v2"), "Widget.example.io.v2");
 /// ```

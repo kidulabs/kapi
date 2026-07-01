@@ -15,7 +15,7 @@ use crate::object::types::SchemaData;
 /// # Examples
 ///
 /// ```
-/// # use kapi::openapi::component_name;
+/// # use kapi_server::openapi::component_name;
 /// assert_eq!(component_name("Widget.example.io.v1"), "WidgetExampleIoV1");
 /// assert_eq!(component_name("Deployment.apps"), "DeploymentApps");
 /// assert_eq!(component_name("Widget.example.io.v1"), "WidgetExampleIoV1");

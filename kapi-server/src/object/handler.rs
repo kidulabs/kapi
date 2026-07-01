@@ -27,6 +27,8 @@ use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
 use crate::schema::schema_cache_key;
 use crate::store::ResourceKey;
+#[cfg(test)]
+use kapi_core::CoreError;
 
 /// Path parameters for /apis/{group}/{version}/{kind}
 #[derive(Deserialize)]
@@ -883,7 +885,7 @@ mod tests {
         let result = FieldSelector::parse("metadata.namespace=default");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("metadata.namespace"))
+            matches!(result, Err(CoreError::InvalidFieldSelector(msg)) if msg.contains("metadata.namespace"))
         );
     }
 
@@ -892,7 +894,7 @@ mod tests {
         let result = FieldSelector::parse("invalid-format");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(AppError::InvalidFieldSelector(msg)) if msg.contains("expected 'field=value'"))
+            matches!(result, Err(CoreError::InvalidFieldSelector(msg)) if msg.contains("expected 'field=value'"))
         );
     }
 
@@ -1035,7 +1037,7 @@ mod tests {
         let result = LabelSelector::parse("app=");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("empty value"))
+            matches!(result, Err(CoreError::InvalidLabelSelector(msg)) if msg.contains("empty value"))
         );
     }
 
@@ -1044,7 +1046,7 @@ mod tests {
         let result = LabelSelector::parse("invalid key!=value");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("whitespace"))
+            matches!(result, Err(CoreError::InvalidLabelSelector(msg)) if msg.contains("whitespace"))
         );
     }
 
@@ -1053,7 +1055,7 @@ mod tests {
         let result = LabelSelector::parse("app=nginx,,env=prod");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(AppError::InvalidLabelSelector(msg)) if msg.contains("empty segment"))
+            matches!(result, Err(CoreError::InvalidLabelSelector(msg)) if msg.contains("empty segment"))
         );
     }
 

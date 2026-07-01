@@ -12,7 +12,7 @@ name = "kapi-tests"
 path = "src/main.rs"
 
 [dependencies]
-kapi = { path = ".." }
+kapi-server = { path = ".." }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"

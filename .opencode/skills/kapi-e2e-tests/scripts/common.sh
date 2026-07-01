@@ -62,7 +62,7 @@ check_server() {
   if ! lsof -ti :8080 > /dev/null 2>&1; then
     echo "ERROR: Server not running on port 8080"
     echo "Please start the server first:"
-    echo "  RUST_LOG=kapi=trace cargo run > /tmp/kapi-server.log 2>&1 &"
+    echo "  RUST_LOG=kapi=trace cargo run --bin kapi-server > /tmp/kapi-server.log 2>&1 &"
     exit 1
   fi
 }

@@ -11,12 +11,12 @@ use serde_json::Value;
 use tokio::sync::mpsc;
 use tower::ServiceExt;
 
-use kapi::AppConfig;
-use kapi::event::{EventBus, EventPublisher};
-use kapi::object::types::{WatchEvent, WatchEventType};
-use kapi::store::ObjectStore;
-use kapi::store::memory::InMemoryStore;
-use kapi::store::sqlite::SQLiteStore;
+use kapi_server::AppConfig;
+use kapi_server::event::{EventBus, EventPublisher};
+use kapi_server::object::types::{WatchEvent, WatchEventType};
+use kapi_server::store::ObjectStore;
+use kapi_server::store::memory::InMemoryStore;
+use kapi_server::store::sqlite::SQLiteStore;
 
 pub mod finalizers;
 pub mod generation_semantics;
@@ -44,7 +44,7 @@ impl TestApp {
 
         let config = AppConfig { port: 0, store: store.clone(), event_bus: event_bus.clone() };
 
-        let router = kapi::create_app(&config).await.expect("failed to build app");
+        let router = kapi_server::create_app(&config).await.expect("failed to build app");
 
         Self { router, store, event_bus }
     }
@@ -276,7 +276,7 @@ pub async fn register_widget_schema(client: &TestClient) {
 
 /// Creates a Namespace object via the test client. Used by tests that
 /// reference non-default namespaces. Requires the test app to have
-/// bootstrapped the Namespace schema (it does by default via kapi::create_app).
+/// bootstrapped the Namespace schema (it does by default via kapi_server::create_app).
 pub async fn register_namespace(client: &TestClient, name: &str) {
     let body = serde_json::json!({
         "metadata": { "name": name },

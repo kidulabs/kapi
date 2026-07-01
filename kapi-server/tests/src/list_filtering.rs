@@ -170,7 +170,7 @@ pub async fn test_list_filter_no_matches(app: &TestApp) -> Result<(), String> {
 
 pub async fn test_watch_with_both_selectors_matching(app: &TestApp) -> Result<(), String> {
     use crate::watch_events;
-    use kapi::object::types::WatchEventType;
+    use kapi_server::object::types::WatchEventType;
 
     let client = app.client();
     register_widget_schema(&client).await;

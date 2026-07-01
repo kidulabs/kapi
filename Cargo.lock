@@ -962,7 +962,38 @@ dependencies = [
 ]
 
 [[package]]
-name = "kapi"
+name = "kapi-cli"
+version = "0.1.0"
+dependencies = [
+ "kapi-client",
+]
+
+[[package]]
+name = "kapi-client"
+version = "0.1.0"
+dependencies = [
+ "kapi-core",
+]
+
+[[package]]
+name = "kapi-controller"
+version = "0.1.0"
+dependencies = [
+ "kapi-client",
+]
+
+[[package]]
+name = "kapi-core"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "kapi-server"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -975,6 +1006,7 @@ dependencies = [
  "futures-util",
  "http-body-util",
  "jsonschema",
+ "kapi-core",
  "regex",
  "rusqlite",
  "serde",
@@ -998,7 +1030,7 @@ dependencies = [
  "futures",
  "http",
  "http-body-util",
- "kapi",
+ "kapi-server",
  "serde",
  "serde_json",
  "tempfile",

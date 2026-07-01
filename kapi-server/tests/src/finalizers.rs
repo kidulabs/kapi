@@ -494,7 +494,7 @@ pub async fn test_backward_compat_deserialize_without_finalizers(
         },
         "spec": { "color": "blue", "size": 10 }
     });
-    let obj: kapi::object::types::StoredObject =
+    let obj: kapi_server::object::types::StoredObject =
         serde_json::from_value(json).map_err(|e| e.to_string())?;
     assert!(
         obj.metadata.finalizers.is_empty(),
@@ -519,7 +519,7 @@ pub async fn test_backward_compat_deserialize_without_deletion_timestamp(
         },
         "spec": { "color": "blue", "size": 10 }
     });
-    let obj: kapi::object::types::StoredObject =
+    let obj: kapi_server::object::types::StoredObject =
         serde_json::from_value(json).map_err(|e| e.to_string())?;
     assert!(
         obj.system.deletion_timestamp.is_none(),

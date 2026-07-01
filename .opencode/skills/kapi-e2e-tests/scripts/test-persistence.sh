@@ -8,7 +8,7 @@ kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 1
 PERSIST_DB=/tmp/kapi-persist-test.db
 rm -f "$PERSIST_DB"
-RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run > /tmp/kapi-server-persist.log 2>&1 &
+RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run --bin kapi-server > /tmp/kapi-server-persist.log 2>&1 &
 sleep 3
 
 register_widget_schema
@@ -50,7 +50,7 @@ with open('/tmp/kapi-ann-before.json','w') as f: json.dump(json.load(sys.stdin)[
 kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 2
 
-RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run > /tmp/kapi-server-persist.log 2>&1 &
+RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run --bin kapi-server > /tmp/kapi-server-persist.log 2>&1 &
 sleep 3
 
 echo "After restart:"
@@ -87,7 +87,7 @@ kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 1
 PERSIST_DB=/tmp/kapi-persist-fin.db
 rm -f "$PERSIST_DB"
-RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run > /tmp/kapi-server-persist-fin.log 2>&1 &
+RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run --bin kapi-server > /tmp/kapi-server-persist-fin.log 2>&1 &
 sleep 3
 
 register_widget_schema
@@ -112,7 +112,7 @@ curl -s "http://localhost:8080/apis/example.io.$TEST_RUN/v1/namespaces/default/W
 kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 2
 
-RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run > /tmp/kapi-server-persist-fin.log 2>&1 &
+RUST_LOG=kapi=trace KAPI_DB_PATH="$PERSIST_DB" cargo run --bin kapi-server > /tmp/kapi-server-persist-fin.log 2>&1 &
 sleep 3
 
 echo "After restart:"
@@ -142,7 +142,7 @@ echo "T49_PASS"
 # Restart in-memory server for remaining tests
 kill $(lsof -ti :8080) 2>/dev/null || true
 sleep 1
-RUST_LOG=kapi=trace cargo run > /tmp/kapi-server.log 2>&1 &
+RUST_LOG=kapi=trace cargo run --bin kapi-server > /tmp/kapi-server.log 2>&1 &
 sleep 3
 
 echo "========== PERSISTENCE TESTS COMPLETE =========="

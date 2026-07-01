@@ -1,10 +1,9 @@
-pub use crate::store::ResourceKey;
-
 use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::error::AppError;
+use crate::error::CoreError;
+use crate::key::ResourceKey;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct ContinueToken(pub String);
@@ -41,10 +40,10 @@ impl FieldSelector {
     /// Parses a `fieldSelector` query parameter value into a [`WatchFilter`].
     ///
     /// Supports standard syntax: `metadata.name=<value>`.
-    /// Returns [`AppError::InvalidFieldSelector`] for unsupported fields or malformed input.
-    pub fn parse(raw: &str) -> Result<WatchFilter, AppError> {
+    /// Returns [`CoreError::InvalidFieldSelector`] for unsupported fields or malformed input.
+    pub fn parse(raw: &str) -> Result<WatchFilter, CoreError> {
         let (field, value) = raw.split_once('=').ok_or_else(|| {
-            AppError::InvalidFieldSelector(format!(
+            CoreError::InvalidFieldSelector(format!(
                 "invalid field selector format: expected 'field=value', got '{raw}'"
             ))
         })?;
@@ -52,7 +51,7 @@ impl FieldSelector {
             "metadata.name" => {
                 Ok(WatchFilter::FieldSelector(FieldSelector::NameEquals(value.to_string())))
             }
-            _ => Err(AppError::InvalidFieldSelector(format!(
+            _ => Err(CoreError::InvalidFieldSelector(format!(
                 "unsupported field '{field}': only 'metadata.name' is supported"
             ))),
         }
@@ -102,19 +101,19 @@ impl LabelSelector {
     /// - `!key` — non-existence (key not present)
     /// - Comma-separated — AND combinator (e.g., `app=nginx,env=prod`)
     ///
-    /// Returns [`AppError::InvalidLabelSelector`] for malformed selectors.
+    /// Returns [`CoreError::InvalidLabelSelector`] for malformed selectors.
     /// Empty string returns a `LabelSelector` with no requirements (matches all).
-    pub fn parse(raw: &str) -> Result<WatchFilter, AppError> {
+    pub fn parse(raw: &str) -> Result<WatchFilter, CoreError> {
         if raw.is_empty() {
             return Ok(WatchFilter::LabelSelector(LabelSelector { requirements: vec![] }));
         }
 
-        let requirements: Result<Vec<LabelRequirement>, AppError> = raw
+        let requirements: Result<Vec<LabelRequirement>, CoreError> = raw
             .split(',')
             .map(|segment| {
                 let segment = segment.trim();
                 if segment.is_empty() {
-                    return Err(AppError::InvalidLabelSelector(
+                    return Err(CoreError::InvalidLabelSelector(
                         "empty segment in label selector".to_string(),
                     ));
                 }
@@ -127,14 +126,14 @@ impl LabelSelector {
 }
 
 /// Parses a single label requirement string into a [`LabelRequirement`].
-fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, AppError> {
+fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, CoreError> {
     // Check for inequality first (must be before equality check)
     if let Some((key, value)) = segment.split_once("!=") {
         let key = key.trim();
         let value = value.trim();
         validate_label_key(key)?;
         if value.is_empty() {
-            return Err(AppError::InvalidLabelSelector(format!(
+            return Err(CoreError::InvalidLabelSelector(format!(
                 "empty value in inequality selector: '{segment}'"
             )));
         }
@@ -147,7 +146,7 @@ fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, AppError> 
         let value = value.trim();
         validate_label_key(key)?;
         if value.is_empty() {
-            return Err(AppError::InvalidLabelSelector(format!(
+            return Err(CoreError::InvalidLabelSelector(format!(
                 "empty value in equality selector: '{segment}'"
             )));
         }
@@ -169,12 +168,12 @@ fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, AppError> 
 
 /// Validates a label key format for selector parsing.
 /// Label keys must not be empty or contain whitespace.
-fn validate_label_key(key: &str) -> Result<(), AppError> {
+fn validate_label_key(key: &str) -> Result<(), CoreError> {
     if key.is_empty() {
-        return Err(AppError::InvalidLabelSelector("empty label key".to_string()));
+        return Err(CoreError::InvalidLabelSelector("empty label key".to_string()));
     }
     if key.contains(|c: char| c.is_whitespace()) {
-        return Err(AppError::InvalidLabelSelector(format!(
+        return Err(CoreError::InvalidLabelSelector(format!(
             "label key contains whitespace: '{key}'"
         )));
     }
@@ -243,7 +242,7 @@ pub struct SchemaData {
 }
 
 fn default_scope() -> String {
-    crate::schema::SCOPE_NAMESPACED.to_string()
+    "Namespaced".to_string()
 }
 
 /// User-controlled metadata for stored objects.

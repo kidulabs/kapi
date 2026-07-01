@@ -86,6 +86,15 @@ pub enum AppError {
     Internal(#[from] anyhow::Error),
 }
 
+impl From<kapi_core::CoreError> for AppError {
+    fn from(err: kapi_core::CoreError) -> Self {
+        match err {
+            kapi_core::CoreError::InvalidFieldSelector(msg) => AppError::InvalidFieldSelector(msg),
+            kapi_core::CoreError::InvalidLabelSelector(msg) => AppError::InvalidLabelSelector(msg),
+        }
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         let (status, code, error, details) = match self {

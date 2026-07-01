@@ -127,42 +127,79 @@ Events carry `StoredObject` which includes `metadata.namespace`. This enables na
 - Namespace-scoped watch streams (via `/namespaces/{ns}/{kind}?watch=true`) receive events whose object's namespace matches the watched namespace
 - Cross-namespace watch streams (via `/{kind}?watch=true`) receive events from all namespaces
 
-## Module Tree
+## Workspace Structure
 
 ```
-src/
-├── main.rs                 # Tokio runtime, config construction, kapi::run()
-├── lib.rs                  # Module tree, re-exports, create_app(), run()
-├── config/mod.rs           # AppConfig struct (port, store, event_bus)
-├── error.rs                # AppError enum + IntoResponse impl
-├── routes.rs               # Router composition (all route definitions)
-├── store/
-│   ├── mod.rs              # ObjectStore trait, ResourceKey
-│   ├── memory.rs           # InMemoryStore (DashMap, AtomicU64) + tests
-│   └── sqlite.rs           # SQLiteStore (rusqlite, spawn_blocking) + tests
-├── schema/
-│   ├── meta_schema.rs      # Meta-schema constant + SchemaValidator trait
-│   │                       # + JsonSchemaValidator wrapper + tests
-│   └── registry.rs         # SchemaRegistry — validation, compilation, caching
-├── object/
-│   ├── types.rs            # Core types (StoredObject, ObjectMeta, SystemMetadata, etc.)
-│   ├── helpers.rs          # Shared helpers (apply_with_metadata, status updates)
-│   ├── finalizer.rs        # Finalizer state machine logic
-│   ├── service.rs          # ObjectService orchestrator (regular objects only) + tests
-│   ├── schema_service.rs   # SchemaService — Schema lifecycle management + tests
-│   └── handler.rs          # Axum route handlers (format validation at edge)
-├── validation/
-│   └── mod.rs              # Stateless format validation (labels, annotations) + tests
-├── event/
-│   ├── bus.rs              # EventBus + EventPublisher trait + WatchStream + tests
-├── middleware/
-│   ├── auth.rs             # AuthLayer stub (TODO)
-│   └── metrics.rs          # MetricsLayer stub (TODO)
-└── openapi/
-    ├── mod.rs              # Module root + GET /openapi handler + tests
-    ├── components.rs       # Static + dynamic OpenAPI component builders
-    ├── paths.rs            # Static + dynamic path builders + spec orchestrator
-    └── swagger.rs          # Swagger UI HTML constant and handler
+kapi/
+├── Cargo.toml              # Pure workspace manifest (no [package])
+├── kapi-core/              # Lightweight shared types crate
+│   ├── Cargo.toml          # Minimal deps: serde, serde_json, chrono, thiserror
+│   └── src/
+│       ├── lib.rs          # Module declarations and re-exports
+│       ├── error.rs        # CoreError enum (InvalidFieldSelector, InvalidLabelSelector)
+│       ├── key.rs          # ResourceKey struct
+│       └── types.rs        # Core types (StoredObject, ObjectMeta, SystemMetadata, etc.) + tests
+├── kapi-server/            # API server crate
+│   ├── Cargo.toml          # Depends on kapi-core + server deps (axum, rusqlite, etc.)
+│   ├── src/
+│   │   ├── main.rs         # Tokio runtime, config construction, kapi_server::run()
+│   │   ├── lib.rs          # Module tree, re-exports from kapi-core, create_app(), run()
+│   │   ├── config/mod.rs   # AppConfig struct (port, store, event_bus)
+│   │   ├── error.rs        # AppError enum + IntoResponse impl + From<CoreError>
+│   │   ├── routes.rs       # Router composition (all route definitions)
+│   │   ├── store/
+│   │   │   ├── mod.rs      # ObjectStore trait, re-exports ResourceKey from kapi-core
+│   │   │   ├── memory.rs   # InMemoryStore (DashMap, AtomicU64) + tests
+│   │   │   └── sqlite.rs   # SQLiteStore (rusqlite, spawn_blocking) + tests
+│   │   ├── schema/
+│   │   │   ├── meta_schema.rs  # Meta-schema constant + SchemaValidator trait
+│   │   │   │                   # + JsonSchemaValidator wrapper + tests
+│   │   │   └── registry.rs     # SchemaRegistry — validation, compilation, caching
+│   │   ├── object/
+│   │   │   ├── types.rs        # Re-exports from kapi-core for backward compatibility
+│   │   │   ├── helpers.rs      # Shared helpers (apply_with_metadata, status updates)
+│   │   │   ├── finalizer.rs    # Finalizer state machine logic
+│   │   │   ├── service.rs      # ObjectService orchestrator (regular objects only) + tests
+│   │   │   ├── schema_service.rs # SchemaService — Schema lifecycle management + tests
+│   │   │   └── handler.rs      # Axum route handlers (format validation at edge)
+│   │   ├── validation/
+│   │   │   └── mod.rs          # Stateless format validation (labels, annotations) + tests
+│   │   ├── event/
+│   │   │   └── bus.rs          # EventBus + EventPublisher trait + WatchStream + tests
+│   │   ├── middleware/
+│   │   │   ├── auth.rs         # AuthLayer stub (TODO)
+│   │   │   └── metrics.rs      # MetricsLayer stub (TODO)
+│   │   └── openapi/
+│   │       ├── mod.rs          # Module root + GET /openapi handler + tests
+│   │       ├── components.rs   # Static + dynamic OpenAPI component builders
+│   │       ├── paths.rs        # Static + dynamic path builders + spec orchestrator
+│   │       └── swagger.rs      # Swagger UI HTML constant and handler
+│   └── tests/                  # Integration tests (kapi-tests package)
+│       ├── Cargo.toml          # Depends on kapi-server
+│       └── src/                # Test files (object_crud, watch_events, etc.)
+├── kapi-client/            # HTTP client library (placeholder)
+│   ├── Cargo.toml          # Depends on kapi-core
+│   └── src/lib.rs          # TODO: Implement HTTP client library
+├── kapi-cli/               # CLI tool (placeholder)
+│   ├── Cargo.toml          # Depends on kapi-client
+│   └── src/main.rs         # Stub main function
+└── kapi-controller/        # Controller-runtime SDK (placeholder)
+    ├── Cargo.toml          # Depends on kapi-client
+    └── src/lib.rs          # TODO: Implement controller-runtime SDK
+```
+
+## Dependency Graph
+
+```
+kapi-core (shared types)
+    ↑
+    ├── kapi-server (API server)
+    │   └── kapi-server/tests (integration tests)
+    │
+    └── kapi-client (HTTP client library)
+            ↑
+            ├── kapi-cli (CLI tool)
+            └── kapi-controller (controller-runtime SDK)
 ```
 
 ## Request Flow

@@ -60,9 +60,14 @@ Bootstrap failure causes server startup to fail fast with a clear error message.
 
 ## Workspace structure
 
-- Root `Cargo.toml`: single package `kapi` + workspace with `tests` member
-- `tests/`: `kapi-tests` package — integration test binary run against both InMemory and SQLite stores
-- Root Cargo.toml has `autotests = false` — integration tests are the binary, not Cargo test harness
+- Root `Cargo.toml`: pure workspace manifest (no `[package]` or `[dependencies]`)
+- `kapi-core/`: lightweight shared types crate (`StoredObject`, `WatchEvent`, `ResourceKey`, selectors, `CoreError`). Minimal deps: serde, serde_json, chrono, thiserror
+- `kapi-server/`: the API server crate. Re-exports all types from `kapi-core` for backward compatibility
+- `kapi-server/tests/`: `kapi-tests` package — integration test binary run against both InMemory and SQLite stores
+- `kapi-client/`: HTTP client library (placeholder — depends on `kapi-core`)
+- `kapi-cli/`: CLI tool (placeholder — depends on `kapi-client`)
+- `kapi-controller/`: controller-runtime SDK (placeholder — depends on `kapi-client`)
+- Dependency graph: `kapi-core` ← `kapi-server`, `kapi-core` ← `kapi-client` ← `kapi-cli`/`kapi-controller`
 
 # instructions
 

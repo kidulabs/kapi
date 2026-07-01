@@ -13,8 +13,14 @@ pub mod validation;
 
 pub use config::AppConfig;
 pub use event::EventPublisher;
-pub use object::types::{ContinueToken, ListOptions, ListResponse};
 pub use store::ObjectStore;
+
+// Re-export core types for backward compatibility
+pub use kapi_core::{
+    ContinueToken, CoreError, FieldSelector, LabelRequirement, LabelSelector, ListOptions,
+    ListResponse, ObjectMeta, ResourceKey, SchemaData, StoredObject, SystemMetadata,
+    ValidationError, WatchEvent, WatchEventType, WatchFilter,
+};
 
 use std::sync::Arc;
 

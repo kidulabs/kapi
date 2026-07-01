@@ -1,17 +1,12 @@
 pub mod memory;
 pub mod sqlite;
 
+pub use kapi_core::ResourceKey;
+
 use async_trait::async_trait;
 
 use crate::error::AppError;
 use crate::object::types::{ListOptions, ListResponse, StoredObject};
-
-#[derive(Debug, Clone, Hash, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
-pub struct ResourceKey {
-    pub group: String,
-    pub version: String,
-    pub kind: String,
-}
 
 /// Result of a transaction callback, indicating what action the store should take.
 ///
