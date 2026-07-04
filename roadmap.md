@@ -2,8 +2,8 @@
 
 ## Pending
 
-- [ ] **Implement kapi-client HTTP client library** — reqwest-based wrappers for CRUD, watch, schema, status operations. Depends on kapi-core for shared types.
-- [ ] **Implement kapi-cli with full command coverage** — CLI tool for schema CRUD, object CRUD, watch, status. Depends on kapi-client.
+- [x] **Implement kapi-client HTTP client library** — reqwest-based wrappers for CRUD, watch, schema, status operations. Depends on kapi-core for shared types.
+- [x] **Implement kapi-cli with full command coverage** — CLI tool for schema CRUD, object CRUD, watch, status. Depends on kapi-client.
 - [ ] **Implement kapi-controller controller-runtime SDK** — Informer, WorkQueue, Controller trait for building controllers. Depends on kapi-client.
 - [ ] **Add resource_version to ListResponse and implement watch resume** — Prerequisite for correct Informer behavior. ListResponse needs resource_version field, watch needs resume capability with ring buffer replay.
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
@@ -47,5 +47,5 @@ These are explicitly not being pursued:
 - Webhook admission controllers
 - Kubernetes API compatibility
 - PATCH with strategic merge patch
-- UI or CLI client
+- UI client
 - Conditional delete
