@@ -2,9 +2,26 @@
 # Common setup for all test scripts
 # Source this file at the start of each test script
 
-set -e pipefail 2>/dev/null || true
+set -o pipefail 2>/dev/null || true
 
 export TEST_RUN=${TEST_RUN:-$(date +%s)}
+
+# Auto-detect kapi CLI binary path
+if [ -z "${KAPI:-}" ]; then
+  # Try relative to workspace root (walk up from script dir)
+  _script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  _search="$_script_dir"
+  while [ "$_search" != "/" ]; do
+    if [ -x "$_search/target/debug/kapi" ]; then
+      export KAPI="$_search/target/debug/kapi"
+      break
+    fi
+    _search="$(dirname "$_search")"
+  done
+  # Fallback to bare command name
+  export KAPI="${KAPI:-kapi}"
+  unset _script_dir _search
+fi
 
 # Shared helpers
 register_widget_schema() {
