@@ -4,7 +4,7 @@
 
 - [x] **Implement kapi-client HTTP client library** — reqwest-based wrappers for CRUD, watch, schema, status operations. Depends on kapi-core for shared types.
 - [x] **Implement kapi-cli with full command coverage** — CLI tool for schema CRUD, object CRUD, watch, status. Depends on kapi-client.
-- [ ] **Implement kapi-controller controller-runtime SDK** — Informer, WorkQueue, Controller trait for building controllers. Depends on kapi-client.
+- [x] **Implement kapi-controller controller-runtime SDK** — Informer, WorkQueue, Controller trait for building controllers. Depends on kapi-client.
 - [ ] **Add resource_version to ListResponse and implement watch resume** — Prerequisite for correct Informer behavior. ListResponse needs resource_version field, watch needs resume capability with ring buffer replay.
 - [ ] **Middleware stack** — Wire AuthLayer, MetricsLayer, TraceLayer, compose full middleware stack
 - [ ] **Watch resume** — `resourceVersion` param for watch resume with ring buffer replay
@@ -29,7 +29,35 @@
 - [x] **Annotations** — Free-form key-value metadata on `ObjectMeta` without selection semantics (no validation beyond key-value structure)
 - [ ] **Schema object status** — kapi-defined status shape for Schema objects (server-maintained: objectCount, schemaVersion, validationState)
 - [ ] **Watch event type filtering** — `WatchFilter` support for filtering by `StatusModified` vs `Modified` event types
-- [ ] **kapi-controller-runtime** — Separate crate/project: reconcile loops, informers, work queues, leader election, finalizer management
+- [ ] **kapi-controller-multi** — Manager for orchestrating multiple controllers in one process with coordinated shutdown, health checks, and metrics
+
+## Controller Runtime Roadmap
+
+### Completed — Controller Runtime: Single Controller (controller-runtime-single)
+
+- [x] Reconciler trait with context injection (`ReconcileContext`, `ReconcileRequest`, `ReconcileResult`)
+- [x] Controller with watch stream and reconcile loop
+- [x] Work queue with deduplication and exponential backoff
+- [x] Finalizer helpers (`is_deleting`, `ensure_finalizer`, `remove_finalizer`)
+- [x] Watch stream reconnect with list-then-re-enqueue
+- [x] `StatusModified` event filtering
+- [x] Namespace scope and watch filter support
+- [x] Optional shutdown signal
+
+### In Progress — Controller Runtime: Multi Controller (controller-runtime-multi)
+
+- [ ] Manager for orchestrating multiple controllers in one process
+- [ ] `ControllerBuilder` / `ControllerHandle` pattern for structured registration
+- [ ] Coordinated shutdown with timeout
+- [ ] Panic isolation (one controller panic does not take down others)
+- [ ] Shared client from Manager (not per-controller instances)
+
+### Future Work — Controller Runtime
+
+- [ ] **Cache/Informer Layer** — Local read-only mirror of API server state. Reduces API server load and enables efficient list operations. Natural evolution of the current direct-watch approach.
+- [ ] **Secondary Watches** — Watch related resources to trigger reconcile on the primary kind. Mapping functions convert secondary events into primary reconcile keys (e.g., watch ReplicaSets to trigger Deployment reconcile).
+- [ ] **Predicate/Filter System** — Filter events before they reach the work queue. Reduce unnecessary reconciles with custom predicates (e.g., resource version, label changes, generation changes).
+- [ ] **Rate Limiting** — Token bucket or similar for work queue. Prevent API server overload at high scale. Currently deferred per design decision (design note: rate limiting was implemented in the work queue but deferred for production tuning).
 
 ## Explorations
 

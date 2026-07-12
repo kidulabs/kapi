@@ -69,6 +69,15 @@ Bootstrap failure causes server startup to fail fast with a clear error message.
 - `kapi-controller/`: controller-runtime SDK (placeholder — depends on `kapi-client`)
 - Dependency graph: `kapi-core` ← `kapi-server`, `kapi-core` ← `kapi-client` ← `kapi-cli`/`kapi-controller`
 
+## Integration tests
+
+All integration tests live in `kapi-server/tests/` and are run via the `kapi-tests` binary (`cargo run -p kapi-tests`), **not** as `#[tokio::test]` unit tests. The binary iterates over all store backends (InMemory, SQLite) and runs each test function against each store.
+
+- Test functions follow the signature: `pub async fn test_xxx(app: &TestApp) -> Result<(), Box<dyn std::error::Error>>`
+- Tests are registered in `kapi-server/tests/src/main.rs` via the `run_test!` macro
+- Tests that need HTTP (e.g., controller runtime tests using `KapiClient`) start a real HTTP server from `app.router` on a random port
+- New integration tests **must** be added to the binary runner — do not use `#[tokio::test]` for integration tests
+
 # instructions
 
 Prioritize retrieval-led reasoning over pretrained-knowledge-led reasoning.

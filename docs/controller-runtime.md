@@ -1,0 +1,441 @@
+# Controller Runtime SDK
+
+The `kapi-controller` crate provides a framework for writing controllers that
+watch kapi resources and reconcile desired state. It follows the
+**watch → enqueue → reconcile** pattern popularised by the Kubernetes
+controller-runtime project.
+
+```text
+┌──────────┐   SSE watch   ┌──────────┐   QueueKey   ┌────────────┐
+│ kapi     │ ─────────────→ │ WorkQueue │ ────────────→ │ Reconciler │
+│ server   │                │           │              │  (user)    │
+│          │ ←── events ─── │ (dedup /  │              │            │
+│          │                │  backoff) │              │ get/update │
+│          │                └──────────┘              │ status     │
+│          │                                           └──────┬─────┘
+│          │                                                  │
+│          │ ←─────────── HTTP API calls ──────────────────── │
+└──────────┘
+```
+
+### Dependencies
+
+```toml
+# Cargo.toml
+[dependencies]
+kapi-controller = { path = "../kapi-controller" }
+```
+
+The crate re-exports key types from `kapi-core` and `kapi-client` via its
+dependencies, so you typically need only:
+
+```rust
+use kapi_controller::prelude::*;
+```
+
+For now, import directly from the source crates:
+
+```rust
+use kapi_core::{ResourceKey, ObjectMeta, StoredObject, WatchFilter};
+use kapi_client::client::KapiClient;
+use kapi_controller::reconciler::{Reconciler, ReconcileContext, ReconcileResult};
+use kapi_controller::controller::Controller;
+use kapi_controller::finalizer::{is_deleting, ensure_finalizer, remove_finalizer};
+```
+
+---
+
+## Key Concepts
+
+### Reconciler Trait
+
+The [`Reconciler`] trait is the heart of the SDK. You implement it with your
+business logic:
+
+```rust
+#[async_trait]
+pub trait Reconciler: Send + Sync {
+    async fn reconcile(
+        &self,
+        ctx: ReconcileContext,
+    ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>>;
+}
+```
+
+- **`ReconcileContext`** contains a `ReconcileRequest` (identifying the object)
+  and a `KapiClient` for making API calls.
+- Return [`ReconcileResult::default()`] to signal success without re-queuing.
+- Return a `ReconcileResult` with `requeue_after:
+  Some(Duration::from_secs(30))` to re-process the object after a delay, or
+  `Some(Duration::ZERO)` to re-queue immediately.
+- Return `Err(...)` to signal a transient failure — the controller
+  automatically re-queues with exponential backoff.
+
+### Controller
+
+[`Controller`] orchestrates the watch-then-reconcile loop for a single resource
+kind:
+
+```rust
+let controller = Controller::new(key, Arc::new(MyReconciler), client)
+    .namespace("default")
+    .shutdown_signal(rx);
+
+controller.start().await;
+```
+
+**Builder methods:**
+
+| Method            | Description                                              |
+|-------------------|----------------------------------------------------------|
+| `namespace(ns)`   | Watch only objects in the given namespace.               |
+| `watch_filter(f)` | Apply a label/field selector filter on the watch stream. |
+| `shutdown_signal(rx)` | Graceful shutdown via `broadcast::Receiver<()>`.     |
+
+**Internals:**
+
+1. Spawns a background task that opens an SSE watch stream.
+2. Watch events (`Added`, `Modified`, `Deleted`) are pushed into a
+   [`WorkQueue`]. `StatusModified` events are filtered out.
+3. When the watch stream drops (e.g. network error), the task performs a full
+   re-list and enqueues every object, ensuring no changes are missed.
+4. The reconcile loop (on the current task) dequeues keys one at a time,
+   fetches the object, and calls [`Reconciler::reconcile()`].
+
+### WorkQueue
+
+[`WorkQueue`] is a FIFO queue with **deduplication** and **exponential
+backoff**:
+
+| Method                | Description                                           |
+|-----------------------|-------------------------------------------------------|
+| `add(key)`            | Enqueue a key (no-op if already pending).             |
+| `get()`               | Block until a key is available.                       |
+| `done(key, success)`  | Mark processed. On failure, re-queue after backoff.   |
+| `requeue_after(key, duration)` | Re-queue after a custom delay.               |
+
+Backoff sequence: 1 s, 2 s, 4 s, 8 s, …, capped at 5 min.
+
+### Finalizer Helpers
+
+Three standalone functions in [`kapi_controller::finalizer`] help manage the
+finalizer lifecycle:
+
+| Function             | Description                                              |
+|----------------------|----------------------------------------------------------|
+| `is_deleting(obj)`   | Returns `true` when `deletion_timestamp` is set.         |
+| `ensure_finalizer(client, obj, finalizer)` | Adds `finalizer` to the object (CAS retry on 409). |
+| `remove_finalizer(client, obj, finalizer)` | Removes `finalizer` from the object (CAS retry).  |
+
+These functions use **optimistic concurrency** (CAS). On a `409 Conflict` they
+re-fetch the object and retry (up to 5 attempts).
+
+---
+
+## Examples
+
+### Example 1: Simple Reconciler
+
+This controller watches a `Widget` kind, logs every reconciliation, and updates
+the object's status with a "last reconciled" timestamp.
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use kapi_client::client::KapiClient;
+use kapi_controller::reconciler::{Reconciler, ReconcileContext, ReconcileResult};
+use kapi_controller::controller::Controller;
+use kapi_core::ResourceKey;
+use serde_json::json;
+use tokio::sync::broadcast;
+
+// ------------------------------------------------------------------
+// Reconciler implementation
+// ------------------------------------------------------------------
+
+struct WidgetReconciler;
+
+#[async_trait::async_trait]
+impl Reconciler for WidgetReconciler {
+    async fn reconcile(
+        &self,
+        ctx: ReconcileContext,
+    ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
+        let obj = ctx
+            .client
+            .get(&ctx.request.key, ctx.request.namespace.as_deref(), &ctx.request.name)
+            .await?;
+
+        tracing::info!(
+            kind = %obj.key.kind,
+            name = %obj.metadata.name,
+            namespace = ?obj.metadata.namespace,
+            resource_version = obj.system.resource_version,
+            "reconciling widget",
+        );
+
+        // Update the status sub-resource with a "last reconciled" timestamp.
+        ctx.client
+            .update_status(
+                &ctx.request.key,
+                ctx.request.namespace.as_deref(),
+                &ctx.request.name,
+                &json!({
+                    "lastReconciled": chrono::Utc::now().to_rfc3339(),
+                }),
+            )
+            .await?;
+
+        // Return default = success, no re-queue.
+        Ok(ReconcileResult::default())
+    }
+}
+
+// ------------------------------------------------------------------
+// Wiring
+// ------------------------------------------------------------------
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    let client = KapiClient::new("http://localhost:8080")?;
+
+    let key = ResourceKey {
+        group: "example.io".into(),
+        version: "v1".into(),
+        kind: "Widget".into(),
+    };
+
+    let (_tx, rx) = broadcast::channel::<()>(1);
+
+    let controller = Controller::new(key, Arc::new(WidgetReconciler), client)
+        .namespace("default")
+        .shutdown_signal(rx);
+
+    tracing::info!("starting widget controller");
+    controller.start().await;
+
+    Ok(())
+}
+```
+
+### Example 2: Reconciler with Finalizer Cleanup
+
+This controller watches a `Widget` kind, adds a finalizer on creation, performs
+cleanup when the object is marked for deletion, and removes the finalizer to
+allow hard-deletion.
+
+```rust
+use std::sync::Arc;
+use std::time::Duration;
+
+use kapi_client::client::KapiClient;
+use kapi_controller::reconciler::{Reconciler, ReconcileContext, ReconcileResult};
+use kapi_controller::controller::Controller;
+use kapi_controller::finalizer::{is_deleting, ensure_finalizer, remove_finalizer};
+use kapi_core::{ObjectMeta, ResourceKey};
+use serde_json::json;
+use tokio::sync::broadcast;
+
+const FINALIZER_NAME: &str = "widgets.example.io/cleanup";
+
+// ------------------------------------------------------------------
+// Reconciler implementation
+// ------------------------------------------------------------------
+
+struct WidgetCleanupReconciler;
+
+#[async_trait::async_trait]
+impl Reconciler for WidgetCleanupReconciler {
+    async fn reconcile(
+        &self,
+        ctx: ReconcileContext,
+    ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
+        // Fetch the current state of the object.
+        let obj = ctx
+            .client
+            .get(&ctx.request.key, ctx.request.namespace.as_deref(), &ctx.request.name)
+            .await?;
+
+        // ── Case 1: Object is being deleted ───────────────────────
+        if is_deleting(&obj) {
+            // Perform external cleanup (e.g. release cloud resources).
+            tracing::info!(
+                name = %obj.metadata.name,
+                "performing finalizer cleanup for widget",
+            );
+
+            // Simulate cleanup work.
+            tokio::time::sleep(Duration::from_secs(1)).await;
+
+            // Remove our finalizer so the object can be hard-deleted.
+            remove_finalizer(&ctx.client, &obj, FINALIZER_NAME).await?;
+
+            tracing::info!(
+                name = %obj.metadata.name,
+                "cleanup complete, finalizer removed",
+            );
+
+            return Ok(ReconcileResult::default());
+        }
+
+        // ── Case 2: Object is alive — ensure finalizer is set ────
+        ensure_finalizer(&ctx.client, &obj, FINALIZER_NAME).await?;
+
+        tracing::info!(
+            name = %obj.metadata.name,
+            "finalizer ensured on widget",
+        );
+
+        // Optionally update status.
+        ctx.client
+            .update_status(
+                &ctx.request.key,
+                ctx.request.namespace.as_deref(),
+                &ctx.request.name,
+                &json!({ "phase": "ready" }),
+            )
+            .await?;
+
+        Ok(ReconcileResult::default())
+    }
+}
+
+// ------------------------------------------------------------------
+// Wiring
+// ------------------------------------------------------------------
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    let client = KapiClient::new("http://localhost:8080")?;
+
+    let key = ResourceKey {
+        group: "example.io".into(),
+        version: "v1".into(),
+        kind: "Widget".into(),
+    };
+
+    let (_tx, rx) = broadcast::channel::<()>(1);
+
+    let controller = Controller::new(key, Arc::new(WidgetCleanupReconciler), client)
+        .namespace("default")
+        .shutdown_signal(rx);
+
+    tracing::info!("starting widget controller with finalizer support");
+    controller.start().await;
+
+    Ok(())
+}
+```
+
+---
+
+## API Reference
+
+### `Reconciler` Trait
+
+```rust
+#[async_trait]
+pub trait Reconciler: Send + Sync {
+    async fn reconcile(
+        &self,
+        ctx: ReconcileContext,
+    ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>>;
+}
+```
+
+### `ReconcileRequest`
+
+```rust
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct ReconcileRequest {
+    pub key: ResourceKey,           // group/version/kind
+    pub name: String,               // object name
+    pub namespace: Option<String>,   // None for cluster-scoped objects
+}
+```
+
+### `ReconcileContext`
+
+```rust
+#[derive(Debug)]
+pub struct ReconcileContext {
+    pub request: ReconcileRequest,   // identifies the object
+    pub client: KapiClient,          // authenticated HTTP client
+}
+```
+
+### `ReconcileResult`
+
+```rust
+#[derive(Debug, Clone, Default)]
+pub struct ReconcileResult {
+    pub requeue_after: Option<Duration>,  // minimum delay before re-queue
+}
+```
+
+### `Controller`
+
+```rust
+impl Controller {
+    pub fn new(
+        key: ResourceKey,
+        reconciler: Arc<dyn Reconciler>,
+        client: KapiClient,
+    ) -> Self;
+
+    pub fn namespace(self, ns: impl Into<String>) -> Self;
+    pub fn watch_filter(self, filter: WatchFilter) -> Self;
+    pub fn shutdown_signal(self, rx: broadcast::Receiver<()>) -> Self;
+    pub async fn start(&self);
+}
+```
+
+### `QueueKey`
+
+```rust
+#[derive(Debug, Clone, Hash, Eq, PartialEq)]
+pub struct QueueKey {
+    pub key: ResourceKey,
+    pub name: String,
+    pub namespace: Option<String>,
+}
+
+impl QueueKey {
+    pub fn new(key: ResourceKey, name: impl Into<String>, namespace: Option<String>) -> Self;
+}
+```
+
+### `WorkQueue`
+
+```rust
+impl WorkQueue {
+    pub fn new() -> Self;
+    pub async fn add(&self, key: QueueKey);
+    pub async fn get(&self) -> QueueKey;
+    pub async fn done(&self, key: QueueKey, success: bool);
+    pub async fn requeue_after(&self, key: QueueKey, duration: Duration);
+}
+```
+
+### Finalizer Helpers
+
+```rust
+pub fn is_deleting(obj: &StoredObject) -> bool;
+
+pub async fn ensure_finalizer(
+    client: &KapiClient,
+    obj: &StoredObject,
+    finalizer: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+pub async fn remove_finalizer(
+    client: &KapiClient,
+    obj: &StoredObject,
+    finalizer: &str,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+```

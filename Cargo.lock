@@ -1177,7 +1177,14 @@ dependencies = [
 name = "kapi-controller"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
+ "chrono",
+ "futures-util",
  "kapi-client",
+ "kapi-core",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1223,11 +1230,15 @@ dependencies = [
 name = "kapi-tests"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "bytes",
  "futures",
  "http",
  "http-body-util",
+ "kapi-client",
+ "kapi-controller",
+ "kapi-core",
  "kapi-server",
  "serde",
  "serde_json",

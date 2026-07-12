@@ -25,3 +25,7 @@ bytes = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
+kapi-controller = { path = "../../kapi-controller" }
+kapi-client = { path = "../../kapi-client" }
+async-trait = "0.1"
+kapi-core = { path = "../../kapi-core" }

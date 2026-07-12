@@ -1,5 +1,3 @@
-## ADDED Requirements
-
 ### Requirement: Reconciler trait with context injection
 The system SHALL provide a `Reconciler` trait that users implement to define reconciliation logic. The trait SHALL receive a `ReconcileContext` containing the request, client, and extensible capabilities.
 

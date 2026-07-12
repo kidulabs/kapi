@@ -1,7 +1,7 @@
 use kapi_tests::{
-    TestApp, all_test_stores, finalizers, generation_semantics, list_filtering, namespace,
-    namespace_resource, object_annotations, object_crud, object_labels, optimistic_concurrency,
-    schema_deletion, schema_validation, status_subresource, watch_events,
+    TestApp, all_test_stores, controller_runtime, finalizers, generation_semantics, list_filtering,
+    namespace, namespace_resource, object_annotations, object_crud, object_labels,
+    optimistic_concurrency, schema_deletion, schema_validation, status_subresource, watch_events,
 };
 
 #[tokio::main]
@@ -342,6 +342,24 @@ async fn main() {
         run_test!(
             "spec_update_modified_event",
             status_subresource::test_spec_update_publishes_modified_not_status_modified
+        );
+
+        println!();
+
+        // Controller runtime tests
+        println!();
+        run_test!(
+            "controller_reconciles_on_create",
+            controller_runtime::test_controller_reconciles_on_create
+        );
+        run_test!(
+            "controller_deduplication_on_updates",
+            controller_runtime::test_controller_deduplication_on_updates
+        );
+        run_test!("controller_error_backoff", controller_runtime::test_controller_error_backoff);
+        run_test!(
+            "controller_finalizer_helpers",
+            controller_runtime::test_controller_finalizer_helpers
         );
 
         println!();
