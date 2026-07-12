@@ -130,6 +130,52 @@ finalizer lifecycle:
 These functions use **optimistic concurrency** (CAS). On a `409 Conflict` they
 re-fetch the object and retry (up to 5 attempts).
 
+### Manager
+
+[`Manager`] orchestrates multiple controllers in a single process with shared
+resources and coordinated lifecycle:
+
+```rust
+let client = KapiClient::new("http://localhost:8080")?;
+let mut manager = Manager::new(client);
+
+manager.controller_for(pod_key)
+    .reconcile_with(PodReconciler)
+    .namespace("default")
+    .register();
+
+manager.controller_for(node_key)
+    .reconcile_with(NodeReconciler)
+    .register();
+
+manager.start().await?;
+```
+
+**Builder methods:**
+
+| Method | Description |
+|--------|-------------|
+| `controller_for(key)` | Returns a [`ControllerBuilder`] for the given resource kind. |
+| `shutdown_sender()` | Returns a clone of the shutdown broadcast sender. |
+| `start()` | Starts all controllers and waits for shutdown signal. |
+
+**ControllerBuilder methods:**
+
+| Method | Description |
+|--------|-------------|
+| `reconcile_with(reconciler)` | Sets the reconciler implementation. |
+| `namespace(ns)` | Restricts the controller to a specific namespace. |
+| `register()` | Finalizes and adds the controller to the Manager. |
+
+**Lifecycle:**
+
+1. `Manager::start()` spawns a signal handler for SIGTERM/SIGINT.
+2. Each registered controller is started as an independent tokio task.
+3. On shutdown signal, all controllers receive the shutdown broadcast.
+4. Manager waits up to 30 seconds for in-flight reconciles to complete.
+5. If the timeout expires, the process force-exits with a warning.
+6. Panics in individual controllers are caught and logged -- other controllers continue.
+
 ---
 
 ## Examples
@@ -332,6 +378,78 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+### Example 3: Running Multiple Controllers with Manager
+
+This example shows how to run multiple controllers in one process using the
+[`Manager`].
+
+```rust
+use std::sync::Arc;
+use kapi_client::client::KapiClient;
+use kapi_controller::manager::Manager;
+use kapi_controller::reconciler::{Reconciler, ReconcileContext, ReconcileResult};
+use kapi_core::ResourceKey;
+
+struct PodReconciler;
+
+#[async_trait::async_trait]
+impl Reconciler for PodReconciler {
+    async fn reconcile(
+        &self,
+        ctx: ReconcileContext,
+    ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
+        tracing::info!(name = %ctx.request.name, "reconciling pod");
+        Ok(ReconcileResult::default())
+    }
+}
+
+struct NodeReconciler;
+
+#[async_trait::async_trait]
+impl Reconciler for NodeReconciler {
+    async fn reconcile(
+        &self,
+        ctx: ReconcileContext,
+    ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
+        tracing::info!(name = %ctx.request.name, "reconciling node");
+        Ok(ReconcileResult::default())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    tracing_subscriber::fmt::init();
+
+    let client = KapiClient::new("http://localhost:8080")?;
+    let mut manager = Manager::new(client);
+
+    let pod_key = ResourceKey {
+        group: "example.io".into(),
+        version: "v1".into(),
+        kind: "Pod".into(),
+    };
+    let node_key = ResourceKey {
+        group: "example.io".into(),
+        version: "v1".into(),
+        kind: "Node".into(),
+    };
+
+    manager.controller_for(pod_key)
+        .reconcile_with(PodReconciler)
+        .namespace("default")
+        .register();
+
+    manager.controller_for(node_key)
+        .reconcile_with(NodeReconciler)
+        .register();
+
+    tracing::info!("starting controller manager");
+    manager.start().await?;
+
+    Ok(())
+}
+```
+
 ---
 
 ## API Reference
@@ -438,4 +556,25 @@ pub async fn remove_finalizer(
     obj: &StoredObject,
     finalizer: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+```
+
+### `Manager`
+
+```rust
+impl Manager {
+    pub fn new(client: KapiClient) -> Self;
+    pub fn controller_for(&mut self, key: ResourceKey) -> ControllerBuilder<'_>;
+    pub fn shutdown_sender(&self) -> broadcast::Sender<()>;
+    pub async fn start(self) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
+```
+
+### `ControllerBuilder`
+
+```rust
+impl<'a> ControllerBuilder<'a> {
+    pub fn reconcile_with(self, reconciler: impl Reconciler + 'static) -> Self;
+    pub fn namespace(self, ns: impl Into<String>) -> Self;
+    pub fn register(self);
+}
 ```

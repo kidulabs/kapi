@@ -7,5 +7,6 @@
 
 pub mod controller;
 pub mod finalizer;
+pub mod manager;
 pub mod reconciler;
 pub mod workqueue;

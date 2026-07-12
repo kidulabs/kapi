@@ -19,6 +19,7 @@ use kapi_server::store::memory::InMemoryStore;
 use kapi_server::store::sqlite::SQLiteStore;
 
 pub mod controller_runtime;
+pub mod controller_runtime_multi;
 pub mod finalizers;
 pub mod generation_semantics;
 pub mod list_filtering;

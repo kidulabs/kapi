@@ -7,7 +7,7 @@ edition = "2024"
 kapi-client = { path = "../kapi-client" }
 kapi-core = { path = "../kapi-core" }
 async-trait = "0.1"
-tokio = { version = "1", features = ["sync", "time", "macros", "rt"] }
+tokio = { version = "1", features = ["sync", "time", "macros", "rt", "signal"] }
 tracing = "0.1"
 futures-util = "0.3"
 

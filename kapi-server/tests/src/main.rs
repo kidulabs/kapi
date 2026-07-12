@@ -1,7 +1,8 @@
 use kapi_tests::{
-    TestApp, all_test_stores, controller_runtime, finalizers, generation_semantics, list_filtering,
-    namespace, namespace_resource, object_annotations, object_crud, object_labels,
-    optimistic_concurrency, schema_deletion, schema_validation, status_subresource, watch_events,
+    TestApp, all_test_stores, controller_runtime, controller_runtime_multi, finalizers,
+    generation_semantics, list_filtering, namespace, namespace_resource, object_annotations,
+    object_crud, object_labels, optimistic_concurrency, schema_deletion, schema_validation,
+    status_subresource, watch_events,
 };
 
 #[tokio::main]
@@ -360,6 +361,21 @@ async fn main() {
         run_test!(
             "controller_finalizer_helpers",
             controller_runtime::test_controller_finalizer_helpers
+        );
+
+        // Manager (multi-controller) tests
+        println!();
+        run_test!(
+            "manager_starts_multiple_controllers",
+            controller_runtime_multi::test_manager_starts_multiple_controllers
+        );
+        run_test!(
+            "manager_graceful_shutdown",
+            controller_runtime_multi::test_manager_graceful_shutdown
+        );
+        run_test!(
+            "manager_panic_isolation",
+            controller_runtime_multi::test_manager_panic_isolation
         );
 
         println!();
