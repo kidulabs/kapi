@@ -53,7 +53,7 @@ fi
 
 # C29: Cluster-scoped kind ignores -n with warning
 echo "========== TEST C29: Cluster-scoped ignores -n =========="
-OUTPUT=$($KAPI get ClusterWidget -n "some-namespace" -o json 2>&1)
+OUTPUT=$($KAPI get example.io.$TEST_RUN/ClusterWidget -n "some-namespace" -o json 2>&1)
 EXIT_CODE=$?
 # Should succeed (ignore -n) and may print warning to stderr
 if [ $EXIT_CODE -eq 0 ] && echo "$OUTPUT" | grep -q "cli-ns-cluster"; then
