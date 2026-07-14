@@ -1,7 +1,15 @@
 [package]
 name = "kapi-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Core types for the kapi ecosystem"
+keywords = ["kapi", "apiserver", "controlplane"]
+categories = ["data-structures"]
+readme = "README.md"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

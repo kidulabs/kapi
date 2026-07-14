@@ -1,11 +1,19 @@
 [package]
 name = "kapi-controller"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Controller-runtime SDK for building kapi controllers"
+keywords = ["kapi", "apiserver", "controlplane"]
+categories = ["asynchronous", "web-programming"]
+readme = "README.md"
 
 [dependencies]
-kapi-client = { path = "../kapi-client" }
-kapi-core = { path = "../kapi-core" }
+kapi-client = { path = "../kapi-client", version = "0.1.0" }
+kapi-core = { path = "../kapi-core", version = "0.1.0" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["sync", "time", "macros", "rt", "signal"] }
 tracing = "0.1"

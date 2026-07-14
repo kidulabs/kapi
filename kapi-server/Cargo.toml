@@ -1,7 +1,15 @@
 [package]
 name = "kapi-server"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "A lightweight Kubernetes-apiserver-inspired API server in Rust"
+keywords = ["kapi", "apiserver", "controlplane"]
+categories = ["web-programming::http-server", "network-programming"]
+readme = "README.md"
 autotests = false
 
 [dependencies]
@@ -24,7 +32,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 regex = "1.12.3"
-kapi-core = { path = "../kapi-core" }
+kapi-core = { path = "../kapi-core", version = "0.1.0" }
 
 [dev-dependencies]
 http-body-util = "0.1"

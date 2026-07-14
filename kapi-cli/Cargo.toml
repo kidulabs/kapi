@@ -1,10 +1,18 @@
 [package]
 name = "kapi-cli"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Command-line interface for kapi API servers"
+keywords = ["kapi", "apiserver", "controlplane"]
+categories = ["command-line-utilities"]
+readme = "README.md"
 
 [dependencies]
-kapi-client = { path = "../kapi-client" }
+kapi-client = { path = "../kapi-client", version = "0.1.0" }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }
