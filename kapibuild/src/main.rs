@@ -1,5 +1,7 @@
 //! CLI tool for scaffolding kapi controller projects.
 
+mod generate;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -33,6 +35,8 @@ enum Commands {
 enum ApiCommands {
     /// Create a new API resource skeleton.
     Create(ApiCreateArgs),
+    /// Generate JSON schema files for all API resources.
+    Generate,
 }
 
 #[derive(Args, Debug)]
@@ -98,6 +102,7 @@ fn run(cli: Cli) -> Result<()> {
         Commands::Init { path } => cmd_init(path),
         Commands::Api(api_cmd) => match api_cmd {
             ApiCommands::Create(args) => cmd_api_create(args),
+            ApiCommands::Generate => generate::cmd_api_generate(),
         },
     }
 }
@@ -125,6 +130,7 @@ fn cmd_init(path: String) -> Result<()> {
     create_dir(&project_dir.join("src"))?;
     create_dir(&project_dir.join("src").join("controllers"))?;
     create_dir(&project_dir.join("api"))?;
+    create_dir(&project_dir.join("types"))?;
     create_dir(&project_dir.join("schemas"))?;
 
     // Write files.
@@ -251,7 +257,7 @@ fn validate_scope(scope: &str) -> Result<String> {
 }
 
 /// Walk up from cwd looking for a Kapifile; returns its parent directory.
-fn find_project_root() -> Result<PathBuf> {
+pub(crate) fn find_project_root() -> Result<PathBuf> {
     let cwd = std::env::current_dir().context("failed to get current directory")?;
     let mut dir = Some(cwd.as_path());
 
@@ -270,40 +276,31 @@ fn find_project_root() -> Result<PathBuf> {
 /// Generate the Rust source for an API resource skeleton.
 fn generate_skeleton(
     kind: &str,
-    group: &str,
-    version: &str,
-    scope: &str,
+    _group: &str,
+    _version: &str,
+    _scope: &str,
     has_status: bool,
 ) -> String {
-    let kapi_attr = format!(
-        r#"#[kapi(group = "{group}", version = "{version}", kind = "{kind}", scope = "{scope}")]"#
-    );
-
     let mut out = String::new();
     out.push_str(
-        "use kapi_controller::KapiResource;\n\
-         use schemars::JsonSchema;\n\
+        "use schemars::JsonSchema;\n\
          use serde::{Deserialize, Serialize};\n\
-         \n\
-         #[derive(Debug, Clone, KapiResource, Serialize, Deserialize, JsonSchema)]\n",
+         \n",
     );
-    out.push_str(&kapi_attr);
-    out.push('\n');
     out.push_str(&format!(
-        "pub struct {kind}Spec {{\n\
+        "/// {kind}Spec defines the desired state of {kind}.\n\
+         #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]\n\
+         pub struct {kind}Spec {{\n\
          \n    // TODO: Add your spec fields here\n\
          \n    pub field1: String,\n    pub field2: i32,\n}}\n"
     ));
 
     if has_status {
-        out.push_str(
-            "\n\
-             #[derive(Debug, Clone, KapiResource, Serialize, Deserialize, JsonSchema)]\n",
-        );
-        out.push_str(&kapi_attr);
-        out.push('\n');
         out.push_str(&format!(
-            "pub struct {kind}Status {{\n\
+            "\n\
+             /// {kind}Status defines the observed state of {kind}.\n\
+             #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]\n\
+             pub struct {kind}Status {{\n\
              \n    // TODO: Add your status fields here\n\
              \n    pub ready: bool,\n    pub message: String,\n}}\n"
         ));

@@ -1255,9 +1255,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "regex",
  "serde",
  "serde_json",
  "serde_yaml",
+ "tempfile",
  "thiserror",
 ]
 
