@@ -272,8 +272,10 @@ fn generate_type_file(project_root: &Path, res: &ResourceInfo) -> Result<PathBuf
 
     // Imports.
     code.push_str(
-        "use kapi_core::ObjectMeta;\n\
+        "use kapi_client::typed::TypedResource;\n\
+         use kapi_core::ObjectMeta;\n\
          use kapi_core::ResourceKey;\n\
+         use kapi_core::SystemMetadata;\n\
          use schemars::JsonSchema;\n\
          use serde::{Deserialize, Serialize};\n\n",
     );
@@ -310,6 +312,7 @@ fn generate_type_file(project_root: &Path, res: &ResourceInfo) -> Result<PathBuf
          #[serde(rename_all = \"camelCase\")]\n\
          pub struct {kind} {{\n\
          \x20   pub metadata: ObjectMeta,\n\
+         \x20   pub system: SystemMetadata,\n\
          \x20   pub spec: {spec},\n",
         kind = res.kind,
         spec = res.spec_struct_name,
@@ -361,8 +364,90 @@ fn generate_type_file(project_root: &Path, res: &ResourceInfo) -> Result<PathBuf
     code.push_str(
         "\x20       serde_json::Value::Object(map)\n\
          \x20   }\n\
-         }\n",
+         }\n\n",
     );
+
+    // impl TypedResource block.
+    if let Some(ref status_name) = res.status_struct_name {
+        // With status field.
+        code.push_str(&format!(
+            "impl TypedResource for {kind} {{\n\
+             \x20   type Spec = {spec};\n\
+             \x20   type Status = {status};\n\n\
+             \x20   fn key() -> ResourceKey {{\n\
+             \x20       ResourceKey {{\n\
+             \x20           group: {group:?}.to_string(),\n\
+             \x20           version: {version:?}.to_string(),\n\
+             \x20           kind: {kind:?}.to_string(),\n\
+             \x20       }}\n\
+             \x20   }}\n\n\
+             \x20   fn from_parts(\n\
+             \x20       metadata: ObjectMeta,\n\
+             \x20       system: SystemMetadata,\n\
+             \x20       spec: Self::Spec,\n\
+             \x20       status: Option<Self::Status>,\n\
+             \x20   ) -> Self {{\n\
+             \x20       Self {{ metadata, system, spec, status }}\n\
+             \x20   }}\n\n\
+             \x20   fn metadata(&self) -> &ObjectMeta {{\n\
+             \x20       &self.metadata\n\
+             \x20   }}\n\n\
+             \x20   fn system(&self) -> &SystemMetadata {{\n\
+             \x20       &self.system\n\
+             \x20   }}\n\n\
+             \x20   fn spec(&self) -> &Self::Spec {{\n\
+             \x20       &self.spec\n\
+             \x20   }}\n\n\
+             \x20   fn status(&self) -> Option<&Self::Status> {{\n\
+             \x20       self.status.as_ref()\n\
+             \x20   }}\n\
+             }}\n",
+            kind = res.kind,
+            spec = res.spec_struct_name,
+            status = status_name,
+            group = res.group,
+            version = res.version,
+        ));
+    } else {
+        // Without status field.
+        code.push_str(&format!(
+            "impl TypedResource for {kind} {{\n\
+             \x20   type Spec = {spec};\n\
+             \x20   type Status = serde_json::Value;\n\n\
+             \x20   fn key() -> ResourceKey {{\n\
+             \x20       ResourceKey {{\n\
+             \x20           group: {group:?}.to_string(),\n\
+             \x20           version: {version:?}.to_string(),\n\
+             \x20           kind: {kind:?}.to_string(),\n\
+             \x20       }}\n\
+             \x20   }}\n\n\
+             \x20   fn from_parts(\n\
+             \x20       metadata: ObjectMeta,\n\
+             \x20       system: SystemMetadata,\n\
+             \x20       spec: Self::Spec,\n\
+             \x20       _status: Option<Self::Status>,\n\
+             \x20   ) -> Self {{\n\
+             \x20       Self {{ metadata, system, spec }}\n\
+             \x20   }}\n\n\
+             \x20   fn metadata(&self) -> &ObjectMeta {{\n\
+             \x20       &self.metadata\n\
+             \x20   }}\n\n\
+             \x20   fn system(&self) -> &SystemMetadata {{\n\
+             \x20       &self.system\n\
+             \x20   }}\n\n\
+             \x20   fn spec(&self) -> &Self::Spec {{\n\
+             \x20       &self.spec\n\
+             \x20   }}\n\n\
+             \x20   fn status(&self) -> Option<&Self::Status> {{\n\
+             \x20       None\n\
+             \x20   }}\n\
+             }}\n",
+            kind = res.kind,
+            spec = res.spec_struct_name,
+            group = res.group,
+            version = res.version,
+        ));
+    }
 
     std::fs::write(&file_path, &code)
         .with_context(|| format!("failed to write '{}'", file_path.display()))?;

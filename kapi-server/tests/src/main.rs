@@ -2,7 +2,7 @@ use kapi_tests::{
     TestApp, all_test_stores, controller_runtime, controller_runtime_multi, finalizers,
     generation_semantics, list_filtering, namespace, namespace_resource, object_annotations,
     object_crud, object_labels, optimistic_concurrency, schema_deletion, schema_validation,
-    status_subresource, watch_events,
+    status_subresource, typed_client, watch_events,
 };
 
 #[tokio::main]
@@ -344,6 +344,17 @@ async fn main() {
             "spec_update_modified_event",
             status_subresource::test_spec_update_publishes_modified_not_status_modified
         );
+
+        println!();
+
+        // Typed client tests
+        println!();
+        run_test!("typed_client_create", typed_client::test_typed_client_create);
+        run_test!("typed_client_get", typed_client::test_typed_client_get);
+        run_test!("typed_client_update", typed_client::test_typed_client_update);
+        run_test!("typed_client_delete", typed_client::test_typed_client_delete);
+        run_test!("typed_client_list", typed_client::test_typed_client_list);
+        run_test!("typed_client_with_status", typed_client::test_typed_client_with_status);
 
         println!();
 
