@@ -1,3 +1,5 @@
+> **Note:** Tasks 1.1–1.8 originally described a `kapi-derive` proc-macro approach for schema generation. The implementation evolved to use a helper-binary approach instead. These tasks are marked complete because the functionality was delivered via the alternative approach (see Section 2).
+
 ## 1. kapi-derive Proc-Macro
 
 - [x] 1.1 Implement KapiAttrs struct with darling to parse #[kapi(...)] attributes

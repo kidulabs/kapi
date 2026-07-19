@@ -1,5 +1,7 @@
 # KapiResource Derive Macro
 
+> **Note:** This document describes a planned `kapi-derive` proc-macro that is not yet implemented. The current kapibuild workflow uses a `Kapifile` manifest and helper-binary approach for schema generation. See the kapibuild workflow documentation for the current approach.
+
 ## Overview
 
 The `#[derive(KapiResource)]` proc-macro generates the boilerplate wrapper struct and

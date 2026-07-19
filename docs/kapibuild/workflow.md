@@ -18,9 +18,9 @@ This creates:
 
 ```
 my-controller/
-├── Cargo.toml          # Project manifest (edition 2021)
+├── Cargo.toml          # Project manifest (edition 2024)
 ├── Kapifile            # Project metadata (YAML)
-├── api/                # API type definitions
+├── src/api/             # API type definitions
 ├── schemas/            # Generated JSON schemas
 └── src/
     ├── main.rs         # Entry point with Manager setup
@@ -40,14 +40,14 @@ kapibuild api create \
 
 This generates:
 
-- `api/example.io/v1/widget.rs` — Spec and Status structs
-- `api/example.io/v1/mod.rs` — Version module
-- `api/example.io/mod.rs` — Group module
+- `src/api/example.io/v1/widget.rs` — Spec and Status structs
+- `src/api/example.io/v1/mod.rs` — Version module
+- `src/api/example.io/mod.rs` — Group module
 - Updates `Kapifile` — Adds resource metadata
 
 ### 3. Edit the API Types
 
-Open `api/example.io/v1/widget.rs` and define your spec and status fields:
+Open `src/api/example.io/v1/widget.rs` and define your spec and status fields:
 
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -209,7 +209,7 @@ kapi watch Widget
 When you modify your types, repeat steps 4 and 7:
 
 ```bash
-# 1. Edit {kind}.rs (e.g., api/example.io/v1/widget.rs)
+# 1. Edit {kind}.rs (e.g., src/api/example.io/v1/widget.rs)
 # 2. Regenerate schema
 kapibuild api generate
 

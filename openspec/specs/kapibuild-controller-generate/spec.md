@@ -1,4 +1,3 @@
-## ADDED Requirements
 
 ### Requirement: kapibuild controller generate command
 The system SHALL provide a `kapibuild controller generate` command that creates controller scaffolding using the typed client with the following flags:

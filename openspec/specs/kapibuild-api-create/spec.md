@@ -1,4 +1,3 @@
-## ADDED Requirements
 
 ### Requirement: kapibuild api create command
 The system SHALL provide a `kapibuild api create` command that generates skeleton Rust structs for a new API resource with the following flags:

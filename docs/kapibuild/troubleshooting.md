@@ -2,6 +2,8 @@
 
 ## Common Compilation Errors
 
+> **Note:** The `KapiResource` derive macro and `#[kapi(...)]` attributes described below are not yet implemented. The current approach uses `Kapifile` for resource metadata instead.
+
 ### "the trait bound `WidgetSpec: Clone` is not satisfied"
 
 The `KapiResource` derive macro generates a wrapper struct that derives `Clone`.

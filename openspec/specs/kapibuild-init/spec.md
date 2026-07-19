@@ -1,4 +1,3 @@
-## ADDED Requirements
 
 ### Requirement: kapibuild init command
 The system SHALL provide a `kapibuild init` command that scaffolds a new kapi controller project with the following structure:

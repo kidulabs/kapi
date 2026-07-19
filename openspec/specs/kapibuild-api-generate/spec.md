@@ -1,4 +1,3 @@
-## ADDED Requirements
 
 ### Requirement: kapibuild api generate command
 The system SHALL provide a `kapibuild api generate` command that generates the final wrapper struct and JSON schema files from skeleton types.

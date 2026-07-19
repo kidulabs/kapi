@@ -76,7 +76,7 @@ After generation, replace the `// TODO` sections with your actual reconciliation
 `TypedClient<T>` wraps the raw client to provide type-safe access to your resource:
 
 ```rust
-use kapi_controller::TypedClient;
+use kapi_client::typed::TypedClient;
 
 // Create a typed client for Widget
 let typed_client = TypedClient::<Widget>::new(ctx.client.clone());
