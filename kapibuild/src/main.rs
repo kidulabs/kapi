@@ -1,5 +1,6 @@
 //! CLI tool for scaffolding kapi controller projects.
 
+mod controller_generate;
 mod generate;
 
 use std::path::{Path, PathBuf};
@@ -29,6 +30,9 @@ enum Commands {
     /// Manage API resources in an existing project.
     #[command(subcommand)]
     Api(ApiCommands),
+    /// Manage controllers in an existing project.
+    #[command(subcommand)]
+    Controller(ControllerCommands),
 }
 
 #[derive(Subcommand)]
@@ -37,6 +41,28 @@ enum ApiCommands {
     Create(ApiCreateArgs),
     /// Generate JSON schema files for all API resources.
     Generate,
+}
+
+#[derive(Subcommand)]
+enum ControllerCommands {
+    /// Generate controller scaffolding for an API resource.
+    Generate(ControllerGenerateArgs),
+}
+
+#[derive(Args, Debug)]
+pub(crate) struct ControllerGenerateArgs {
+    /// API group (e.g. example.io). Optional — if omitted, generates for all
+    /// resources that don't already have a controller.
+    #[arg(long)]
+    pub(crate) group: Option<String>,
+
+    /// API version (e.g. v1).
+    #[arg(long)]
+    pub(crate) version: Option<String>,
+
+    /// Resource kind (e.g. Widget).
+    #[arg(long)]
+    pub(crate) kind: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -67,7 +93,7 @@ struct ApiCreateArgs {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Kapifile {
+pub(crate) struct Kapifile {
     domain: String,
     version: String,
     #[serde(default)]
@@ -75,7 +101,7 @@ struct Kapifile {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
-struct KapifileResource {
+pub(crate) struct KapifileResource {
     kind: String,
     version: String,
     scope: String,
@@ -104,6 +130,11 @@ fn run(cli: Cli) -> Result<()> {
             ApiCommands::Create(args) => cmd_api_create(args),
             ApiCommands::Generate => generate::cmd_api_generate(),
         },
+        Commands::Controller(ctrl_cmd) => match ctrl_cmd {
+            ControllerCommands::Generate(args) => {
+                controller_generate::cmd_controller_generate(args)
+            }
+        },
     }
 }
 
@@ -129,8 +160,8 @@ fn cmd_init(path: String) -> Result<()> {
     create_dir(&project_dir)?;
     create_dir(&project_dir.join("src"))?;
     create_dir(&project_dir.join("src").join("controllers"))?;
-    create_dir(&project_dir.join("api"))?;
-    create_dir(&project_dir.join("types"))?;
+    create_dir(&project_dir.join("src").join("api"))?;
+    create_dir(&project_dir.join("src").join("types"))?;
     create_dir(&project_dir.join("schemas"))?;
 
     // Write files.
@@ -149,6 +180,13 @@ fn create_dir(path: &Path) -> Result<()> {
 }
 
 fn write_cargo_toml(project_dir: &Path, project_name: &str) -> Result<()> {
+    // Detect workspace root for path dependencies.
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let ws_root = manifest_dir.parent().expect("workspace root");
+    let kapi_core = ws_root.join("kapi-core");
+    let kapi_client = ws_root.join("kapi-client");
+    let kapi_controller = ws_root.join("kapi-controller");
+
     let content = format!(
         r#"[package]
 name = "{project_name}"
@@ -156,16 +194,20 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-kapi-core = "0.1"
-kapi-client = "0.1"
-kapi-controller = "0.1"
+kapi-core = {{ path = "{}" }}
+kapi-client = {{ path = "{}" }}
+kapi-controller = {{ path = "{}" }}
 serde = {{ version = "1", features = ["derive"] }}
+serde_json = "1"
 tokio = {{ version = "1", features = ["full"] }}
 tracing = "0.1"
 tracing-subscriber = "0.3"
 async-trait = "0.1"
 schemars = "0.8"
 "#,
+        kapi_core.display(),
+        kapi_client.display(),
+        kapi_controller.display(),
     );
     std::fs::write(project_dir.join("Cargo.toml"), content).context("failed to write Cargo.toml")
 }
@@ -179,7 +221,9 @@ fn write_main_rs(project_dir: &Path) -> Result<()> {
     let content = r#"use kapi_client::client::KapiClient;
 use kapi_controller::manager::Manager;
 
+mod api;
 mod controllers;
+mod types;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
@@ -218,9 +262,9 @@ fn cmd_api_create(args: ApiCreateArgs) -> Result<()> {
     // Find project root (where Kapifile lives).
     let project_root = find_project_root()?;
 
-    // Build file path: api/<group>/<version>/<kind>.rs  (kind lowercased).
+    // Build file path: src/api/<group>/<version>/<kind>.rs  (kind lowercased).
     let kind_lower = args.kind.to_lowercase();
-    let api_dir = project_root.join("api").join(&args.group).join(&args.version);
+    let api_dir = project_root.join("src").join("api").join(&args.group).join(&args.version);
     let api_file = api_dir.join(format!("{kind_lower}.rs"));
 
     // Prevent overwriting an existing kind.

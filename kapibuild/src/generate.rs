@@ -33,6 +33,9 @@ pub fn cmd_api_generate() -> Result<()> {
         println!("Generated wrapper: {}", type_path.display());
     }
 
+    // Generate mod.rs files so the module tree compiles.
+    generate_mod_files(&project_root, &resources)?;
+
     // Create and run helper project for schema generation.
     let tmp = create_helper_project(&resources, &project_root, &ws_root)
         .context("failed to create helper project")?;
@@ -129,7 +132,7 @@ struct ResourceInfo {
 /// Walk `api/` recursively and collect all resource files, matching them
 /// against entries in the Kapifile.
 fn scan_api_dir(project_root: &Path, kapifile: &Kapifile) -> Result<Vec<ResourceInfo>> {
-    let api_dir = project_root.join("api");
+    let api_dir = project_root.join("src").join("api");
     if !api_dir.is_dir() {
         anyhow::bail!("api/ directory not found at '{}'", api_dir.display());
     }
@@ -228,7 +231,9 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         let path = entry.path();
         if path.is_dir() {
             collect_rs_files(&path, out)?;
-        } else if path.extension().is_some_and(|e| e == "rs") {
+        } else if path.extension().is_some_and(|e| e == "rs")
+            && path.file_stem().is_some_and(|s| s != "mod")
+        {
             out.push(path);
         }
     }
@@ -236,7 +241,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
 }
 
 /// Capitalize the first character of a string.
-fn capitalize_first(s: &str) -> String {
+pub(crate) fn capitalize_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
         None => String::new(),
@@ -255,7 +260,7 @@ fn generate_type_file(project_root: &Path, res: &ResourceInfo) -> Result<PathBuf
     let version_mod = &res.version;
     let kind_mod = res.kind.to_lowercase();
 
-    let types_dir = project_root.join("types").join(&group_mod).join(version_mod);
+    let types_dir = project_root.join("src").join("types").join(&group_mod).join(version_mod);
     std::fs::create_dir_all(&types_dir)
         .with_context(|| format!("failed to create types directory '{}'", types_dir.display()))?;
 
@@ -276,7 +281,6 @@ fn generate_type_file(project_root: &Path, res: &ResourceInfo) -> Result<PathBuf
          use kapi_core::ObjectMeta;\n\
          use kapi_core::ResourceKey;\n\
          use kapi_core::SystemMetadata;\n\
-         use schemars::JsonSchema;\n\
          use serde::{Deserialize, Serialize};\n\n",
     );
 
@@ -339,6 +343,7 @@ fn generate_type_file(project_root: &Path, res: &ResourceInfo) -> Result<PathBuf
          \x20       }}\n\
          \x20   }}\n\n\
          \x20   /// Returns the schema registration payload for this resource.\n\
+         \x20   #[allow(dead_code)]\n\
          \x20   pub fn schema_data() -> serde_json::Value {{\n\
          \x20       let spec_schema = schemars::schema_for!({spec});\n\
          \x20       let mut map = serde_json::Map::new();\n\
@@ -453,6 +458,96 @@ fn generate_type_file(project_root: &Path, res: &ResourceInfo) -> Result<PathBuf
         .with_context(|| format!("failed to write '{}'", file_path.display()))?;
 
     Ok(file_path)
+}
+
+// ---------------------------------------------------------------------------
+// Module file generation
+// ---------------------------------------------------------------------------
+
+/// Generate `mod.rs` files at each level of `src/api/` and `src/types/`
+/// so the module tree compiles. The `api/` directories use dots in names
+/// (e.g. `example.io`) so they need `#[path]` remapping.
+fn generate_mod_files(project_root: &Path, resources: &[ResourceInfo]) -> Result<()> {
+    // Group resources by (group, version).
+    let mut groups: std::collections::BTreeMap<
+        &str,
+        std::collections::BTreeMap<&str, Vec<&ResourceInfo>>,
+    > = std::collections::BTreeMap::new();
+    for res in resources {
+        groups.entry(&res.group).or_default().entry(&res.version).or_default().push(res);
+    }
+
+    let src_dir = project_root.join("src");
+
+    // --- src/api/mod.rs ---
+    // api dirs use dots (example.io), need #[path] to map to underscore names.
+    let mut api_mod = String::new();
+    for group in groups.keys() {
+        let group_mod = group.replace('.', "_");
+        api_mod.push_str(&format!("#[path = \"{group}/mod.rs\"]\npub mod {group_mod};\n",));
+    }
+    std::fs::write(src_dir.join("api").join("mod.rs"), &api_mod)
+        .context("failed to write src/api/mod.rs")?;
+
+    // api/<group>/mod.rs and api/<group>/<version>/mod.rs
+    for (group, versions) in &groups {
+        let api_group_dir = src_dir.join("api").join(group);
+
+        let mut group_mod_content = String::new();
+        for version in versions.keys() {
+            group_mod_content.push_str(&format!("pub mod {version};\n"));
+
+            // api/<group>/<version>/mod.rs
+            let api_version_dir = api_group_dir.join(version);
+            let mut version_mod = String::new();
+            for res in &versions[version] {
+                let kind_lower = res.kind.to_lowercase();
+                version_mod.push_str(&format!("pub mod {kind_lower};\n"));
+            }
+            std::fs::write(api_version_dir.join("mod.rs"), &version_mod).with_context(|| {
+                format!("failed to write '{}'", api_version_dir.join("mod.rs").display())
+            })?;
+        }
+        std::fs::write(api_group_dir.join("mod.rs"), &group_mod_content).with_context(|| {
+            format!("failed to write '{}'", api_group_dir.join("mod.rs").display())
+        })?;
+    }
+
+    // --- src/types/mod.rs ---
+    // types dirs use underscores (example_io), standard module resolution.
+    let mut types_mod = String::new();
+    for group in groups.keys() {
+        let group_mod = group.replace('.', "_");
+        types_mod.push_str(&format!("pub mod {group_mod};\n"));
+    }
+    std::fs::write(src_dir.join("types").join("mod.rs"), &types_mod)
+        .context("failed to write src/types/mod.rs")?;
+
+    // types/<group_mod>/mod.rs and types/<group_mod>/<version>/mod.rs
+    for (group, versions) in &groups {
+        let group_mod = group.replace('.', "_");
+        let types_group_dir = src_dir.join("types").join(&group_mod);
+
+        let mut group_mod_content = String::new();
+        for version in versions.keys() {
+            group_mod_content.push_str(&format!("pub mod {version};\n"));
+
+            let types_version_dir = types_group_dir.join(version);
+            let mut version_mod = String::new();
+            for res in &versions[version] {
+                let kind_lower = res.kind.to_lowercase();
+                version_mod.push_str(&format!("pub mod {kind_lower};\n"));
+            }
+            std::fs::write(types_version_dir.join("mod.rs"), &version_mod).with_context(|| {
+                format!("failed to write '{}'", types_version_dir.join("mod.rs").display())
+            })?;
+        }
+        std::fs::write(types_group_dir.join("mod.rs"), &group_mod_content).with_context(|| {
+            format!("failed to write '{}'", types_group_dir.join("mod.rs").display())
+        })?;
+    }
+
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

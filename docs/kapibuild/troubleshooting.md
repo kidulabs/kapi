@@ -209,6 +209,22 @@ curl -X PUT http://localhost:8080/apis/example.io/v1/namespaces/default/Widget/m
     -d '{"phase": "Running", "observedReplicas": 3}'
 ```
 
+## kapibuild controller generate Errors
+
+### "API resource 'Widget' not found. Run 'kapibuild api create ...' first."
+
+The `controller generate` command requires that the API resource already exists:
+1. The file `api/<group>/<version>/<kind>.rs` must exist
+2. The kind must be registered in `Kapifile`
+
+Run `kapibuild api create --group <group> --version <version> --kind <kind>` first, then `kapibuild api generate` to create the typed wrappers.
+
+### "Controller 'widget_controller.rs' already exists"
+
+The controller file already exists. The command does not overwrite existing controllers. Either:
+- Delete the existing file if you want to regenerate
+- Edit the existing file directly
+
 ## How to Debug Issues
 
 ### 1. Enable Trace Logging

@@ -34,6 +34,78 @@ impl Reconciler for WidgetReconciler {
 }
 ```
 
+## Generating a Controller
+
+The `kapibuild controller generate` command creates a controller skeleton automatically:
+
+```bash
+kapibuild controller generate --group example.io --version v1 --kind Widget
+```
+
+This produces:
+
+- `src/controllers/widget_controller.rs` — A `WidgetReconciler` skeleton with finalizer pattern, status update logic (if the resource has a status subresource), and TODO comments where you add your business logic
+- Updates `src/controllers/mod.rs` — Adds `pub mod widget_controller;`
+- Updates `src/main.rs` — Wires `WidgetReconciler` to the Manager
+
+The generated skeleton uses `TypedClient` for type-safe operations and includes:
+
+```rust
+pub struct WidgetReconciler;
+
+#[async_trait]
+impl Reconciler for WidgetReconciler {
+    async fn reconcile(
+        &self,
+        ctx: ReconcileContext,
+    ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
+        let typed_client = TypedClient::<Widget>::new(ctx.client.clone());
+
+        // TODO: fetch and reconcile the object
+        // let widget = typed_client.get(...).await?;
+
+        Ok(ReconcileResult::default())
+    }
+}
+```
+
+After generation, replace the `// TODO` sections with your actual reconciliation logic.
+
+## Using the Typed Client in Controllers
+
+`TypedClient<T>` wraps the raw client to provide type-safe access to your resource:
+
+```rust
+use kapi_controller::TypedClient;
+
+// Create a typed client for Widget
+let typed_client = TypedClient::<Widget>::new(ctx.client.clone());
+
+// Fetch an object — returns a typed wrapper with spec() and status() methods
+let widget = typed_client.get(req.namespace.as_deref(), &req.name).await?;
+
+// Access typed fields without manual deserialization
+let spec = widget.spec();
+info!("Color: {}, Replicas: {}", spec.color, spec.replicas);
+
+// For status updates, use the inner client:
+let status = WidgetStatus {
+    phase: "Running".to_string(),
+    observed_replicas: spec.replicas,
+};
+typed_client.inner()
+    .update_status(&req.key, req.namespace.as_deref(), &req.name, &status)
+    .await?;
+```
+
+The `TypedClient` methods mirror the raw client but return your specific types:
+
+| Method                  | Description                                  |
+|-------------------------|----------------------------------------------|
+| `get(ns, name)`         | Fetch a single object                        |
+| `list(ns)`              | List all objects in a namespace              |
+| `inner()`               | Access the underlying raw client             |
+
 ## Fetching and Deserializing Objects
 
 Use `ctx.client.get()` to fetch the latest version of an object, then deserialize

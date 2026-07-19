@@ -9,3 +9,4 @@ Kubernetes-apiserver-inspired API server in Rust.
 - `kapi-client/` — HTTP client library
 - `kapi-cli/` — Command-line interface (see [kapi-cli/README.md](kapi-cli/README.md))
 - `kapi-controller/` — Controller-runtime SDK with Manager for multi-controller orchestration (see [docs/controller-runtime.md](docs/controller-runtime.md))
+- `kapibuild/` — CLI tool for scaffolding kapi controller projects (see [docs/kapibuild/workflow.md](docs/kapibuild/workflow.md))
