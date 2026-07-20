@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 readme = "README.md"
 
 [dependencies]
-kapi-client = { path = "../kapi-client", version = "0.1.0" }
+kapi-client = { path = "../kapi-client", version = "0.2.0" }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }

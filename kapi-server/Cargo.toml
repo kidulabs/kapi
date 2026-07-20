@@ -32,7 +32,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 regex = "1.12.3"
-kapi-core = { path = "../kapi-core", version = "0.1.0" }
+kapi-core = { path = "../kapi-core", version = "0.2.0" }
 
 [dev-dependencies]
 http-body-util = "0.1"

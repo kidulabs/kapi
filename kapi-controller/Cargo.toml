@@ -12,8 +12,8 @@ categories = ["asynchronous", "web-programming"]
 readme = "README.md"
 
 [dependencies]
-kapi-client = { path = "../kapi-client", version = "0.1.0" }
-kapi-core = { path = "../kapi-core", version = "0.1.0" }
+kapi-client = { path = "../kapi-client", version = "0.2.0" }
+kapi-core = { path = "../kapi-core", version = "0.2.0" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["sync", "time", "macros", "rt", "signal"] }
 tracing = "0.1"

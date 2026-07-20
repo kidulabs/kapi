@@ -1,6 +1,6 @@
 [package]
 name = "kapi-tests"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 publish = false
 
@@ -13,7 +13,7 @@ name = "kapi-tests"
 path = "src/main.rs"
 
 [dependencies]
-kapi-server = { path = "..", version = "0.1.0" }
+kapi-server = { path = "..", version = "0.2.0" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
@@ -26,7 +26,7 @@ bytes = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
-kapi-controller = { path = "../../kapi-controller", version = "0.1.0" }
-kapi-client = { path = "../../kapi-client", version = "0.1.0" }
+kapi-controller = { path = "../../kapi-controller", version = "0.2.0" }
+kapi-client = { path = "../../kapi-client", version = "0.2.0" }
 async-trait = "0.1"
-kapi-core = { path = "../../kapi-core", version = "0.1.0" }
+kapi-core = { path = "../../kapi-core", version = "0.2.0" }

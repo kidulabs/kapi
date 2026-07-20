@@ -12,7 +12,7 @@ categories = ["web-programming::http-client", "network-programming"]
 readme = "README.md"
 
 [dependencies]
-kapi-core = { path = "../kapi-core", version = "0.1.0" }
+kapi-core = { path = "../kapi-core", version = "0.2.0" }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
