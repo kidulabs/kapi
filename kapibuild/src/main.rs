@@ -180,12 +180,7 @@ fn create_dir(path: &Path) -> Result<()> {
 }
 
 fn write_cargo_toml(project_dir: &Path, project_name: &str) -> Result<()> {
-    // Detect workspace root for path dependencies.
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let ws_root = manifest_dir.parent().expect("workspace root");
-    let kapi_core = ws_root.join("kapi-core");
-    let kapi_client = ws_root.join("kapi-client");
-    let kapi_controller = ws_root.join("kapi-controller");
+    let version = env!("CARGO_PKG_VERSION");
 
     let content = format!(
         r#"[package]
@@ -194,9 +189,9 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-kapi-core = {{ path = "{}" }}
-kapi-client = {{ path = "{}" }}
-kapi-controller = {{ path = "{}" }}
+kapi-core = "{version}"
+kapi-client = "{version}"
+kapi-controller = "{version}"
 serde = {{ version = "1", features = ["derive"] }}
 serde_json = "1"
 tokio = {{ version = "1", features = ["full"] }}
@@ -205,9 +200,6 @@ tracing-subscriber = "0.3"
 async-trait = "0.1"
 schemars = "0.8"
 "#,
-        kapi_core.display(),
-        kapi_client.display(),
-        kapi_controller.display(),
     );
     std::fs::write(project_dir.join("Cargo.toml"), content).context("failed to write Cargo.toml")
 }
