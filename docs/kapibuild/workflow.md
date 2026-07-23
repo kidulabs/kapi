@@ -20,10 +20,11 @@ This creates:
 my-controller/
 ├── Cargo.toml          # Project manifest (edition 2024)
 ├── Kapifile            # Project metadata (YAML)
-├── src/api/             # API type definitions
 ├── schemas/            # Generated JSON schemas
 └── src/
     ├── main.rs         # Entry point with Manager setup
+    ├── api/             # API type definitions (by `kapibuild api create`)
+    ├── types/           # Generated typed wrappers (by `kapibuild api generate`)
     └── controllers/    # Controller implementations
         └── mod.rs
 ```
@@ -41,8 +42,6 @@ kapibuild api create \
 This generates:
 
 - `src/api/example.io/v1/widget.rs` — Spec and Status structs
-- `src/api/example.io/v1/mod.rs` — Version module
-- `src/api/example.io/mod.rs` — Group module
 - Updates `Kapifile` — Adds resource metadata
 
 ### 3. Edit the API Types
@@ -78,13 +77,34 @@ This parses your types and generates `schemas/example.io_Widget.json`:
 
 ```json
 {
-    "targetGroup": "example.io",
-    "targetVersion": "v1",
-    "targetKind": "Widget",
-    "scope": "Namespaced",
-    "specSchema": { /* JSON Schema derived from WidgetSpec */ },
-    "statusSchema": { /* JSON Schema derived from WidgetStatus */ }
+    "kind": "Schema",
+    "apiVersion": "kapi.io/v1",
+    "metadata": { "name": "Widget.example.io.v1" },
+    "spec": {
+        "targetGroup": "example.io",
+        "targetVersion": "v1",
+        "targetKind": "Widget",
+        "scope": "Namespaced",
+        "specSchema": { /* JSON Schema derived from WidgetSpec */ },
+        "statusSchema": { /* JSON Schema derived from WidgetStatus */ }
+    }
 }
+```
+
+This command also generates typed wrapper structs in `src/types/`:
+
+- `src/types/example_io/v1/widget.rs` — Wrapper struct `Widget` with `metadata`, `system`, `spec`, and optional `status` fields, plus `key()` and `schema_data()` methods
+- `src/types/example_io/v1/widget.rs` — `TypedResource` impl for use with `TypedClient`
+- `mod.rs` files for both `src/api/` and `src/types/` module trees (auto-generated)
+
+The typed wrappers enable type-safe access in controllers:
+
+```rust
+use kapi_client::typed::TypedClient;
+
+let typed_client = TypedClient::<Widget>::new(ctx.client.clone());
+let widget = typed_client.get(namespace, &name).await?;
+let spec = widget.spec(); // Returns &WidgetSpec
 ```
 
 ### 5. Generate the Controller
@@ -101,6 +121,14 @@ This generates:
 - `src/controllers/widget_controller.rs` — Controller skeleton with finalizer pattern and status update logic
 - Updates `src/controllers/mod.rs` — Exports the new controller module
 - Updates `src/main.rs` — Wires the controller to the Manager
+
+You can also generate controllers for all resources at once by omitting the flags:
+
+```bash
+kapibuild controller generate
+```
+
+This scans all registered API resources and generates controllers for any that don't already have one, skipping resources that already have a controller file.
 
 ### 6. Edit the Controller
 
@@ -221,6 +249,38 @@ kapi apply -f schemas/example.io_Widget.json
 > **Note**: Schema updates require delete + recreate. The kapi server does not
 > support in-place schema updates yet.
 
+> **Note**: `kapibuild api generate` also regenerates the typed wrapper structs
+> in `src/types/`, keeping them in sync with your API type definitions.
+
+## Types-Only Workflow
+
+If you only need kapibuild for type generation — you want the generated types and
+schemas but plan to write controllers in a separate project — skip step 5
+(`controller generate`):
+
+```bash
+# 1. Scaffold the types project
+kapibuild init my-types
+cd my-types
+
+# 2. Create API resources
+kapibuild api create --group example.io --version v1 --kind Widget --status
+
+# 3. Edit your types
+# (edit src/api/example.io/v1/widget.rs)
+
+# 4. Generate schemas + typed wrappers
+kapibuild api generate
+```
+
+This gives you a crate with:
+- **`src/types/`** — Wrapper structs implementing `TypedResource`, ready for `TypedClient<T>`
+- **`schemas/`** — JSON schema files for server registration
+
+You can then depend on this crate from your controller project and use the
+generated types directly. See [Controller Patterns](controller-patterns.md#using-kapibuild-as-a-types-library)
+for the complete example.
+
 ## Command Reference
 
 ### kapibuild Commands
@@ -230,7 +290,7 @@ kapi apply -f schemas/example.io_Widget.json
 | `kapibuild init <path>`                           | Scaffold a new controller project     |
 | `kapibuild api create --group <g> --version <v> --kind <k> [--scope {Namespaced,Cluster}] [--status]` | Add a new API resource |
 | `kapibuild api generate`                          | Generate JSON Schema and typed wrappers from Rust types |
-| `kapibuild controller generate --group <g> --version <v> --kind <k>` | Generate controller scaffolding for existing API |
+| `kapibuild controller generate [--group <g> --version <v> --kind <k>]` | Generate controller scaffolding (specific resource or auto-discover all) |
 
 ### kapi CLI Commands
 
