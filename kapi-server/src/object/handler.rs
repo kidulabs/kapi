@@ -87,11 +87,36 @@ pub struct ListQuery {
 ///
 /// The generated name is used as the storage key and cache key for the schema,
 /// ensuring consistency between the stored name and the cache lookup key.
-fn extract_schema_name(body: &Value) -> Option<String> {
-    let target_kind = body.get("targetKind")?.as_str()?;
-    let target_group = body.get("targetGroup")?.as_str()?;
-    let target_version = body.get("targetVersion")?.as_str()?;
-    Some(schema_cache_key(target_kind, target_group, target_version))
+fn extract_schema_name(body: &Value) -> Result<String, AppError> {
+    let target_kind = body.get("targetKind").and_then(|v| v.as_str()).ok_or_else(|| {
+        AppError::InvalidSchema("Schema registration requires targetKind field".to_string())
+    })?;
+    let target_group = body.get("targetGroup").and_then(|v| v.as_str()).ok_or_else(|| {
+        AppError::InvalidSchema("Schema registration requires targetGroup field".to_string())
+    })?;
+    let target_version = body.get("targetVersion").and_then(|v| v.as_str()).ok_or_else(|| {
+        AppError::InvalidSchema("Schema registration requires targetVersion field".to_string())
+    })?;
+
+    // Length validation to prevent abuse (e.g., massive cache keys)
+    const MAX_FIELD_LENGTH: usize = 256;
+    if target_kind.len() > MAX_FIELD_LENGTH {
+        return Err(AppError::InvalidRequest(format!(
+            "targetKind exceeds maximum length of {MAX_FIELD_LENGTH} characters"
+        )));
+    }
+    if target_group.len() > MAX_FIELD_LENGTH {
+        return Err(AppError::InvalidRequest(format!(
+            "targetGroup exceeds maximum length of {MAX_FIELD_LENGTH} characters"
+        )));
+    }
+    if target_version.len() > MAX_FIELD_LENGTH {
+        return Err(AppError::InvalidRequest(format!(
+            "targetVersion exceeds maximum length of {MAX_FIELD_LENGTH} characters"
+        )));
+    }
+
+    Ok(schema_cache_key(target_kind, target_group, target_version))
 }
 
 /// Extracts annotations from `metadata.annotations` in the request body.
@@ -208,12 +233,7 @@ async fn create_impl(
     // while regular objects require a client-supplied metadata.name and a spec field
     let (meta, data) = if kind == SCHEMA_KIND {
         // Schema registration: generate name from targetKind.targetGroup.targetVersion
-        let name = extract_schema_name(&body).ok_or_else(|| {
-            AppError::InvalidSchema(
-                "Schema registration requires targetKind, targetGroup, and targetVersion fields"
-                    .to_string(),
-            )
-        })?;
+        let name = extract_schema_name(&body)?;
         // Strip metadata from body before passing as spec data
         let mut data = body;
         if let Some(obj) = data.as_object_mut() {
@@ -466,12 +486,15 @@ async fn update_impl(
         ResourceKey { group: group.clone(), version: version.clone(), kind: kind.clone() };
 
     if body.key != url_key {
-        return Err(AppError::Internal(anyhow::anyhow!("URL key does not match body key")));
+        return Err(AppError::InvalidRequest(format!(
+            "URL key does not match body key: expected {url_key:?}, got {:?}",
+            body.key
+        )));
     }
 
     if body.metadata.name != name {
-        return Err(AppError::Internal(anyhow::anyhow!(
-            "URL name '{name}' does not match body name '{}'",
+        return Err(AppError::InvalidRequest(format!(
+            "URL name does not match body name: expected {name:?}, got {:?}",
             body.metadata.name
         )));
     }

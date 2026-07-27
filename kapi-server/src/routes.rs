@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use axum::Router;
+use axum::extract::DefaultBodyLimit;
 use tower_http::cors::CorsLayer;
 use tower_http::trace::TraceLayer;
 
@@ -94,8 +95,9 @@ pub fn build_router(state: AppState) -> Router {
         // Swagger UI: loads Swagger UI from CDN and fetches spec from /openapi
         .route("/swagger-ui", axum::routing::get(crate::openapi::get_swagger_ui_handler))
         .route("/swagger-ui/", axum::routing::get(crate::openapi::get_swagger_ui_handler))
-        // Middleware layers: tracing, CORS (outermost for preflight interception)
+        // Middleware layers: tracing, body limit, CORS (outermost for preflight interception)
         .layer(TraceLayer::new_for_http())
+        .layer(DefaultBodyLimit::max(10 * 1024 * 1024)) // 10MB request body limit
         .layer(CorsLayer::permissive())
         .with_state(state)
 }

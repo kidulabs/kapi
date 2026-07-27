@@ -9,6 +9,7 @@ use crate::key::ResourceKey;
 pub struct ContinueToken(pub String);
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ListOptions {
     pub limit: Option<usize>,
     pub continue_token: Option<ContinueToken>,
@@ -285,7 +286,7 @@ pub struct ObjectMeta {
 ///   rejected with 409 Conflict). When all finalizers are removed, the object
 ///   is hard-deleted. `None` for objects not being deleted.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SystemMetadata {
     pub resource_version: u64,
     #[serde(default)]

@@ -108,6 +108,14 @@ Schema is **always cluster-scoped** — URL patterns use `/apis/kapi.io/v1/Schem
 - `event_bus: Arc<dyn EventPublisher>` — pluggable event distribution
 - `schema_registry: SchemaRegistry` — manages schema validation, compilation, and caching
 
+> **Note on dual SchemaRegistry caches:** Both `SchemaService` and `ObjectService` hold their own
+> `SchemaRegistry` instances (each backed by a separate `DashMap` cache). When `SchemaService::delete`
+> evicts a schema from its registry, the `ObjectService`'s cache is **not** invalidated. This means
+> `ObjectService` may temporarily serve stale compiled validators until the next cache miss triggers
+> a fresh lazy load from the store. Cross-service cache invalidation is a known limitation; a future
+> improvement would share a single `SchemaRegistry` across both services or implement an
+> invalidation channel.
+
 ### 5. Store (store/mod.rs)
 
 Pluggable via the `ObjectStore` async trait. Two implementations are available: `InMemoryStore` using `DashMap` for ephemeral storage, and `SQLiteStore` using `rusqlite` for persistent storage. Schema objects are stored in the same store as regular objects (kind `"Schema"` in group `kapi.io`).
@@ -177,15 +185,15 @@ kapi/
 │   └── tests/                  # Integration tests (kapi-tests package)
 │       ├── Cargo.toml          # Depends on kapi-server
 │       └── src/                # Test files (object_crud, watch_events, etc.)
-├── kapi-client/            # HTTP client library (placeholder)
+├── kapi-client/            # HTTP client library
 │   ├── Cargo.toml          # Depends on kapi-core
-│   └── src/lib.rs          # TODO: Implement HTTP client library
-├── kapi-cli/               # CLI tool (placeholder)
+│   └── src/                # KapiClient with typed wrappers
+├── kapi-cli/               # CLI tool
 │   ├── Cargo.toml          # Depends on kapi-client
-│   └── src/main.rs         # Stub main function
-└── kapi-controller/        # Controller-runtime SDK (placeholder)
+│   └── src/                # CRUD, watch, edit, completions commands
+└── kapi-controller/        # Controller-runtime SDK
     ├── Cargo.toml          # Depends on kapi-client
-    └── src/lib.rs          # TODO: Implement controller-runtime SDK
+    └── src/                # Reconciler trait, Controller, WorkQueue
 ```
 
 ## Dependency Graph

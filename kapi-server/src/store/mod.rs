@@ -1,3 +1,4 @@
+pub mod continue_token;
 pub mod memory;
 pub mod sqlite;
 

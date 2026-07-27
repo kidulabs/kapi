@@ -26,6 +26,41 @@ pub const SCOPE_NAMESPACED: &str = "Namespaced";
 /// Scope value for cluster-scoped resources.
 pub const SCOPE_CLUSTER: &str = "Cluster";
 
+/// Scope of a resource — determines whether objects of a kind are
+/// cluster-scoped or namespace-scoped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Scope {
+    Cluster,
+    Namespaced,
+}
+
+impl Scope {
+    /// Parse a scope from its string representation.
+    pub fn parse(s: &str) -> Option<Scope> {
+        s.parse().ok()
+    }
+
+    /// Returns the string representation of this scope.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Scope::Cluster => "Cluster",
+            Scope::Namespaced => "Namespaced",
+        }
+    }
+}
+
+impl std::str::FromStr for Scope {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "Cluster" => Ok(Scope::Cluster),
+            "Namespaced" => Ok(Scope::Namespaced),
+            _ => Err(()),
+        }
+    }
+}
+
 /// Returns the [`ResourceKey`] for the built-in Namespace resource.
 ///
 /// Cluster-scoped — all Namespace operations pass `namespace: None`

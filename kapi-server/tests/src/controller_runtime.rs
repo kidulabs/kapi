@@ -72,11 +72,11 @@ impl Reconciler for CountingReconciler {
         &self,
         ctx: ReconcileContext,
     ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
-        self.call_count.fetch_add(1, Ordering::SeqCst);
+        self.call_count.fetch_add(1, Ordering::Relaxed);
 
         let status = serde_json::json!({
             "reconciled": true,
-            "count": self.call_count.load(Ordering::SeqCst),
+            "count": self.call_count.load(Ordering::Relaxed),
         });
         ctx.client
             .update_status(
@@ -102,7 +102,7 @@ impl Reconciler for ErrorReconciler {
         &self,
         _ctx: ReconcileContext,
     ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
-        self.call_count.fetch_add(1, Ordering::SeqCst);
+        self.call_count.fetch_add(1, Ordering::Relaxed);
         Err("always fails".into())
     }
 }
@@ -201,7 +201,7 @@ pub async fn test_controller_reconciles_on_create(
     // Wait for the reconciler to be invoked.
     let ok = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            if call_count.load(Ordering::SeqCst) > 0 {
+            if call_count.load(Ordering::Relaxed) > 0 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -271,7 +271,7 @@ pub async fn test_controller_deduplication_on_updates(
     // Wait for the first reconcile.
     let ok = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            if call_count.load(Ordering::SeqCst) > 0 {
+            if call_count.load(Ordering::Relaxed) > 0 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -317,7 +317,7 @@ pub async fn test_controller_deduplication_on_updates(
     // Allow time for events to be delivered and the queue to drain.
     tokio::time::sleep(Duration::from_secs(2)).await;
 
-    let count = call_count.load(Ordering::SeqCst);
+    let count = call_count.load(Ordering::Relaxed);
     assert!(
         count < 18,
         "expected deduplication to keep reconcile calls well below 20, got {count}"
@@ -376,7 +376,7 @@ pub async fn test_controller_error_backoff(
     // Wait for at least 2 reconcile attempts (initial + retry with backoff).
     let ok = tokio::time::timeout(Duration::from_secs(8), async {
         loop {
-            if call_count.load(Ordering::SeqCst) >= 2 {
+            if call_count.load(Ordering::Relaxed) >= 2 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
@@ -386,10 +386,10 @@ pub async fn test_controller_error_backoff(
     assert!(
         ok.is_ok(),
         "error reconciler was not retried within timeout (call_count={})",
-        call_count.load(Ordering::SeqCst)
+        call_count.load(Ordering::Relaxed)
     );
 
-    let count = call_count.load(Ordering::SeqCst);
+    let count = call_count.load(Ordering::Relaxed);
     assert!(count >= 2, "expected at least 2 reconcile calls after error, got {count}");
 
     let _ = shutdown_tx.send(());

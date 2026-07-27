@@ -12,7 +12,7 @@ use serde_json::Value;
 use crate::error::AppError;
 use crate::object::types::{ListOptions, SchemaData};
 use crate::schema::{
-    JsonSchemaValidator, SCOPE_NAMESPACED, SchemaValidator, schema_cache_key, schema_key,
+    JsonSchemaValidator, SCOPE_NAMESPACED, SchemaValidator, Scope, schema_cache_key, schema_key,
 };
 use crate::store::{ObjectStore, ResourceKey};
 
@@ -23,7 +23,7 @@ type CompileResult = (SchemaData, Arc<dyn SchemaValidator>, Option<Arc<dyn Schem
 pub(crate) struct CachedSchema {
     pub validator: Arc<dyn SchemaValidator>,
     pub status_validator: Option<Arc<dyn SchemaValidator>>,
-    pub scope: String,
+    pub scope: Scope,
 }
 
 /// Manages schema validation, compilation, and caching.
@@ -108,21 +108,26 @@ impl SchemaRegistry {
     pub async fn get_validator(
         &self,
         key: &ResourceKey,
-    ) -> Result<(Arc<dyn SchemaValidator>, String), AppError> {
+    ) -> Result<(Arc<dyn SchemaValidator>, Scope), AppError> {
         let cache_key = schema_cache_key(&key.kind, &key.group, &key.version);
 
         // Cache hit
         if let Some(cached) = self.cache.get(&cache_key) {
-            return Ok((cached.validator.clone(), cached.scope.clone()));
+            return Ok((cached.validator.clone(), cached.scope));
         }
 
         // Cache miss: fetch from store
         let schema_key = schema_key();
         let schema_name = cache_key.clone();
 
-        let schema_obj = self.store.get(&schema_key, None, &schema_name).await.map_err(|_| {
-            AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
-        })?;
+        let schema_obj =
+            self.store.get(&schema_key, None, &schema_name).await.map_err(|e| match e {
+                AppError::NotFound { .. } => AppError::NotFound {
+                    what: "Schema".to_string(),
+                    identifier: schema_name.clone(),
+                },
+                other => other,
+            })?;
 
         // Parse and compile
         let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
@@ -150,10 +155,10 @@ impl SchemaRegistry {
             .transpose()?;
 
         // Insert into cache and return
-        let scope = schema_data.scope.clone();
+        let scope = Scope::parse(&schema_data.scope).unwrap_or(Scope::Namespaced);
         self.cache.insert(
             cache_key.clone(),
-            CachedSchema { validator: compiled.clone(), status_validator, scope: scope.clone() },
+            CachedSchema { validator: compiled.clone(), status_validator, scope },
         );
         Ok((compiled, scope))
     }
@@ -162,11 +167,9 @@ impl SchemaRegistry {
     ///
     /// The name should be the versioned schema name (e.g., `"Widget.example.io.v1"`).
     /// If an entry with the same name already exists, it is replaced.
-    pub fn insert(&self, name: &str, validator: Arc<dyn SchemaValidator>, scope: &str) {
-        self.cache.insert(
-            name.to_string(),
-            CachedSchema { validator, status_validator: None, scope: scope.to_string() },
-        );
+    pub fn insert(&self, name: &str, validator: Arc<dyn SchemaValidator>, scope: Scope) {
+        self.cache
+            .insert(name.to_string(), CachedSchema { validator, status_validator: None, scope });
     }
 
     /// Removes a validator from the cache.
@@ -205,9 +208,14 @@ impl SchemaRegistry {
         let schema_key = schema_key();
         let schema_name = cache_key.clone();
 
-        let schema_obj = self.store.get(&schema_key, None, &schema_name).await.map_err(|_| {
-            AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
-        })?;
+        let schema_obj =
+            self.store.get(&schema_key, None, &schema_name).await.map_err(|e| match e {
+                AppError::NotFound { .. } => AppError::NotFound {
+                    what: "Schema".to_string(),
+                    identifier: schema_name.clone(),
+                },
+                other => other,
+            })?;
 
         // Parse SchemaData
         let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
@@ -237,12 +245,13 @@ impl SchemaRegistry {
                     reason: e.to_string(),
                 })
                 .map(|v| Arc::new(v) as Arc<dyn SchemaValidator>)?;
+            let scope = Scope::parse(&schema_data.scope).unwrap_or(Scope::Namespaced);
             self.cache.insert(
                 cache_key.clone(),
                 CachedSchema {
                     validator: spec_compiled,
                     status_validator: Some(compiled.clone()),
-                    scope: schema_data.scope,
+                    scope,
                 },
             );
         }
@@ -269,27 +278,32 @@ impl SchemaRegistry {
     /// # Errors
     ///
     /// Returns [`AppError::NotFound`] if no Schema exists in the store for this kind+group+version.
-    pub async fn get_scope(&self, key: &ResourceKey) -> Result<String, AppError> {
+    pub async fn get_scope(&self, key: &ResourceKey) -> Result<Scope, AppError> {
         let cache_key = schema_cache_key(&key.kind, &key.group, &key.version);
 
         // Cache hit
         if let Some(cached) = self.cache.get(&cache_key) {
-            return Ok(cached.scope.clone());
+            return Ok(cached.scope);
         }
 
         // Cache miss: fetch from store
         let schema_key = schema_key();
         let schema_name = cache_key.clone();
 
-        let schema_obj = self.store.get(&schema_key, None, &schema_name).await.map_err(|_| {
-            AppError::NotFound { what: "schema".to_string(), identifier: schema_name.clone() }
-        })?;
+        let schema_obj =
+            self.store.get(&schema_key, None, &schema_name).await.map_err(|e| match e {
+                AppError::NotFound { .. } => AppError::NotFound {
+                    what: "Schema".to_string(),
+                    identifier: schema_name.clone(),
+                },
+                other => other,
+            })?;
 
         // Parse SchemaData to extract scope
         let schema_data: SchemaData = serde_json::from_value(schema_obj.spec.clone())
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
-        let scope = schema_data.scope.clone();
+        let scope = Scope::parse(&schema_data.scope).unwrap_or(Scope::Namespaced);
 
         // Compile and cache the full entry
         let compiled = JsonSchemaValidator::compile(&schema_data.spec_schema)
@@ -314,7 +328,7 @@ impl SchemaRegistry {
 
         self.cache.insert(
             cache_key.clone(),
-            CachedSchema { validator: compiled, status_validator, scope: scope.clone() },
+            CachedSchema { validator: compiled, status_validator, scope },
         );
 
         Ok(scope)
@@ -465,7 +479,7 @@ mod tests {
             CachedSchema {
                 validator: dummy_validator.clone(),
                 status_validator: None,
-                scope: "Namespaced".to_string(),
+                scope: Scope::Namespaced,
             },
         );
 
@@ -558,7 +572,7 @@ mod tests {
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
         assert!(!registry.cache.contains_key("test-schema"));
-        registry.insert("test-schema", validator.clone(), "Namespaced");
+        registry.insert("test-schema", validator.clone(), Scope::Namespaced);
         assert!(registry.cache.contains_key("test-schema"));
     }
 
@@ -570,10 +584,10 @@ mod tests {
         let validator2: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        registry.insert("test-schema", validator1, "Namespaced");
+        registry.insert("test-schema", validator1, Scope::Namespaced);
         assert!(registry.cache.contains_key("test-schema"));
 
-        registry.insert("test-schema", validator2, "Namespaced");
+        registry.insert("test-schema", validator2, Scope::Namespaced);
         // Still present (replaced)
         assert!(registry.cache.contains_key("test-schema"));
     }
@@ -586,7 +600,7 @@ mod tests {
         let validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        registry.insert("test-schema", validator, "Namespaced");
+        registry.insert("test-schema", validator, Scope::Namespaced);
         assert!(registry.cache.contains_key("test-schema"));
 
         registry.evict("test-schema");
@@ -619,7 +633,7 @@ mod tests {
             CachedSchema {
                 validator: dummy_validator.clone(),
                 status_validator: Some(dummy_validator.clone()),
-                scope: "Namespaced".to_string(),
+                scope: Scope::Namespaced,
             },
         );
 
@@ -718,7 +732,7 @@ mod tests {
         let validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        registry.insert("test-schema", validator.clone(), "Namespaced");
+        registry.insert("test-schema", validator.clone(), Scope::Namespaced);
         registry.insert_status("test-schema", validator);
         // Status validator is stored in the same cache entry as the spec validator
         // (under the base key, not under a ".status" suffix)
@@ -733,7 +747,7 @@ mod tests {
         let validator: Arc<dyn SchemaValidator> =
             Arc::new(compile_meta_schema().expect("meta-schema should compile"));
 
-        registry.insert("test-schema", validator.clone(), "Namespaced");
+        registry.insert("test-schema", validator.clone(), Scope::Namespaced);
         registry.insert_status("test-schema", validator);
         assert!(registry.cache.contains_key("test-schema"));
 

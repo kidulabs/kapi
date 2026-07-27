@@ -100,7 +100,7 @@ impl Controller {
         let mut watch_shutdown = self.shutdown_rx.as_ref().map(|rx| rx.resubscribe());
 
         // Spawn watch task.
-        tokio::spawn(async move {
+        let watch_handle = tokio::spawn(async move {
             // Outer reconnect loop.
             loop {
                 // Open the watch stream.
@@ -171,6 +171,13 @@ impl Controller {
                 }
 
                 tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        });
+
+        // Monitor the watch task — log if it panics instead of silently swallowing.
+        tokio::spawn(async move {
+            if let Err(e) = watch_handle.await {
+                tracing::error!(?e, "watch task panicked");
             }
         });
 

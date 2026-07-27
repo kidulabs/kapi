@@ -103,7 +103,7 @@ impl Reconciler for CountingReconciler {
         &self,
         _ctx: ReconcileContext,
     ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
-        self.call_count.fetch_add(1, Ordering::SeqCst);
+        self.call_count.fetch_add(1, Ordering::Relaxed);
         Ok(ReconcileResult::default())
     }
 }
@@ -122,7 +122,7 @@ impl Reconciler for PanickingReconciler {
         &self,
         _ctx: ReconcileContext,
     ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
-        let count = self.call_count.fetch_add(1, Ordering::SeqCst);
+        let count = self.call_count.fetch_add(1, Ordering::Relaxed);
         if count == 0 {
             panic!("intentional panic for testing");
         }
@@ -196,8 +196,8 @@ pub async fn test_manager_starts_multiple_controllers(
     // Wait for both controllers to have been invoked
     let ok = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            let wc = widget_count.load(Ordering::SeqCst);
-            let gc = gadget_count.load(Ordering::SeqCst);
+            let wc = widget_count.load(Ordering::Relaxed);
+            let gc = gadget_count.load(Ordering::Relaxed);
             if wc > 0 && gc > 0 {
                 return;
             }
@@ -208,8 +208,8 @@ pub async fn test_manager_starts_multiple_controllers(
     assert!(
         ok.is_ok(),
         "both controllers were not called within timeout (widget={}, gadget={})",
-        widget_count.load(Ordering::SeqCst),
-        gadget_count.load(Ordering::SeqCst),
+        widget_count.load(Ordering::Relaxed),
+        gadget_count.load(Ordering::Relaxed),
     );
 
     // Shutdown
@@ -267,7 +267,7 @@ pub async fn test_manager_graceful_shutdown(
     // Wait for the reconciler to be invoked.
     let ok = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            if call_count.load(Ordering::SeqCst) > 0 {
+            if call_count.load(Ordering::Relaxed) > 0 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -349,7 +349,7 @@ pub async fn test_manager_panic_isolation(app: &TestApp) -> Result<(), Box<dyn s
     // Wait for the Gadget controller to reconcile.
     let ok = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            if gadget_count.load(Ordering::SeqCst) > 0 {
+            if gadget_count.load(Ordering::Relaxed) > 0 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -359,7 +359,7 @@ pub async fn test_manager_panic_isolation(app: &TestApp) -> Result<(), Box<dyn s
     assert!(
         ok.is_ok(),
         "Gadget controller was not called within timeout (gadget_count={})",
-        gadget_count.load(Ordering::SeqCst),
+        gadget_count.load(Ordering::Relaxed),
     );
 
     // Now create a Widget object — this will trigger the PanickingReconciler.
@@ -375,7 +375,7 @@ pub async fn test_manager_panic_isolation(app: &TestApp) -> Result<(), Box<dyn s
 
     // Verify the Widget controller was called (it should have panicked).
     assert!(
-        widget_count.load(Ordering::SeqCst) > 0,
+        widget_count.load(Ordering::Relaxed) > 0,
         "Widget controller should have been called (and panicked)"
     );
 
@@ -391,7 +391,7 @@ pub async fn test_manager_panic_isolation(app: &TestApp) -> Result<(), Box<dyn s
     // Wait for the Gadget controller to reconcile the second object.
     let ok = tokio::time::timeout(Duration::from_secs(6), async {
         loop {
-            if gadget_count.load(Ordering::SeqCst) >= 2 {
+            if gadget_count.load(Ordering::Relaxed) >= 2 {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -401,7 +401,7 @@ pub async fn test_manager_panic_isolation(app: &TestApp) -> Result<(), Box<dyn s
     assert!(
         ok.is_ok(),
         "Gadget controller did not reconcile after Widget panic (gadget_count={})",
-        gadget_count.load(Ordering::SeqCst),
+        gadget_count.load(Ordering::Relaxed),
     );
 
     // Shutdown

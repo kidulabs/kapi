@@ -32,9 +32,15 @@ pub trait EventPublisher: Send + Sync + 'static {
 #[derive(Debug, Clone)]
 pub struct Watcher {
     /// Filter determining which events this watcher receives
-    pub filter: WatchFilter,
+    pub(crate) filter: WatchFilter,
     /// Channel sender — publish() calls try_send; Full/Closed removes the watcher
-    pub sender: mpsc::Sender<WatchEvent>,
+    pub(crate) sender: mpsc::Sender<WatchEvent>,
+}
+
+impl Watcher {
+    pub(crate) fn new(filter: WatchFilter, sender: mpsc::Sender<WatchEvent>) -> Self {
+        Self { filter, sender }
+    }
 }
 
 /// Per-kind event bus with predicate routing for SSE watch endpoints.
@@ -120,7 +126,7 @@ impl EventBus {
     /// If no watchers exist for this key, a new Vec is created.
     pub fn subscribe(&self, key: &ResourceKey, filter: WatchFilter) -> WatchStream {
         let (tx, rx) = mpsc::channel(self.watcher_capacity);
-        let watcher = Watcher { filter, sender: tx };
+        let watcher = Watcher::new(filter, tx);
         tracing::trace!(
             group = %key.group,
             version = %key.version,

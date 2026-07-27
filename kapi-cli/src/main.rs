@@ -30,6 +30,9 @@ use error::CliError;
 use output::{format_json, format_table, format_table_list, format_watch_event, format_yaml};
 use resolver::SchemaResolver;
 
+/// Maximum stdin input size: 10 MB.
+const MAX_STDIN_SIZE: u64 = 10 * 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // CLI structure
 // ---------------------------------------------------------------------------
@@ -180,6 +183,19 @@ struct ApplyMetadata {
 }
 
 // ---------------------------------------------------------------------------
+// Command context
+// ---------------------------------------------------------------------------
+
+/// Shared context passed to command functions, reducing parameter counts.
+struct CommandContext<'a> {
+    client: &'a KapiClient,
+    resolver: &'a SchemaResolver,
+    output: &'a OutputFormat,
+    namespace_flag: Option<&'a str>,
+    all_namespaces: bool,
+}
+
+// ---------------------------------------------------------------------------
 // Entry point
 // ---------------------------------------------------------------------------
 
@@ -205,18 +221,14 @@ async fn run(cli: Cli) -> Result<(), CliError> {
                 .await
         }
         Commands::Get { kind, name, label_selector, limit } => {
-            cmd_get(
-                &client,
-                &resolver,
-                &kind,
-                name.as_deref(),
-                label_selector.as_deref(),
-                limit,
-                &cli.output,
-                cli.namespace.as_deref(),
-                cli.all_namespaces,
-            )
-            .await
+            let ctx = CommandContext {
+                client: &client,
+                resolver: &resolver,
+                output: &cli.output,
+                namespace_flag: cli.namespace.as_deref(),
+                all_namespaces: cli.all_namespaces,
+            };
+            cmd_get(ctx, &kind, name.as_deref(), label_selector.as_deref(), limit).await
         }
         Commands::Apply { file } => {
             cmd_apply(&client, &resolver, &file, &cli.output, cli.namespace.as_deref()).await
@@ -357,33 +369,29 @@ fn print_object_list(
 // Command:  get
 // ---------------------------------------------------------------------------
 
-#[allow(clippy::too_many_arguments)]
 async fn cmd_get(
-    client: &KapiClient,
-    resolver: &SchemaResolver,
+    ctx: CommandContext<'_>,
     kind: &str,
     name: Option<&str>,
     label_selector: Option<&str>,
     limit: Option<usize>,
-    output: &OutputFormat,
-    namespace_flag: Option<&str>,
-    all_namespaces: bool,
 ) -> Result<(), CliError> {
-    let (key, scope) = resolver.resolve_kind(kind)?;
+    let (key, scope) = ctx.resolver.resolve_kind(kind)?;
 
     // Cluster-scoped kind with -n flag: warn and ignore.
-    if scope != "Namespaced" && namespace_flag.is_some() {
+    if scope != "Namespaced" && ctx.namespace_flag.is_some() {
         eprintln!("Warning: kind '{kind}' is cluster-scoped, ignoring --namespace flag");
     }
 
-    let namespace = resolve_namespace(&scope, namespace_flag, all_namespaces);
+    let namespace = resolve_namespace(&scope, ctx.namespace_flag, ctx.all_namespaces);
 
     if let Some(name) = name {
-        let obj = client
+        let obj = ctx
+            .client
             .get(&key, namespace.as_deref(), name)
             .await
             .map_err(|e| CliError::from_not_found(e, kind, name, namespace.as_deref()))?;
-        print_object(&obj, output, &scope)?;
+        print_object(&obj, ctx.output, &scope)?;
     } else {
         // Parse label selector if provided.
         let ls = if let Some(raw) = label_selector {
@@ -403,8 +411,8 @@ async fn cmd_get(
         };
 
         // Auto-paginate: follow continue_token until exhausted.
-        let all_items = paginate_list(client, &key, namespace.as_deref(), ls, limit).await?;
-        print_object_list(&all_items, output, &scope)?;
+        let all_items = paginate_list(ctx.client, &key, namespace.as_deref(), ls, limit).await?;
+        print_object_list(&all_items, ctx.output, &scope)?;
     }
 
     Ok(())
@@ -471,7 +479,7 @@ async fn cmd_apply(
     let content = if file_path == "-" {
         use std::io::Read;
         let mut buffer = String::new();
-        std::io::stdin().read_to_string(&mut buffer)?;
+        std::io::stdin().take(MAX_STDIN_SIZE).read_to_string(&mut buffer)?;
         buffer
     } else {
         std::fs::read_to_string(file_path)?
@@ -612,6 +620,83 @@ async fn cmd_delete(
 }
 
 // ---------------------------------------------------------------------------
+// Helper functions for cmd_edit
+// ---------------------------------------------------------------------------
+
+/// Creates a temp file with the given content, opens it in the user's editor,
+/// waits for the editor to close, and returns the edited content.
+///
+/// The temp file is created with restrictive permissions (owner-only) and is
+/// cleaned up automatically when this function returns (on both success and
+/// error paths).
+fn edit_in_editor(content: &str) -> Result<String, CliError> {
+    use std::io::Write;
+
+    let mut tmp = tempfile::NamedTempFile::new()?;
+    let tmp_path = tmp.path().to_path_buf();
+
+    tmp.write_all(content.as_bytes())?;
+    tmp.flush()?;
+
+    // Set restrictive permissions: owner read/write only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600))?;
+    }
+
+    // Determine the editor to use.
+    let editor =
+        std::env::var("EDITOR").or_else(|_| std::env::var("VISUAL")).unwrap_or_else(|_| {
+            if cfg!(target_os = "windows") { "notepad".to_string() } else { "vi".to_string() }
+        });
+
+    // Open the editor and wait for it to close.
+    let status = std::process::Command::new(&editor)
+        .arg(&tmp_path)
+        .status()
+        .map_err(|e| CliError::FormatError(format!("failed to launch editor '{editor}': {e}")))?;
+
+    if !status.success() {
+        return Err(CliError::FormatError(format!(
+            "editor '{editor}' exited with status {:?}",
+            status.code()
+        )));
+    }
+
+    // Read the edited content.
+    let content = std::fs::read_to_string(&tmp_path)?;
+    Ok(content)
+    // `tmp` is dropped here → temp file is automatically deleted.
+}
+
+/// Merges fields from an [`ApplyManifest`] into an existing [`StoredObject`].
+///
+/// Preserves system metadata, replaces spec, merges labels and annotations
+/// additively (manifest values override existing), and replaces finalizers.
+fn merge_apply_manifest(existing: &StoredObject, manifest: &ApplyManifest) -> StoredObject {
+    let mut merged = existing.clone();
+
+    // Replace spec entirely.
+    merged.spec = manifest.spec.clone();
+
+    // Merge labels additively (file values override).
+    for (k, v) in &manifest.metadata.labels {
+        merged.metadata.labels.insert(k.clone(), v.clone());
+    }
+
+    // Merge annotations additively (file values override).
+    for (k, v) in &manifest.metadata.annotations {
+        merged.metadata.annotations.insert(k.clone(), v.clone());
+    }
+
+    // Replace finalizers entirely (allows removal).
+    merged.metadata.finalizers = manifest.metadata.finalizers.clone();
+
+    merged
+}
+
+// ---------------------------------------------------------------------------
 // Command:  edit
 // ---------------------------------------------------------------------------
 
@@ -663,52 +748,17 @@ async fn cmd_edit(
     });
     let yaml = serde_yaml::to_string(&doc)?;
 
-    // 5. Write to a temporary file.
-    let mut tmp = tempfile::NamedTempFile::new()?;
-    let tmp_path = tmp.path().to_path_buf();
-    use std::io::Write;
-    tmp.write_all(yaml.as_bytes())?;
-    tmp.flush()?;
-    // Keep the handle alive so the file isn't deleted before the editor reads it.
+    // 5. Open editor with the serialized content.
+    let content = edit_in_editor(&yaml)?;
 
-    // 6. Determine the editor to use.
-    let editor =
-        std::env::var("EDITOR").or_else(|_| std::env::var("VISUAL")).unwrap_or_else(|_| {
-            if cfg!(target_os = "windows") { "notepad".to_string() } else { "vi".to_string() }
-        });
+    // 6. Parse as ApplyManifest.
+    let manifest: ApplyManifest = serde_yaml::from_str(&content)?;
 
-    // 7. Open the editor and wait for it to close.
-    let status = std::process::Command::new(&editor)
-        .arg(&tmp_path)
-        .status()
-        .map_err(|e| CliError::FormatError(format!("failed to launch editor '{editor}': {e}")))?;
-
-    if !status.success() {
-        // Editor exited with an error — clean up temp file.
-        let _ = std::fs::remove_file(&tmp_path);
-        return Err(CliError::FormatError(format!(
-            "editor '{editor}' exited with status {:?}",
-            status.code()
-        )));
-    }
-
-    // 8. Read the edited content.
-    let content = std::fs::read_to_string(&tmp_path)?;
-
-    // 9. Parse as ApplyManifest.
-    let manifest: ApplyManifest = serde_yaml::from_str(&content).map_err(|e| {
-        // Keep temp file for recovery.
-        CliError::FormatError(format!(
-            "invalid edited content: {e}\nFile kept at: {}",
-            tmp_path.display()
-        ))
-    })?;
-
-    // 10. Determine namespace for applying (file value takes priority).
+    // 7. Determine namespace for applying (file value takes priority).
     let ns_from_file = manifest.metadata.namespace.as_deref();
     let apply_namespace = resolve_apply_namespace(&scope, ns_from_file, namespace_flag)?;
 
-    // 11. GET the current object again (to get the latest resourceVersion).
+    // 8. GET the current object again (to get the latest resourceVersion).
     let existing = client
         .get(&key, apply_namespace.as_deref(), &manifest.metadata.name)
         .await
@@ -716,24 +766,12 @@ async fn cmd_edit(
             CliError::from_not_found(e, kind, &manifest.metadata.name, apply_namespace.as_deref())
         })?;
 
-    // 12. Merge edited fields while preserving system metadata.
-    let mut merged = existing.clone();
-    merged.spec = manifest.spec;
-    for (k, v) in &manifest.metadata.labels {
-        merged.metadata.labels.insert(k.clone(), v.clone());
-    }
-    for (k, v) in &manifest.metadata.annotations {
-        merged.metadata.annotations.insert(k.clone(), v.clone());
-    }
-    // Replace finalizers entirely (allows removal).
-    merged.metadata.finalizers = manifest.metadata.finalizers;
+    // 9. Merge edited fields while preserving system metadata.
+    let merged = merge_apply_manifest(&existing, &manifest);
 
-    // 13. PUT the updated object.
+    // 10. PUT the updated object.
     let updated = client.update(apply_namespace.as_deref(), &merged).await?;
     println!("{} '{}' edited", kind, updated.metadata.name);
-
-    // 14. Clean up temp file.
-    let _ = std::fs::remove_file(&tmp_path);
 
     Ok(())
 }
