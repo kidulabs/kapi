@@ -134,6 +134,7 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::{ListOptions, ResourceKey};
     ///
@@ -179,6 +180,7 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::ResourceKey;
     ///
@@ -208,12 +210,19 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::{ObjectMeta, ResourceKey};
     /// use serde_json::json;
     ///
     /// let key = ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() };
-    /// let meta = ObjectMeta::new("my-widget");
+    /// let meta = ObjectMeta {
+    ///     name: "my-widget".into(),
+    ///     namespace: None,
+    ///     labels: Default::default(),
+    ///     annotations: Default::default(),
+    ///     finalizers: Default::default(),
+    /// };
     /// let obj = client.create(&key, None, &meta, &json!({"color": "red"})).await.unwrap();
     /// # }
     /// ```
@@ -241,11 +250,18 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::ObjectMeta;
     /// use serde_json::json;
     ///
-    /// let meta = ObjectMeta::new("Widget.example.io.v1");
+    /// let meta = ObjectMeta {
+    ///     name: "Widget.example.io.v1".into(),
+    ///     namespace: None,
+    ///     labels: Default::default(),
+    ///     annotations: Default::default(),
+    ///     finalizers: Default::default(),
+    /// };
     /// let schema_data = json!({
     ///     "targetGroup": "example.io",
     ///     "targetVersion": "v1",
@@ -284,6 +300,7 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::StoredObject;
     ///
@@ -310,6 +327,7 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::ResourceKey;
     ///
@@ -342,6 +360,7 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::ResourceKey;
     ///
@@ -374,6 +393,7 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::ResourceKey;
     /// use serde_json::json;
@@ -418,6 +438,7 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```no_run
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// use kapi_core::{ResourceKey, WatchFilter};
     /// use futures_util::StreamExt;
@@ -499,6 +520,7 @@ impl KapiClient {
     /// # Examples
     ///
     /// ```
+    /// # use kapi_client::client::KapiClient;
     /// # async fn example(client: &KapiClient) {
     /// let schemas = client.list_schemas().await.unwrap();
     /// for s in &schemas {
