@@ -219,12 +219,15 @@ impl IntoResponse for AppError {
                 format!("namespace '{namespace}' is not empty: contains {object_count} object(s)"),
                 json!({ "namespace": namespace, "objectCount": object_count }),
             ),
-            AppError::Internal(_err) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "Internal",
-                "internal error".to_string(),
-                json!(null),
-            ),
+            AppError::Internal(err) => {
+                tracing::error!(error = %err, "internal error");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal",
+                    "internal error".to_string(),
+                    json!(null),
+                )
+            }
         };
 
         let body = json!({

@@ -47,6 +47,14 @@ impl KapiClient {
     ///
     /// Returns [`ClientError::HttpError`] if the underlying HTTP client cannot
     /// be initialised (e.g. TLS backend failure).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kapi_client::client::KapiClient;
+    ///
+    /// let client = KapiClient::new("http://localhost:8080").unwrap();
+    /// ```
     pub fn new(base_url: &str) -> Result<Self, ClientError> {
         let client = reqwest::Client::builder().build()?;
         Ok(KapiClient { client, base_url: base_url.trim_end_matches('/').to_string() })
@@ -122,6 +130,17 @@ impl KapiClient {
     /// `GET /apis/{group}/{version}/namespaces/{ns}/{kind}` (namespaced)
     /// with optional query parameters `limit`, `continue`, `fieldSelector`,
     /// `labelSelector`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::{ListOptions, ResourceKey};
+    ///
+    /// let key = ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() };
+    /// let items = client.list(&key, None, &ListOptions::default()).await.unwrap();
+    /// # }
+    /// ```
     pub async fn list(
         &self,
         key: &ResourceKey,
@@ -156,6 +175,17 @@ impl KapiClient {
     ///
     /// **HTTP:** `GET /apis/{group}/{version}/{kind}/{name}` (cluster) or
     /// `GET /apis/{group}/{version}/namespaces/{ns}/{kind}/{name}` (namespaced).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::ResourceKey;
+    ///
+    /// let key = ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() };
+    /// let obj = client.get(&key, None, "my-widget").await.unwrap();
+    /// # }
+    /// ```
     pub async fn get(
         &self,
         key: &ResourceKey,
@@ -174,6 +204,19 @@ impl KapiClient {
     ///
     /// **HTTP:** `POST /apis/{group}/{version}/{kind}` (cluster) or
     /// `POST /apis/{group}/{version}/namespaces/{ns}/{kind}` (namespaced).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::{ObjectMeta, ResourceKey};
+    /// use serde_json::json;
+    ///
+    /// let key = ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() };
+    /// let meta = ObjectMeta::new("my-widget");
+    /// let obj = client.create(&key, None, &meta, &json!({"color": "red"})).await.unwrap();
+    /// # }
+    /// ```
     pub async fn create(
         &self,
         key: &ResourceKey,
@@ -194,6 +237,24 @@ impl KapiClient {
     /// This differs from regular object creation which wraps data in a `spec` field.
     ///
     /// **HTTP:** `POST /apis/kapi.io/v1/Schema`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::ObjectMeta;
+    /// use serde_json::json;
+    ///
+    /// let meta = ObjectMeta::new("Widget.example.io.v1");
+    /// let schema_data = json!({
+    ///     "targetGroup": "example.io",
+    ///     "targetVersion": "v1",
+    ///     "targetKind": "Widget",
+    ///     "specSchema": { "type": "object" }
+    /// });
+    /// let obj = client.create_schema(&meta, &schema_data).await.unwrap();
+    /// # }
+    /// ```
     pub async fn create_schema(
         &self,
         meta: &ObjectMeta,
@@ -219,6 +280,18 @@ impl KapiClient {
     ///
     /// **HTTP:** `PUT /apis/{group}/{version}/{kind}/{name}` (cluster) or
     /// `PUT /apis/{group}/{version}/namespaces/{ns}/{kind}/{name}` (namespaced).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::StoredObject;
+    ///
+    /// // Fetch first, modify spec, then update.
+    /// let obj: StoredObject = todo!();
+    /// let updated = client.update(None, &obj).await.unwrap();
+    /// # }
+    /// ```
     pub async fn update(
         &self,
         namespace: Option<&str>,
@@ -233,6 +306,17 @@ impl KapiClient {
     ///
     /// **HTTP:** `DELETE /apis/{group}/{version}/{kind}/{name}` (cluster) or
     /// `DELETE /apis/{group}/{version}/namespaces/{ns}/{kind}/{name}` (namespaced).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::ResourceKey;
+    ///
+    /// let key = ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() };
+    /// let deleted = client.delete(&key, None, "my-widget").await.unwrap();
+    /// # }
+    /// ```
     pub async fn delete(
         &self,
         key: &ResourceKey,
@@ -254,6 +338,17 @@ impl KapiClient {
     ///
     /// **HTTP:** `GET /apis/{group}/{version}/{kind}/{name}/status` (cluster) or
     /// `GET /apis/{group}/{version}/namespaces/{ns}/{kind}/{name}/status` (namespaced).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::ResourceKey;
+    ///
+    /// let key = ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() };
+    /// let status = client.get_status(&key, None, "my-widget").await.unwrap();
+    /// # }
+    /// ```
     pub async fn get_status(
         &self,
         key: &ResourceKey,
@@ -275,6 +370,18 @@ impl KapiClient {
     ///
     /// **HTTP:** `PUT /apis/{group}/{version}/{kind}/{name}/status` (cluster) or
     /// `PUT /apis/{group}/{version}/namespaces/{ns}/{kind}/{name}/status` (namespaced).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::ResourceKey;
+    /// use serde_json::json;
+    ///
+    /// let key = ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() };
+    /// let updated = client.update_status(&key, None, "my-widget", &json!({"phase": "Running"})).await.unwrap();
+    /// # }
+    /// ```
     pub async fn update_status(
         &self,
         key: &ResourceKey,
@@ -307,6 +414,21 @@ impl KapiClient {
     ///
     /// **HTTP:** `GET /apis/{group}/{version}/{kind}?watch=true` (cluster) or
     /// `GET /apis/{group}/{version}/namespaces/{ns}/{kind}?watch=true` (namespaced).
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// # async fn example(client: &KapiClient) {
+    /// use kapi_core::{ResourceKey, WatchFilter};
+    /// use futures_util::StreamExt;
+    ///
+    /// let key = ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() };
+    /// let mut stream = client.watch(&key, None, &WatchFilter::All).await.unwrap();
+    /// while let Some(event) = stream.next().await {
+    ///     println!("{:?}", event);
+    /// }
+    /// # }
+    /// ```
     pub async fn watch(
         &self,
         key: &ResourceKey,
@@ -373,6 +495,17 @@ impl KapiClient {
     /// (group `kapi.io`, version `v1`, cluster-scoped).
     ///
     /// **HTTP:** `GET /apis/kapi.io/v1/Schema`
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # async fn example(client: &KapiClient) {
+    /// let schemas = client.list_schemas().await.unwrap();
+    /// for s in &schemas {
+    ///     println!("Schema: {}", s.metadata.name);
+    /// }
+    /// # }
+    /// ```
     pub async fn list_schemas(&self) -> Result<Vec<StoredObject>, ClientError> {
         let key = ResourceKey {
             group: "kapi.io".to_string(),

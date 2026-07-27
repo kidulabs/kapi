@@ -1259,6 +1259,7 @@ dependencies = [
  "serde",
  "serde_yaml",
  "tempfile",
+ "tracing",
 ]
 
 [[package]]

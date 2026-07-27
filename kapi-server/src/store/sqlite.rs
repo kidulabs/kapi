@@ -1,19 +1,19 @@
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
+use std::collections::HashMap;
+
 use async_trait::async_trait;
-use base64::Engine;
 use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
-use std::collections::HashMap;
-
 use crate::error::AppError;
 use crate::object::types::{
-    ContinueToken, FieldSelector, LabelRequirement, LabelSelector, ListOptions, ListResponse,
-    ObjectMeta, StoredObject, SystemMetadata,
+    FieldSelector, LabelRequirement, LabelSelector, ListOptions, ListResponse, ObjectMeta,
+    StoredObject, SystemMetadata,
 };
+use crate::store::continue_token::{decode_continue_token, encode_continue_token};
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 /// SQLite-backed implementation of `ObjectStore`.
@@ -44,7 +44,7 @@ impl SQLiteStore {
 
     /// Creates the objects table, labels table, and indexes if they don't exist. Idempotent.
     fn init_schema(&self) -> Result<(), AppError> {
-        let conn = self.conn.lock().unwrap();
+        let conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         conn.execute(
             "CREATE TABLE IF NOT EXISTS objects (
                 resource_group     TEXT    NOT NULL,
@@ -104,48 +104,49 @@ impl SQLiteStore {
         Ok(())
     }
 
-    /// Converts raw column values from a query row into a `StoredObject`.
+    /// Converts a rusqlite row into a `StoredObject`.
     /// Labels are set to empty — callers must populate them via `query_labels()`.
     /// Annotations are deserialized from JSON; NULL maps to empty HashMap.
     /// Finalizers are deserialized from JSON array string.
-    #[allow(clippy::too_many_arguments)]
-    fn deserialize_row(
-        group: String,
-        version: String,
-        kind: String,
-        name: String,
-        namespace: Option<String>,
-        spec: String,
-        status: Option<String>,
-        annotations: Option<String>,
-        finalizers: Option<String>,
-        resource_version: i64,
-        generation: i64,
-        created_at: String,
-        updated_at: String,
-        deletion_timestamp: Option<String>,
-    ) -> Result<StoredObject, AppError> {
-        let spec_value: Value =
-            serde_json::from_str(&spec).map_err(|e| AppError::Internal(e.into()))?;
+    fn deserialize_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
+        let group: String = row.get("resource_group")?;
+        let version: String = row.get("api_version")?;
+        let kind: String = row.get("resource_kind")?;
+        let name: String = row.get("name")?;
+        let namespace: Option<String> = row.get("namespace")?;
+        let spec: String = row.get("spec")?;
+        let status: Option<String> = row.get("status")?;
+        let annotations: Option<String> = row.get("annotations")?;
+        let finalizers: Option<String> = row.get("finalizers")?;
+        let resource_version: i64 = row.get("resource_version")?;
+        let generation: i64 = row.get("generation")?;
+        let created_at: String = row.get("created_at")?;
+        let updated_at: String = row.get("updated_at")?;
+        let deletion_timestamp: Option<String> = row.get("deletion_timestamp")?;
+
+        let to_sql_err = |e: Box<dyn std::error::Error + Send + Sync>| {
+            rusqlite::Error::ToSqlConversionFailure(e)
+        };
+
+        let spec_value: Value = serde_json::from_str(&spec).map_err(|e| to_sql_err(e.into()))?;
         let status_value: Option<Value> = status
-            .map(|s| serde_json::from_str(&s).map_err(|e| AppError::Internal(e.into())))
+            .map(|s| serde_json::from_str(&s).map_err(|e| to_sql_err(e.into())))
             .transpose()?;
         let annotations_value: HashMap<String, String> = annotations
-            .map(|a| serde_json::from_str(&a).map_err(|e| AppError::Internal(e.into())))
+            .map(|a| serde_json::from_str(&a).map_err(|e| to_sql_err(e.into())))
             .transpose()?
             .unwrap_or_default();
         let finalizers_value: Vec<String> = match finalizers {
-            Some(f) => serde_json::from_str(&f).map_err(|e| AppError::Internal(e.into()))?,
+            Some(f) => serde_json::from_str(&f).map_err(|e| to_sql_err(e.into()))?,
             None => Vec::new(),
         };
         let created_at =
-            DateTime::parse_from_rfc3339(&created_at).map_err(|e| AppError::Internal(e.into()))?;
+            DateTime::parse_from_rfc3339(&created_at).map_err(|e| to_sql_err(e.into()))?;
         let updated_at =
-            DateTime::parse_from_rfc3339(&updated_at).map_err(|e| AppError::Internal(e.into()))?;
+            DateTime::parse_from_rfc3339(&updated_at).map_err(|e| to_sql_err(e.into()))?;
         let deletion_timestamp_value: Option<DateTime<Utc>> = match deletion_timestamp {
             Some(ts) => {
-                let parsed =
-                    DateTime::parse_from_rfc3339(&ts).map_err(|e| AppError::Internal(e.into()))?;
+                let parsed = DateTime::parse_from_rfc3339(&ts).map_err(|e| to_sql_err(e.into()))?;
                 Some(parsed.with_timezone(&Utc))
             }
             None => None,
@@ -356,7 +357,7 @@ impl SQLiteStore {
         let params_refs: Vec<&dyn rusqlite::types::ToSql> =
             params_vec.iter().map(|b| b.as_ref()).collect();
         let mut obj = stmt
-            .query_row(params_refs.as_slice(), row_to_object)
+            .query_row(params_refs.as_slice(), SQLiteStore::deserialize_row)
             .optional()
             .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -375,7 +376,7 @@ impl SQLiteStore {
 
     /// Persist an object while holding the connection lock.
     /// Replaces the existing object and its labels.
-    fn persist_object_locked(conn: &Connection, object: &StoredObject) -> Result<(), AppError> {
+    fn persist_object_locked(conn: &mut Connection, object: &StoredObject) -> Result<(), AppError> {
         let spec_json =
             serde_json::to_string(&object.spec).map_err(|e| AppError::Internal(e.into()))?;
         let status_json = object
@@ -399,7 +400,7 @@ impl SQLiteStore {
         let deletion_timestamp =
             object.system.deletion_timestamp.as_ref().map(|dt| dt.to_rfc3339());
 
-        let tx = conn.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
+        let tx = conn.transaction().map_err(|e| AppError::Internal(e.into()))?;
 
         tx.execute(
             "INSERT OR REPLACE INTO objects \
@@ -494,39 +495,34 @@ impl SQLiteStore {
     }
 }
 
-/// Maps a rusqlite row to `StoredObject`. Used as the row callback in `query_row` / `query_map`.
-fn row_to_object(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredObject> {
-    let group: String = row.get("resource_group")?;
-    let version: String = row.get("api_version")?;
-    let kind: String = row.get("resource_kind")?;
-    let name: String = row.get("name")?;
-    let namespace: Option<String> = row.get("namespace")?;
-    let spec: String = row.get("spec")?;
-    let status: Option<String> = row.get("status")?;
-    let annotations: Option<String> = row.get("annotations")?;
-    let finalizers: Option<String> = row.get("finalizers")?;
-    let resource_version: i64 = row.get("resource_version")?;
-    let generation: i64 = row.get("generation")?;
-    let created_at: String = row.get("created_at")?;
-    let updated_at: String = row.get("updated_at")?;
-    let deletion_timestamp: Option<String> = row.get("deletion_timestamp")?;
-    SQLiteStore::deserialize_row(
-        group,
-        version,
-        kind,
-        name,
-        namespace,
-        spec,
-        status,
-        annotations,
-        finalizers,
-        resource_version,
-        generation,
-        created_at,
-        updated_at,
-        deletion_timestamp,
-    )
-    .map_err(|e| rusqlite::Error::ToSqlConversionFailure(e.into()))
+/// Populates labels on items from a pre-fetched labels_map.
+///
+/// When `namespace` is `Some`, the map is keyed by item name.
+/// When `namespace` is `None`, the map is keyed by compound key `"ns\x00name"`.
+fn populate_labels(
+    items: &mut [StoredObject],
+    labels_map: &HashMap<String, HashMap<String, String>>,
+    namespace: Option<&str>,
+) {
+    if let Some(_ns) = namespace {
+        // Namespace-scoped: map keyed by name
+        for item in items {
+            if let Some(labels) = labels_map.get(&item.metadata.name) {
+                item.metadata.labels = labels.clone();
+            }
+        }
+    } else {
+        // Cross-namespace: map keyed by compound key "ns\x00name"
+        for item in items {
+            let compound_key = SQLiteStore::compound_label_key(
+                item.metadata.namespace.as_deref(),
+                &item.metadata.name,
+            );
+            if let Some(labels) = labels_map.get(&compound_key) {
+                item.metadata.labels = labels.clone();
+            }
+        }
+    }
 }
 
 /// Builds dynamic SQL WHERE clauses for `SQLiteStore::list()`.
@@ -731,10 +727,10 @@ impl ObjectStore for SQLiteStore {
                 .as_ref()
                 .map(|dt| dt.to_rfc3339());
 
-            let c = conn.lock().unwrap();
+            let mut c = conn.lock().unwrap_or_else(|e| e.into_inner());
 
             // Use immediate transaction for atomicity of object + labels
-            let tx = c.unchecked_transaction().map_err(|e| AppError::Internal(e.into()))?;
+            let tx = c.transaction().map_err(|e| AppError::Internal(e.into()))?;
 
             let result = tx.execute(
                 "INSERT INTO objects (resource_group, api_version, resource_kind, name, namespace, spec, status, annotations, finalizers, resource_version, generation, created_at, updated_at, deletion_timestamp)
@@ -797,7 +793,7 @@ impl ObjectStore for SQLiteStore {
     ) -> Result<StoredObject, AppError> {
         // Acquire exclusive lock on the connection.
         // The lock is held for the entire transaction (read → callback → write).
-        let conn = self.conn.lock().unwrap();
+        let mut conn = self.conn.lock().unwrap_or_else(|e| e.into_inner());
 
         // Read existing object (blocking SQLite call, but we hold the lock)
         let existing = Self::fetch_object_locked(&conn, key, namespace, name)?;
@@ -808,7 +804,7 @@ impl ObjectStore for SQLiteStore {
                 // Store persists the object as-is — no metadata modifications.
                 // The caller (service layer) is responsible for setting all
                 // system metadata before returning Apply.
-                Self::persist_object_locked(&conn, &new_obj)?;
+                Self::persist_object_locked(&mut *conn, &new_obj)?;
                 Ok(new_obj)
             }
             TransactionOp::Delete => {
@@ -841,7 +837,7 @@ impl ObjectStore for SQLiteStore {
         let conn = Arc::clone(&self.conn);
 
         tokio::task::spawn_blocking(move || {
-            let c = conn.lock().unwrap();
+            let c = conn.lock().unwrap_or_else(|e| e.into_inner());
             let ns_sql = namespace.as_deref().unwrap_or("");
             let mut stmt = c
                 .prepare(
@@ -854,7 +850,10 @@ impl ObjectStore for SQLiteStore {
                 .map_err(|e| AppError::Internal(e.into()))?;
 
             let mut obj = stmt
-                .query_row(params![key.group, key.version, key.kind, ns_sql, name], row_to_object)
+                .query_row(
+                    params![key.group, key.version, key.kind, ns_sql, name],
+                    SQLiteStore::deserialize_row,
+                )
                 .optional()
                 .map_err(|e| AppError::Internal(e.into()))?;
 
@@ -902,7 +901,7 @@ impl ObjectStore for SQLiteStore {
             // Fetch one extra to detect if more pages exist
             let query_limit = limit.saturating_add(1);
 
-            let c = conn.lock().unwrap();
+            let c = conn.lock().unwrap_or_else(|e| e.into_inner());
 
             // Build dynamic SQL with filter WHERE clauses using ListQueryBuilder
             let mut builder = ListQueryBuilder::new(&key);
@@ -963,7 +962,7 @@ impl ObjectStore for SQLiteStore {
                 params_vec.iter().map(|b| b.as_ref()).collect();
 
             let rows = stmt
-                .query_map(params_refs.as_slice(), row_to_object)
+                .query_map(params_refs.as_slice(), SQLiteStore::deserialize_row)
                 .map_err(|e| AppError::Internal(e.into()))?;
 
             let items: Vec<StoredObject> =
@@ -984,25 +983,7 @@ impl ObjectStore for SQLiteStore {
                 &names,
             )?;
 
-            if namespace.is_some() {
-                // Namespace-scoped: map keyed by name
-                for item in &mut items {
-                    if let Some(labels) = labels_map.get(&item.metadata.name) {
-                        item.metadata.labels = labels.clone();
-                    }
-                }
-            } else {
-                // Cross-namespace: map keyed by compound key "ns\x00name"
-                for item in &mut items {
-                    let compound_key = SQLiteStore::compound_label_key(
-                        item.metadata.namespace.as_deref(),
-                        &item.metadata.name,
-                    );
-                    if let Some(labels) = labels_map.get(&compound_key) {
-                        item.metadata.labels = labels.clone();
-                    }
-                }
-            }
+            populate_labels(&mut items, &labels_map, namespace.as_deref());
 
             let continue_token = if has_more {
                 items.last().map(|last| {
@@ -1023,7 +1004,7 @@ impl ObjectStore for SQLiteStore {
         let key = key.clone();
         let conn = Arc::clone(&self.conn);
         tokio::task::spawn_blocking(move || {
-            let c = conn.lock().unwrap();
+            let c = conn.lock().unwrap_or_else(|e| e.into_inner());
             let count: i64 = c.query_row(
                 "SELECT EXISTS(SELECT 1 FROM objects WHERE resource_group = ?1 AND api_version = ?2 AND resource_kind = ?3)",
                 params![key.group, key.version, key.kind],
@@ -1034,30 +1015,6 @@ impl ObjectStore for SQLiteStore {
         .await
         .map_err(|e| AppError::Internal(e.into()))?
     }
-}
-
-/// Decodes a base64-encoded continue token back to (namespace, name).
-fn decode_continue_token(token: &ContinueToken) -> Result<(Option<String>, String), AppError> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&token.0)
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
-    let json: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
-    let namespace = json.get("namespace").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let name = json.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!("invalid continue token: missing name"))
-    })?;
-    Ok((namespace, name.to_string()))
-}
-
-/// Encodes (namespace, name) into a base64 continue token.
-fn encode_continue_token(namespace: Option<&str>, name: &str) -> ContinueToken {
-    let json = serde_json::json!({
-        "namespace": namespace,
-        "name": name
-    });
-    let encoded = base64::engine::general_purpose::STANDARD.encode(json.to_string());
-    ContinueToken(encoded)
 }
 
 #[cfg(test)]

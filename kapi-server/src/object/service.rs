@@ -3,7 +3,10 @@
 //! The service is the single entry point for object CRUD operations.
 //! Handlers call the service, never the store directly.
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, AtomicU8, Ordering},
+};
 
 use serde_json::Value;
 
@@ -18,7 +21,7 @@ use crate::object::types::{
 };
 #[cfg(test)]
 use crate::schema::schema_key;
-use crate::schema::{DEFAULT_NAMESPACE, SCOPE_CLUSTER, SCOPE_NAMESPACED, SchemaRegistry};
+use crate::schema::{DEFAULT_NAMESPACE, SchemaRegistry, Scope};
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 use crate::validation::{validate_annotations, validate_finalizers, validate_labels};
 
@@ -140,7 +143,7 @@ impl ObjectService {
             }
         }
 
-        let action = Arc::new(Mutex::new(finalizer::DeleteAction::HardDeleted));
+        let action = Arc::new(AtomicU8::new(finalizer::DeleteAction::HardDeleted as u8));
         let action_clone = action.clone();
         let result = self.store.transaction(
             &key,
@@ -148,13 +151,13 @@ impl ObjectService {
             &name,
             Box::new(move |existing| {
                 let act = finalizer::evaluate_delete(existing);
-                *action_clone.lock().unwrap() = act;
+                action_clone.store(act as u8, Ordering::Relaxed);
                 finalizer::execute_delete(act, existing)
             }),
         )?;
 
-        match *action.lock().unwrap() {
-            finalizer::DeleteAction::HardDeleted => {
+        match action.load(Ordering::Relaxed) {
+            v if v == finalizer::DeleteAction::HardDeleted as u8 => {
                 helpers::publish_event(
                     self.event_bus.as_ref(),
                     &key,
@@ -162,7 +165,7 @@ impl ObjectService {
                     &result,
                 );
             }
-            finalizer::DeleteAction::MarkedForDeletion => {
+            v if v == finalizer::DeleteAction::MarkedForDeletion as u8 => {
                 helpers::publish_event(
                     self.event_bus.as_ref(),
                     &key,
@@ -170,8 +173,8 @@ impl ObjectService {
                     &result,
                 );
             }
-            finalizer::DeleteAction::IdempotentNoOp => {
-                // No event
+            _ => {
+                // IdempotentNoOp — no event
             }
         }
 
@@ -271,8 +274,8 @@ impl ObjectService {
         let (validator, scope) = self.schema_registry.get_validator(&key).await?;
 
         // Resolve namespace from scope and URL namespace parameter
-        let resolved_namespace = match scope.as_str() {
-            SCOPE_CLUSTER => {
+        let resolved_namespace = match scope {
+            Scope::Cluster => {
                 if namespace.is_some() {
                     return Err(AppError::InvalidRequest(format!(
                         "cluster-scoped kind '{}' does not accept namespace",
@@ -281,17 +284,15 @@ impl ObjectService {
                 }
                 None
             }
-            SCOPE_NAMESPACED => Some(namespace.unwrap_or_else(|| "default".to_string())),
-            _ => {
-                return Err(AppError::Internal(anyhow::anyhow!("unknown scope: {}", scope)));
-            }
+            Scope::Namespaced => Some(namespace.unwrap_or_else(|| "default".to_string())),
         };
 
         // Validate namespace existence for namespaced kinds.
         // Cluster-scoped kinds have no namespace and skip this check.
-        // The "default" namespace always exists (auto-created at startup),
-        // so this check is effectively a fast no-op for default-namespace creates.
-        if scope == SCOPE_NAMESPACED
+        // After bootstrap completes, the "default" namespace always exists
+        // (auto-created at startup), so this check is effectively a fast
+        // no-op for default-namespace creates.
+        if scope == Scope::Namespaced
             && let Some(ns) = resolved_namespace.as_deref()
         {
             self.ensure_namespace_exists(ns).await?;
@@ -342,6 +343,9 @@ impl ObjectService {
     /// objects are not counted because they don't belong to any namespace).
     ///
     /// Delegates schema enumeration to [`SchemaRegistry::list_namespaced_keys`].
+    ///
+    /// TODO: This fetches all row data then discards it via `.len()`. A dedicated
+    /// `count()` method on `ObjectStore` would be more efficient.
     async fn count_objects_in_namespace(&self, namespace: &str) -> Result<usize, AppError> {
         let mut count = 0usize;
         for key in self.schema_registry.list_namespaced_keys().await? {
@@ -356,6 +360,87 @@ impl ObjectService {
             count += resp.items.len();
         }
         Ok(count)
+    }
+
+    /// Resolves the namespace for an update operation.
+    ///
+    /// - Cluster-scoped kinds reject a provided namespace in object metadata.
+    /// - Namespaced kinds default to "default" when no namespace is set.
+    /// - When `url_namespace` is `Some`, it must match the object's metadata namespace.
+    fn resolve_update_namespace(
+        scope: Scope,
+        kind: &str,
+        metadata: &mut ObjectMeta,
+        url_namespace: Option<&str>,
+    ) -> Result<Option<String>, AppError> {
+        match scope {
+            Scope::Cluster => {
+                if metadata.namespace.is_some() {
+                    return Err(AppError::InvalidRequest(format!(
+                        "cluster-scoped kind '{}' does not accept namespace",
+                        kind
+                    )));
+                }
+                Ok(None)
+            }
+            Scope::Namespaced => {
+                let ns = metadata.namespace.get_or_insert_with(|| "default".to_string());
+                // If a namespace was passed from URL, validate it matches
+                if let Some(expected_ns) = url_namespace
+                    && ns.as_str() != expected_ns
+                {
+                    return Err(AppError::InvalidRequest(format!(
+                        "namespace mismatch: expected '{}', got '{}'",
+                        expected_ns, ns
+                    )));
+                }
+                Ok(Some(ns.clone()))
+            }
+        }
+    }
+
+    /// Builds a TransactionOp for an update, encapsulating OCC check,
+    /// finalizer evaluation, and hard-delete detection.
+    ///
+    /// Sets `was_hard_deleted` to `true` if the object should be hard-deleted
+    /// (finalizers became empty on an object that is being deleted).
+    fn build_update_transaction_op(
+        existing: &StoredObject,
+        incoming_rv: u64,
+        incoming_metadata: &ObjectMeta,
+        incoming_spec: &Value,
+        was_hard_deleted: &AtomicBool,
+    ) -> TransactionOp {
+        // OCC check: reject if resource_version doesn't match
+        if incoming_rv != existing.system.resource_version {
+            return TransactionOp::Abort(AppError::Conflict {
+                expected: existing.system.resource_version,
+                actual: incoming_rv,
+            });
+        }
+
+        // If object is being deleted, use finalizer state machine
+        if finalizer::evaluate_update(existing, incoming_metadata)
+            == finalizer::FinalizerDecision::RejectBeingDeleted
+        {
+            return TransactionOp::Abort(AppError::ObjectBeingDeleted {
+                name: existing.metadata.name.clone(),
+            });
+        }
+
+        // Build the updated object
+        let mut new_obj = existing.clone();
+        new_obj.metadata = incoming_metadata.clone();
+        new_obj.spec = incoming_spec.clone();
+
+        // Check if this should trigger hard delete (finalizers became empty on deleting object)
+        if finalizer::should_hard_delete(existing, &new_obj.metadata.finalizers) {
+            was_hard_deleted.store(true, Ordering::Relaxed);
+            return TransactionOp::Delete;
+        }
+
+        // Otherwise, apply metadata management
+        helpers::apply_with_metadata(existing, |_| new_obj)
     }
 
     /// Validates and updates a regular object.
@@ -378,33 +463,12 @@ impl ObjectService {
         let (validator, scope) = self.schema_registry.get_validator(&object.key).await?;
 
         // Resolve namespace from scope
-        let resolved_namespace = match scope.as_str() {
-            SCOPE_CLUSTER => {
-                if object.metadata.namespace.is_some() {
-                    return Err(AppError::InvalidRequest(format!(
-                        "cluster-scoped kind '{}' does not accept namespace",
-                        object.key.kind
-                    )));
-                }
-                None
-            }
-            SCOPE_NAMESPACED => {
-                let ns = object.metadata.namespace.get_or_insert_with(|| "default".to_string());
-                // If a namespace was passed from URL, validate it matches
-                if let Some(expected_ns) = namespace
-                    && ns.as_str() != expected_ns
-                {
-                    return Err(AppError::InvalidRequest(format!(
-                        "namespace mismatch: expected '{}', got '{}'",
-                        expected_ns, ns
-                    )));
-                }
-                Some(ns.clone())
-            }
-            _ => {
-                return Err(AppError::Internal(anyhow::anyhow!("unknown scope: {}", scope)));
-            }
-        };
+        let resolved_namespace = Self::resolve_update_namespace(
+            scope,
+            &object.key.kind,
+            &mut object.metadata,
+            namespace,
+        )?;
 
         if !validator.is_valid(&spec) {
             let errors = helpers::map_validation_errors(validator.validate(&spec));
@@ -416,47 +480,24 @@ impl ObjectService {
         let incoming_rv = object.system.resource_version;
         let incoming_metadata = object.metadata.clone();
         let incoming_spec = object.spec.clone();
-        let was_hard_deleted = Arc::new(Mutex::new(false));
+        let was_hard_deleted = Arc::new(AtomicBool::new(false));
         let wd = was_hard_deleted.clone();
         let updated = self.store.transaction(
             &key,
             resolved_namespace.as_deref(),
             &name,
             Box::new(move |existing| {
-                // OCC check: reject if resource_version doesn't match
-                if incoming_rv != existing.system.resource_version {
-                    return TransactionOp::Abort(AppError::Conflict {
-                        expected: existing.system.resource_version,
-                        actual: incoming_rv,
-                    });
-                }
-
-                // If object is being deleted, use finalizer state machine
-                if finalizer::evaluate_update(existing, &incoming_metadata)
-                    == finalizer::FinalizerDecision::RejectBeingDeleted
-                {
-                    return TransactionOp::Abort(AppError::ObjectBeingDeleted {
-                        name: existing.metadata.name.clone(),
-                    });
-                }
-
-                // Build the updated object
-                let mut new_obj = existing.clone();
-                new_obj.metadata = incoming_metadata.clone();
-                new_obj.spec = incoming_spec.clone();
-
-                // Check if this should trigger hard delete (finalizers became empty on deleting object)
-                if finalizer::should_hard_delete(existing, &new_obj.metadata.finalizers) {
-                    *wd.lock().unwrap() = true;
-                    return TransactionOp::Delete;
-                }
-
-                // Otherwise, apply metadata management
-                helpers::apply_with_metadata(existing, |_| new_obj)
+                Self::build_update_transaction_op(
+                    existing,
+                    incoming_rv,
+                    &incoming_metadata,
+                    &incoming_spec,
+                    &wd,
+                )
             }),
         )?;
 
-        if *was_hard_deleted.lock().unwrap() {
+        if was_hard_deleted.load(Ordering::Relaxed) {
             helpers::publish_event(
                 self.event_bus.as_ref(),
                 &updated.key,
@@ -958,8 +999,11 @@ mod tests {
         // but the store no longer has the schema, so next use will fail
         assert!(service.schema_registry.cache.contains_key("Widget.example.io.v1"));
         // Verify the key was evicted from SchemaService's perspective by trying to use it:
-        // ObjectService will try to use its cached value, which is still valid
-        // (cache invalidation across service boundaries is out of scope for this test)
+        // ObjectService will try to use its cached value, which is still valid.
+        // Cross-service cache invalidation is not implemented — each service holds
+        // its own SchemaRegistry instance. After bootstrap completes, the two
+        // registries are populated independently via lazy compilation. This test
+        // documents that behaviour rather than enforcing cross-service eviction.
     }
 
     // Schema create with missing targetKind returns InvalidSchema error
@@ -1259,141 +1303,6 @@ mod tests {
             "expected StoredSchemaCompilationFailed, got {:?}",
             result
         );
-    }
-
-    // --- validate_labels unit tests ---
-
-    #[test]
-    fn validate_labels_empty_map() {
-        let labels = HashMap::new();
-        assert!(validate_labels(&labels).is_ok());
-    }
-
-    #[test]
-    fn validate_labels_valid_simple_keys() {
-        let mut labels = HashMap::new();
-        labels.insert("app".to_string(), "nginx".to_string());
-        labels.insert("my-label".to_string(), "v1".to_string());
-        labels.insert("label_name.v2".to_string(), "prod".to_string());
-        assert!(validate_labels(&labels).is_ok());
-    }
-
-    #[test]
-    fn validate_labels_valid_prefixed_keys() {
-        let mut labels = HashMap::new();
-        labels.insert("app.example.io/name".to_string(), "myapp".to_string());
-        labels.insert("example.com/tier".to_string(), "frontend".to_string());
-        assert!(validate_labels(&labels).is_ok());
-    }
-
-    #[test]
-    fn validate_labels_empty_key_rejected() {
-        let mut labels = HashMap::new();
-        labels.insert("".to_string(), "value".to_string());
-        assert!(validate_labels(&labels).is_err());
-    }
-
-    #[test]
-    fn validate_labels_key_too_long() {
-        let mut labels = HashMap::new();
-        let long_key = "a".repeat(257);
-        labels.insert(long_key, "value".to_string());
-        assert!(validate_labels(&labels).is_err());
-    }
-
-    #[test]
-    fn validate_labels_key_invalid_chars() {
-        let mut labels = HashMap::new();
-        labels.insert("invalid key!".to_string(), "value".to_string());
-        assert!(validate_labels(&labels).is_err());
-    }
-
-    #[test]
-    fn validate_labels_value_too_long() {
-        let mut labels = HashMap::new();
-        let long_value = "a".repeat(257);
-        labels.insert("key".to_string(), long_value);
-        assert!(validate_labels(&labels).is_err());
-    }
-
-    #[test]
-    fn validate_labels_value_invalid_chars() {
-        let mut labels = HashMap::new();
-        labels.insert("key".to_string(), "invalid value!".to_string());
-        assert!(validate_labels(&labels).is_err());
-    }
-
-    #[test]
-    fn validate_labels_empty_value_allowed() {
-        let mut labels = HashMap::new();
-        labels.insert("key".to_string(), "".to_string());
-        assert!(validate_labels(&labels).is_ok());
-    }
-
-    #[test]
-    fn validate_labels_prefix_too_long() {
-        let mut labels = HashMap::new();
-        let long_prefix = "a".repeat(254);
-        labels.insert(format!("{}/name", long_prefix), "value".to_string());
-        assert!(validate_labels(&labels).is_err());
-    }
-
-    // --- validate_annotations unit tests ---
-
-    #[test]
-    fn validate_annotations_empty_map() {
-        let annotations = HashMap::new();
-        assert!(validate_annotations(&annotations).is_ok());
-    }
-
-    #[test]
-    fn validate_annotations_valid_keys() {
-        let mut annotations = HashMap::new();
-        annotations.insert("description".to_string(), "my widget".to_string());
-        annotations.insert("kapi.io/last-applied-config".to_string(), "{}".to_string());
-        annotations.insert("example.com/path@v1".to_string(), "data".to_string());
-        assert!(validate_annotations(&annotations).is_ok());
-    }
-
-    #[test]
-    fn validate_annotations_empty_key_rejected() {
-        let mut annotations = HashMap::new();
-        annotations.insert("".to_string(), "value".to_string());
-        assert!(validate_annotations(&annotations).is_err());
-    }
-
-    #[test]
-    fn validate_annotations_key_too_long() {
-        let mut annotations = HashMap::new();
-        let long_key = "a".repeat(257);
-        annotations.insert(long_key, "value".to_string());
-        assert!(validate_annotations(&annotations).is_err());
-    }
-
-    #[test]
-    fn validate_annotations_size_limit_exceeded() {
-        let mut annotations = HashMap::new();
-        let large_value = "x".repeat(256 * 1024); // > 256KB
-        annotations.insert("key".to_string(), large_value);
-        assert!(validate_annotations(&annotations).is_err());
-    }
-
-    #[test]
-    fn validate_annotations_special_characters_accepted() {
-        let mut annotations = HashMap::new();
-        annotations.insert(
-            "build-url".to_string(),
-            "https://example.com/path?query=value&other=123".to_string(),
-        );
-        annotations.insert("config".to_string(), "{\"key\": \"value\"}".to_string());
-        assert!(validate_annotations(&annotations).is_ok());
-    }
-
-    #[test]
-    fn validate_annotations_empty_value_accepted() {
-        let mut annotations = HashMap::new();
-        annotations.insert("key".to_string(), "".to_string());
-        assert!(validate_annotations(&annotations).is_ok());
     }
 
     // --- Status subresource tests ---

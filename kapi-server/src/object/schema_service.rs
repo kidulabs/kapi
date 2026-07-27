@@ -69,7 +69,9 @@ impl SchemaService {
                 status: None,
             })
             .await?;
-        self.schema_registry.insert(&meta.name, compiled, &schema_data.scope);
+        let scope = crate::schema::Scope::parse(&schema_data.scope)
+            .unwrap_or(crate::schema::Scope::Namespaced);
+        self.schema_registry.insert(&meta.name, compiled, scope);
         if let Some(status_validator) = status_compiled {
             self.schema_registry.insert_status(&meta.name, status_validator);
         }
@@ -117,7 +119,9 @@ impl SchemaService {
                 })
             }),
         )?;
-        self.schema_registry.insert(&updated.metadata.name, compiled, &schema_data.scope);
+        let scope = crate::schema::Scope::parse(&schema_data.scope)
+            .unwrap_or(crate::schema::Scope::Namespaced);
+        self.schema_registry.insert(&updated.metadata.name, compiled, scope);
         if let Some(status_validator) = status_compiled {
             self.schema_registry.insert_status(&updated.metadata.name, status_validator);
         }
@@ -161,7 +165,7 @@ impl SchemaService {
     pub async fn get_validator(
         &self,
         key: &ResourceKey,
-    ) -> Result<(Arc<dyn SchemaValidator>, String), AppError> {
+    ) -> Result<(Arc<dyn SchemaValidator>, crate::schema::Scope), AppError> {
         self.schema_registry.get_validator(key).await
     }
 
@@ -383,8 +387,9 @@ mod tests {
         };
         let (_, scope) = schema_service.get_validator(&widget_key).await.unwrap();
         assert_eq!(
-            scope, "Namespaced",
-            "Cached schema scope should be 'Namespaced', got '{}'",
+            scope,
+            crate::schema::Scope::Namespaced,
+            "Cached schema scope should be 'Namespaced', got '{:?}'",
             scope
         );
 
@@ -449,7 +454,8 @@ mod tests {
         };
         let (_, scope) = schema_service.get_validator(&default_key).await.unwrap();
         assert_eq!(
-            scope, "Namespaced",
+            scope,
+            crate::schema::Scope::Namespaced,
             "Default scope should be 'Namespaced' when not specified in request"
         );
     }

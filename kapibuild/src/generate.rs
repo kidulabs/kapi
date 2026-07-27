@@ -9,6 +9,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 use regex::Regex;
+use tracing::info;
 
 use crate::find_project_root;
 
@@ -30,7 +31,7 @@ pub fn cmd_api_generate() -> Result<()> {
     // Generate types/ wrapper files.
     for res in &resources {
         let type_path = generate_type_file(&project_root, res)?;
-        println!("Generated wrapper: {}", type_path.display());
+        info!("Generated wrapper: {}", type_path.display());
     }
 
     // Generate mod.rs files so the module tree compiles.
@@ -61,7 +62,7 @@ pub fn cmd_api_generate() -> Result<()> {
         anyhow::bail!("schema helper failed (exit code: {:?})", output.status.code());
     }
 
-    println!("Schema generation complete.");
+    info!("Schema generation complete.");
     Ok(())
 }
 

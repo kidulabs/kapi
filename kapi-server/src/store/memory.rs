@@ -1,9 +1,9 @@
 use async_trait::async_trait;
-use base64::Engine;
 use dashmap::DashMap;
 
 use crate::error::AppError;
-use crate::object::types::{ContinueToken, FieldSelector, ListOptions, ListResponse, StoredObject};
+use crate::object::types::{FieldSelector, ListOptions, ListResponse, StoredObject};
+use crate::store::continue_token::{decode_continue_token, encode_continue_token};
 use crate::store::{ObjectStore, ResourceKey, TransactionOp};
 
 pub struct InMemoryStore {
@@ -73,20 +73,24 @@ impl ObjectStore for InMemoryStore {
                     None => true, // No namespace filter → include all
                 }
             })
+            .filter(|r| {
+                if let Some(ref selector) = opts.field_selector {
+                    match selector {
+                        FieldSelector::NameEquals(name) => r.value().metadata.name == *name,
+                    }
+                } else {
+                    true
+                }
+            })
+            .filter(|r| {
+                if let Some(ref selector) = opts.label_selector {
+                    selector.matches(&r.value().metadata.labels)
+                } else {
+                    true
+                }
+            })
             .map(|r| r.clone())
             .collect();
-
-        // Apply field_selector filter
-        if let Some(ref selector) = opts.field_selector {
-            items.retain(|obj| match selector {
-                FieldSelector::NameEquals(name) => obj.metadata.name == *name,
-            });
-        }
-
-        // Apply label_selector filter
-        if let Some(ref selector) = opts.label_selector {
-            items.retain(|obj| selector.matches(&obj.metadata.labels));
-        }
 
         // Sort after filtering, before pagination
         if namespace.is_some() {
@@ -177,28 +181,6 @@ impl ObjectStore for InMemoryStore {
     async fn exists(&self, key: &ResourceKey) -> Result<bool, AppError> {
         Ok(self.objects.iter().any(|r| r.key().0 == *key))
     }
-}
-
-fn decode_continue_token(token: &ContinueToken) -> Result<(Option<String>, String), AppError> {
-    let bytes = base64::engine::general_purpose::STANDARD
-        .decode(&token.0)
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
-    let json: serde_json::Value = serde_json::from_slice(&bytes)
-        .map_err(|_| AppError::Internal(anyhow::anyhow!("invalid continue token")))?;
-    let namespace = json.get("namespace").and_then(|v| v.as_str()).map(|s| s.to_string());
-    let name = json.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
-        AppError::Internal(anyhow::anyhow!("invalid continue token: missing name"))
-    })?;
-    Ok((namespace, name.to_string()))
-}
-
-fn encode_continue_token(namespace: Option<&str>, name: &str) -> ContinueToken {
-    let json = serde_json::json!({
-        "namespace": namespace,
-        "name": name
-    });
-    let encoded = base64::engine::general_purpose::STANDARD.encode(json.to_string());
-    ContinueToken(encoded)
 }
 
 #[cfg(test)]

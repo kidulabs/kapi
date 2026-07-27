@@ -149,12 +149,15 @@ pub fn validate_annotations(annotations: &HashMap<String, String>) -> Result<(),
         validate_annotation_key(key)?;
     }
 
-    // Check total serialized size
-    let serialized_size =
-        serde_json::to_string(annotations).map_err(|e| AppError::Internal(e.into()))?.len();
-    if serialized_size > 256 * 1024 {
+    // Check total serialized size (approximate, avoids full serialization pass)
+    let total_size: usize = annotations
+        .iter()
+        .map(|(k, v)| k.len() + v.len() + 4) // +4 for JSON overhead (quotes, colon, comma)
+        .sum::<usize>()
+        + 2; // +2 for opening/closing braces
+    if total_size > 256 * 1024 {
         return Err(AppError::InvalidAnnotation(format!(
-            "total annotations size {serialized_size} bytes exceeds maximum of 256KB"
+            "total annotations size {total_size} bytes exceeds maximum of 256KB"
         )));
     }
 
