@@ -29,9 +29,33 @@ The command SHALL:
 ### Requirement: Schema generation via helper binary
 The system SHALL use a helper binary approach for schema generation — generating a small Rust program that imports user types, calls schema_data(), and writes JSON files.
 
+The helper binary SHALL NOT depend on `kapi-core`. The helper binary's dependencies SHALL be limited to `schemars`, `serde`, and `serde_json`.
+
 #### Scenario: Helper binary execution
 - **WHEN** user runs `kapibuild api generate`
 - **THEN** system generates a helper binary, compiles it, runs it to produce schema files, then cleans up
+
+#### Scenario: Helper binary independence
+- **WHEN** kapibuild is installed from crates.io (no workspace context)
+- **THEN** system generates a helper binary that compiles and runs without requiring `kapi-core` to be discoverable on the filesystem
+
+### Requirement: Helper binary generated code
+The helper binary's generated wrapper struct SHALL contain only:
+- `spec` field (required)
+- `status` field (optional, if resource has status)
+- `schema_data()` method that returns the SchemaData JSON payload
+
+The helper binary's generated wrapper struct SHALL NOT contain:
+- `metadata: ObjectMeta` field
+- `key()` method returning `ResourceKey`
+
+The helper binary's generated code SHALL NOT import `kapi_core` types.
+
+#### Scenario: Generated wrapper structure
+- **WHEN** system generates the helper binary's wrapper code for a resource
+- **THEN** wrapper struct contains only spec and optional status fields
+- **THEN** wrapper struct has schema_data() method
+- **THEN** wrapper struct does not have metadata field or key() method
 
 ### Requirement: SchemaData format
 The system SHALL generate schema files containing the full SchemaData payload:

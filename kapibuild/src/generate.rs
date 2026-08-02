@@ -20,7 +20,6 @@ use crate::find_project_root;
 /// Execute the `kapibuild api generate` command.
 pub fn cmd_api_generate() -> Result<()> {
     let project_root = find_project_root()?;
-    let ws_root = workspace_root();
 
     let kapifile = read_kapifile(&project_root)?;
     let resources = scan_api_dir(&project_root, &kapifile)?;
@@ -38,7 +37,7 @@ pub fn cmd_api_generate() -> Result<()> {
     generate_mod_files(&project_root, &resources)?;
 
     // Create and run helper project for schema generation.
-    let tmp = create_helper_project(&resources, &project_root, &ws_root)
+    let tmp = create_helper_project(&resources, &project_root)
         .context("failed to create helper project")?;
 
     let manifest_path = tmp.path().join("Cargo.toml");
@@ -95,20 +94,6 @@ fn read_kapifile(project_root: &Path) -> Result<Kapifile> {
     let content = std::fs::read_to_string(&path).context("failed to read Kapifile")?;
     let kapifile: Kapifile = serde_yaml::from_str(&content).context("failed to parse Kapifile")?;
     Ok(kapifile)
-}
-
-// ---------------------------------------------------------------------------
-// Workspace root detection
-// ---------------------------------------------------------------------------
-
-/// Locate the kapi workspace root by walking up from kapibuild's own
-/// `Cargo.toml` until we find a manifest whose `[workspace]` members
-/// include `"kapi-core"`.
-fn workspace_root() -> PathBuf {
-    // At compile-time CARGO_MANIFEST_DIR is set to kapibuild's directory.
-    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    // The workspace root is the parent of kapibuild/.
-    manifest_dir.parent().expect("workspace root (parent of kapibuild)").to_path_buf()
 }
 
 // ---------------------------------------------------------------------------
@@ -560,14 +545,13 @@ fn generate_mod_files(project_root: &Path, resources: &[ResourceInfo]) -> Result
 fn create_helper_project(
     resources: &[ResourceInfo],
     project_root: &Path,
-    workspace_root: &Path,
 ) -> Result<tempfile::TempDir> {
     let tmp = tempfile::tempdir().context("failed to create temp directory")?;
     let tmp_src = tmp.path().join("src");
     std::fs::create_dir(&tmp_src).context("failed to create src/ in helper project")?;
 
     // Write Cargo.toml
-    write_helper_cargo_toml(tmp.path(), workspace_root)?;
+    write_helper_cargo_toml(tmp.path())?;
 
     // Write main.rs
     write_helper_main_rs(tmp.path(), resources, project_root)?;
@@ -575,23 +559,17 @@ fn create_helper_project(
     Ok(tmp)
 }
 
-fn write_helper_cargo_toml(helper_root: &Path, workspace_root: &Path) -> Result<()> {
-    let kapi_core_path = workspace_root.join("kapi-core");
-
-    let content = format!(
-        r#"[package]
+fn write_helper_cargo_toml(helper_root: &Path) -> Result<()> {
+    let content = r#"[package]
 name = "kapi-schema-helper"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-kapi-core = {{ path = "{}" }}
 schemars = "1"
-serde = {{ version = "1", features = ["derive"] }}
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-"#,
-        kapi_core_path.display(),
-    );
+"#;
 
     std::fs::write(helper_root.join("Cargo.toml"), content)
         .context("failed to write helper Cargo.toml")
@@ -623,7 +601,6 @@ fn write_helper_main_rs(
              #[allow(dead_code)]\n\
              mod {mod_name} {{\n\
              \x20   use super::{api_mod_name}::*;\n\
-             \x20   use kapi_core::{{ObjectMeta, ResourceKey}};\n\
              \x20   use serde::{{Deserialize, Serialize}};\n\
              {wrapper_code}\n\
              }}\n",
@@ -683,7 +660,6 @@ fn generate_wrapper_code(res: &ResourceInfo) -> String {
         "#[derive(Debug, Clone, Serialize, Deserialize)]\n\
          #[serde(rename_all = \"camelCase\")]\n\
          pub struct {kind} {{\n\
-         \x20   pub metadata: ObjectMeta,\n\
          \x20   pub spec: {spec},\n",
     ));
 
@@ -699,13 +675,6 @@ fn generate_wrapper_code(res: &ResourceInfo) -> String {
     // impl block.
     code.push_str(&format!(
         "impl {kind} {{\n\
-         \x20   pub fn key() -> ResourceKey {{\n\
-         \x20       ResourceKey {{\n\
-         \x20           group: {group:?}.to_string(),\n\
-         \x20           version: {version:?}.to_string(),\n\
-         \x20           kind: {kind:?}.to_string(),\n\
-         \x20       }}\n\
-         \x20   }}\n\n\
          \x20   pub fn schema_data() -> serde_json::Value {{\n\
          \x20       let spec_schema = schemars::schema_for!({spec});\n\
          \x20       let mut map = serde_json::Map::new();\n\
@@ -839,10 +808,8 @@ pub struct WidgetSpec {
         let code = generate_wrapper_code(&res);
 
         assert!(code.contains("pub struct Widget {"), "wrapper struct should be generated");
-        assert!(code.contains("pub metadata: ObjectMeta"), "metadata field");
         assert!(code.contains("pub spec: WidgetSpec"), "spec field");
         assert!(!code.contains("pub status:"), "no status field");
-        assert!(code.contains("pub fn key()"), "key method");
         assert!(code.contains("pub fn schema_data()"), "schema_data method");
         assert!(code.contains("\"Namespaced\""), "scope in schema_data");
     }
@@ -868,5 +835,19 @@ pub struct WidgetSpec {
             code.contains("let status_schema = schemars::schema_for!(GadgetStatus);"),
             "status schema"
         );
+    }
+
+    #[test]
+    fn test_helper_cargo_toml_no_kapi_core() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        write_helper_cargo_toml(tmp.path()).expect("write cargo toml");
+
+        let content =
+            std::fs::read_to_string(tmp.path().join("Cargo.toml")).expect("read cargo toml");
+
+        assert!(!content.contains("kapi-core"), "helper Cargo.toml must not depend on kapi-core");
+        assert!(content.contains("schemars"), "helper Cargo.toml must depend on schemars");
+        assert!(content.contains("serde"), "helper Cargo.toml must depend on serde");
+        assert!(content.contains("serde_json"), "helper Cargo.toml must depend on serde_json");
     }
 }
