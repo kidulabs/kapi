@@ -1143,7 +1143,7 @@ dependencies = [
 
 [[package]]
 name = "kapi-cli"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "chrono",
@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "kapi-client"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "eventsource-stream",
@@ -1176,7 +1176,7 @@ dependencies = [
 
 [[package]]
 name = "kapi-controller"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1190,7 +1190,7 @@ dependencies = [
 
 [[package]]
 name = "kapi-core"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "chrono",
  "serde",
@@ -1200,7 +1200,7 @@ dependencies = [
 
 [[package]]
 name = "kapi-server"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1252,7 +1252,7 @@ dependencies = [
 
 [[package]]
 name = "kapibuild"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "clap",
