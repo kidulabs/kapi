@@ -804,7 +804,7 @@ impl ObjectStore for SQLiteStore {
                 // Store persists the object as-is — no metadata modifications.
                 // The caller (service layer) is responsible for setting all
                 // system metadata before returning Apply.
-                Self::persist_object_locked(&mut *conn, &new_obj)?;
+                Self::persist_object_locked(&mut conn, &new_obj)?;
                 Ok(new_obj)
             }
             TransactionOp::Delete => {

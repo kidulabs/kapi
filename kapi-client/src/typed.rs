@@ -14,13 +14,62 @@ use crate::error::ClientError;
 /// Errors that can occur when using the typed client.
 #[derive(Debug, thiserror::Error)]
 pub enum TypedError {
-    /// Error from the underlying HTTP client.
+    /// Resource or namespace not found (HTTP 404 with code "NotFound").
+    #[error("not found: {what} {identifier}")]
+    NotFound { what: String, identifier: String },
+
+    /// Resource already exists (HTTP 409 with code "AlreadyExists").
+    #[error("already exists: {kind} {name}")]
+    AlreadyExists { kind: String, name: String },
+
+    /// Resource version conflict (HTTP 409 with code "Conflict").
+    #[error("conflict: expected version {expected}, got {actual}")]
+    Conflict { expected: u64, actual: u64 },
+
+    /// Operation forbidden (HTTP 403 with code "ProtectedNamespace").
+    #[error("forbidden: {message}")]
+    Forbidden { message: String },
+
+    /// Other API errors not covered by first-class variants.
     #[error(transparent)]
-    Client(#[from] ClientError),
+    ApiError(ClientError),
 
     /// JSON serialization or deserialization failure.
     #[error("serialization error: {0}")]
     Serialization(#[from] serde_json::Error),
+}
+
+impl From<ClientError> for TypedError {
+    fn from(err: ClientError) -> Self {
+        // Map (status, code) pairs to first-class variants.
+        // These code strings must match the server's AppError::IntoResponse implementation.
+        match &err {
+            ClientError::ApiError { status: 404, code, details, .. } if code == "NotFound" => {
+                TypedError::NotFound {
+                    what: details["what"].as_str().unwrap_or("unknown").to_string(),
+                    identifier: details["identifier"].as_str().unwrap_or("unknown").to_string(),
+                }
+            }
+            ClientError::ApiError { status: 409, code, details, .. } if code == "AlreadyExists" => {
+                TypedError::AlreadyExists {
+                    kind: details["kind"].as_str().unwrap_or("unknown").to_string(),
+                    name: details["name"].as_str().unwrap_or("unknown").to_string(),
+                }
+            }
+            ClientError::ApiError { status: 409, code, details, .. } if code == "Conflict" => {
+                TypedError::Conflict {
+                    expected: details["expected"].as_u64().unwrap_or(0),
+                    actual: details["actual"].as_u64().unwrap_or(0),
+                }
+            }
+            ClientError::ApiError { status: 403, code, message, .. }
+                if code == "ProtectedNamespace" =>
+            {
+                TypedError::Forbidden { message: message.clone() }
+            }
+            _ => TypedError::ApiError(err),
+        }
+    }
 }
 
 /// Trait for types that can be used with [`TypedClient`].
@@ -103,7 +152,8 @@ impl<T: TypedResource> TypedClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`TypedError::Client`] for HTTP/API errors.
+    /// Returns [`TypedError::NotFound`], [`TypedError::AlreadyExists`], [`TypedError::Conflict`], or [`TypedError::Forbidden`] for specific API errors.
+    /// Returns [`TypedError::ApiError`] for other HTTP/API errors.
     /// Returns [`TypedError::Serialization`] if spec serialization fails.
     pub async fn create(&self, namespace: Option<&str>, resource: &T) -> Result<T, TypedError> {
         let key = T::key();
@@ -135,7 +185,8 @@ impl<T: TypedResource> TypedClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`TypedError::Client`] for HTTP/API errors.
+    /// Returns [`TypedError::NotFound`], [`TypedError::AlreadyExists`], [`TypedError::Conflict`], or [`TypedError::Forbidden`] for specific API errors.
+    /// Returns [`TypedError::ApiError`] for other HTTP/API errors.
     /// Returns [`TypedError::Serialization`] if serialization fails.
     pub async fn update(&self, namespace: Option<&str>, resource: &T) -> Result<T, TypedError> {
         let stored = Self::typed_to_stored(resource)?;
@@ -149,7 +200,8 @@ impl<T: TypedResource> TypedClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`TypedError::Client`] for HTTP/API errors.
+    /// Returns [`TypedError::NotFound`], [`TypedError::AlreadyExists`], [`TypedError::Conflict`], or [`TypedError::Forbidden`] for specific API errors.
+    /// Returns [`TypedError::ApiError`] for other HTTP/API errors.
     /// Returns [`TypedError::Serialization`] if deserialization fails.
     pub async fn delete(&self, namespace: Option<&str>, name: &str) -> Result<T, TypedError> {
         let key = T::key();
@@ -164,7 +216,8 @@ impl<T: TypedResource> TypedClient<T> {
     ///
     /// # Errors
     ///
-    /// Returns [`TypedError::Client`] for HTTP/API errors.
+    /// Returns [`TypedError::NotFound`], [`TypedError::AlreadyExists`], [`TypedError::Conflict`], or [`TypedError::Forbidden`] for specific API errors.
+    /// Returns [`TypedError::ApiError`] for other HTTP/API errors.
     /// Returns [`TypedError::Serialization`] if any item fails to deserialize.
     pub async fn list(
         &self,
@@ -457,12 +510,14 @@ mod tests {
             status: 404,
             code: "NotFound".to_string(),
             message: "resource not found".to_string(),
+            details: serde_json::json!({ "what": "resource", "identifier": "test" }),
         };
         let typed_err: TypedError = client_err.into();
-        assert!(matches!(typed_err, TypedError::Client(_)));
+        assert!(matches!(typed_err, TypedError::NotFound { .. }));
         let msg = format!("{}", typed_err);
-        assert!(msg.contains("404"));
-        assert!(msg.contains("NotFound"));
+        assert!(msg.contains("not found"));
+        assert!(msg.contains("resource"));
+        assert!(msg.contains("test"));
     }
 
     #[test]

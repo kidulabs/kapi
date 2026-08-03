@@ -355,6 +355,18 @@ async fn main() {
         run_test!("typed_client_delete", typed_client::test_typed_client_delete);
         run_test!("typed_client_list", typed_client::test_typed_client_list);
         run_test!("typed_client_with_status", typed_client::test_typed_client_with_status);
+        run_test!("typed_error_not_found", typed_client::test_typed_error_not_found);
+        run_test!("typed_error_already_exists", typed_client::test_typed_error_already_exists);
+        run_test!("typed_error_conflict", typed_client::test_typed_error_conflict);
+        run_test!("typed_error_forbidden", typed_client::test_typed_error_forbidden);
+        run_test!(
+            "typed_error_api_error_fallback",
+            typed_client::test_typed_error_api_error_fallback
+        );
+        run_test!(
+            "typed_error_defensive_defaults",
+            typed_client::test_typed_error_defensive_defaults
+        );
 
         println!();
 

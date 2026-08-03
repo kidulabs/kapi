@@ -73,3 +73,10 @@ The client SHALL provide a `list_schemas()` method that queries the Schema endpo
 #### Scenario: List schemas
 - **WHEN** user calls `client.list_schemas()`
 - **THEN** client sends GET request to `/apis/kapi.io/v1/Schema` and returns `Vec<StoredObject>`
+
+### Requirement: ApiError includes structured details
+The client SHALL preserve the `details` field from structured error responses in the `ClientError::ApiError` variant. When the server returns a non-success status with a JSON error body containing a `details` field, the client SHALL include that `details` value as a `serde_json::Value` in the `ApiError` variant.
+
+#### Scenario: ApiError preserves details field
+- **WHEN** the server returns a structured error response with a `details` field
+- **THEN** the `ClientError::ApiError` variant SHALL include the `details` field as a `serde_json::Value`, preserving the server's structured error context for downstream consumers

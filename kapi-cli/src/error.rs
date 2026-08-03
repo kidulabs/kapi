@@ -85,7 +85,7 @@ impl CliError {
 impl From<ClientError> for CliError {
     fn from(err: ClientError) -> Self {
         match &err {
-            ClientError::ApiError { status: 409, code, message } => {
+            ClientError::ApiError { status: 409, code, message, .. } => {
                 // Distinguish between different types of conflicts
                 let conflict_msg = match code.as_str() {
                     "ObjectBeingDeleted" => {

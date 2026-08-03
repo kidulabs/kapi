@@ -120,6 +120,10 @@ The system SHALL implement `axum::response::IntoResponse` for `AppError` so that
 - **WHEN** `AppError::Internal` is returned from a handler
 - **THEN** the response SHALL be HTTP 500 with JSON body `{ "error": "internal error", "code": "Internal", "details": null }`
 
+#### Scenario: Client preserves structured details from error responses
+- **WHEN** the kapi-client receives a structured error response with a `details` field
+- **THEN** the client SHALL preserve the `details` value in `ClientError::ApiError` so that the typed client can extract structured fields (e.g., `what`, `identifier`, `kind`, `name`, `expected`, `actual`) for first-class error variants
+
 ### Requirement: InvalidSchema error for broken schema registrations
 The system SHALL produce `InvalidSchema` errors when a schema registration fails meta-schema validation or when the nested `jsonSchema` fails compilation.
 

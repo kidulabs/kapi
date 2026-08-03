@@ -9,7 +9,13 @@ pub enum ClientError {
 
     /// The server returned a non-success status code with a structured error body.
     #[error("API error: {status} - {code}: {message}")]
-    ApiError { status: u16, code: String, message: String },
+    ApiError {
+        status: u16,
+        code: String,
+        message: String,
+        /// Preserves the server's structured error context from the `details` field in error responses.
+        details: serde_json::Value,
+    },
 
     /// JSON serialization or deserialization failure.
     #[error("Serialization error: {0}")]

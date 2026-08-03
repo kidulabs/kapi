@@ -108,7 +108,8 @@ impl KapiClient {
         let code = body.get("code").and_then(Value::as_str).unwrap_or("Unknown").to_string();
         let message =
             body.get("error").and_then(Value::as_str).unwrap_or("Unknown error").to_string();
-        Err(ClientError::ApiError { status, code, message })
+        let details = body.get("details").cloned().unwrap_or(Value::Null);
+        Err(ClientError::ApiError { status, code, message, details })
     }
 
     /// Deserialises a successful response into the target type `T`.
@@ -480,7 +481,8 @@ impl KapiClient {
             let code = body.get("code").and_then(Value::as_str).unwrap_or("Unknown").to_string();
             let message =
                 body.get("error").and_then(Value::as_str).unwrap_or("Unknown error").to_string();
-            return Err(ClientError::ApiError { status, code, message });
+            let details = body.get("details").cloned().unwrap_or(Value::Null);
+            return Err(ClientError::ApiError { status, code, message, details });
         }
 
         let event_stream = response.bytes_stream().eventsource();
@@ -780,7 +782,8 @@ mod tests {
         let status: u16 = 409;
         let code = body["code"].as_str().unwrap().to_string();
         let message = body["error"].as_str().unwrap().to_string();
-        let err = ClientError::ApiError { status, code, message };
+        let details = body["details"].clone();
+        let err = ClientError::ApiError { status, code, message, details };
         let msg = format!("{err}");
         assert!(msg.contains("409"));
         assert!(msg.contains("Conflict"));
@@ -794,6 +797,7 @@ mod tests {
             status,
             code: "Unknown".to_string(),
             message: "internal error".to_string(),
+            details: Value::Null,
         };
         let msg = format!("{err}");
         assert!(msg.contains("500"));
