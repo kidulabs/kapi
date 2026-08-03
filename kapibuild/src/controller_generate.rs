@@ -232,7 +232,7 @@ pub(crate) fn generate_controller_content(
     // Imports.
     out.push_str(
         "use async_trait::async_trait;\n\
-         use kapi_client::typed::TypedClient;\n\
+         use kapi_client::typed::{TypedClient, TypedResource};\n\
          use kapi_controller::finalizer;\n\
          use kapi_controller::reconciler::{ReconcileContext, ReconcileResult, Reconciler};\n\n",
     );
@@ -260,21 +260,20 @@ pub(crate) fn generate_controller_content(
          \x20   ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {{\n\
          \x20       let typed_client = TypedClient::<{kind}>::new(ctx.client.clone());\n\n\
          \x20       // Fetch the object using the typed client.\n\
-         \x20       let _{kind_lower} = typed_client\n\
+         \x20       let {kind_lower} = typed_client\n\
          \x20           .get(ctx.request.namespace.as_deref(), &ctx.request.name)\n\
          \x20           .await?;\n\n\
          \x20       // Handle deletion with finalizer pattern.\n\
-         \x20       let obj = ctx.client\n\
-         \x20           .get(&ctx.request.key, ctx.request.namespace.as_deref(), &ctx.request.name)\n\
-         \x20           .await?;\n\n\
-         \x20       if finalizer::is_deleting(&obj) {{\n\
+         \x20       if {kind_lower}.is_deleting() {{\n\
          \x20           // TODO: Add cleanup logic here.\n\n\
-         \x20           // Remove finalizer to allow deletion.\n\
-         \x20           finalizer::remove_finalizer(&ctx.client, &obj, FINALIZER_NAME).await?;\n\
+         \x20           // Remove finalizer only after successful cleanup.\n\
+         \x20           let stored = {kind_lower}.to_stored_object()?;\n\
+         \x20           finalizer::remove_finalizer(&ctx.client, &stored, FINALIZER_NAME).await?;\n\
          \x20           return Ok(ReconcileResult::default());\n\
          \x20       }}\n\n\
          \x20       // Ensure finalizer is present.\n\
-         \x20       finalizer::ensure_finalizer(&ctx.client, &obj, FINALIZER_NAME).await?;\n\n\
+         \x20       let stored = {kind_lower}.to_stored_object()?;\n\
+         \x20       finalizer::ensure_finalizer(&ctx.client, &stored, FINALIZER_NAME).await?;\n\n\
          \x20       // TODO: Add your reconciliation logic here.\n\
          \x20       // Use `{kind_lower}.spec()` to read the desired state.\n\n"
     ));
@@ -442,11 +441,14 @@ mod tests {
         assert!(code.contains("FINALIZER_NAME"));
         assert!(code.contains("controller.kapi.io/widget-cleanup"));
         assert!(code.contains("TypedClient::<Widget>::new"));
-        assert!(code.contains("finalizer::is_deleting"));
+        assert!(code.contains(".is_deleting()"));
+        assert!(code.contains(".to_stored_object()"));
         assert!(code.contains("finalizer::ensure_finalizer"));
         assert!(code.contains("finalizer::remove_finalizer"));
         assert!(code.contains("update_status"));
         assert!(code.contains("crate::types::example_io::v1::widget::Widget"));
+        // No redundant raw fetch — only typed_client.get() is used.
+        assert!(!code.contains("ctx.client.get("));
     }
 
     #[test]
@@ -461,7 +463,7 @@ mod tests {
     fn test_generate_controller_content_has_imports() {
         let code = generate_controller_content("Widget", "example.io", "v1", true);
         assert!(code.contains("use async_trait::async_trait;"));
-        assert!(code.contains("use kapi_client::typed::TypedClient;"));
+        assert!(code.contains("use kapi_client::typed::{TypedClient, TypedResource};"));
         assert!(code.contains("use kapi_controller::finalizer;"));
         assert!(code.contains(
             "use kapi_controller::reconciler::{ReconcileContext, ReconcileResult, Reconciler};"

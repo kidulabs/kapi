@@ -106,6 +106,35 @@ pub trait TypedResource: Sized + Send + Sync + 'static {
 
     /// Returns a reference to the resource's status, if present.
     fn status(&self) -> Option<&Self::Status>;
+
+    /// Returns `true` if the resource has been marked for deletion
+    /// (i.e., `system.deletion_timestamp` is set).
+    fn is_deleting(&self) -> bool {
+        self.system().deletion_timestamp.is_some()
+    }
+
+    /// Returns `true` if the resource's metadata contains the given finalizer.
+    fn has_finalizer(&self, finalizer: &str) -> bool {
+        self.metadata().finalizers.iter().any(|f| f == finalizer)
+    }
+
+    /// Converts this typed resource into a [`StoredObject`] by cloning key,
+    /// metadata, and system metadata fields and serializing spec/status to JSON.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TypedError::Serialization`] if spec or status serialization fails.
+    fn to_stored_object(&self) -> Result<StoredObject, TypedError> {
+        let key = Self::key();
+        let metadata = self.metadata().clone();
+        let system = self.system().clone();
+        let spec = serde_json::to_value(self.spec())?;
+        let status = match self.status() {
+            Some(s) => Some(serde_json::to_value(s)?),
+            None => None,
+        };
+        Ok(StoredObject { key, metadata, system, spec, status })
+    }
 }
 
 /// A type-safe client for CRUD operations on kapi resources.
@@ -250,20 +279,14 @@ impl<T: TypedResource> TypedClient<T> {
 
     /// Converts a typed resource into a [`StoredObject`].
     ///
+    /// Delegates to [`TypedResource::to_stored_object`].
+    ///
     /// # Errors
     ///
     /// Returns [`TypedError::Serialization`] if the spec or status fields
     /// cannot be serialized to JSON.
     fn typed_to_stored(resource: &T) -> Result<StoredObject, TypedError> {
-        let key = T::key();
-        let metadata = resource.metadata().clone();
-        let system = resource.system().clone();
-        let spec = serde_json::to_value(resource.spec())?;
-        let status = match resource.status() {
-            Some(s) => Some(serde_json::to_value(s)?),
-            None => None,
-        };
-        Ok(StoredObject { key, metadata, system, spec, status })
+        resource.to_stored_object()
     }
 }
 
@@ -527,5 +550,110 @@ mod tests {
         assert!(matches!(typed_err, TypedError::Serialization(_)));
         let msg = format!("{}", typed_err);
         assert!(msg.contains("serialization error"));
+    }
+
+    // --- Lifecycle helper tests ---
+
+    #[test]
+    fn is_deleting_returns_true_when_deletion_timestamp_set() {
+        let mut system = SystemMetadata::initial();
+        system.deletion_timestamp = Some(chrono::Utc::now());
+        let resource = TestResource {
+            metadata: test_metadata("deleting-1"),
+            system,
+            spec: TestSpec { color: "red".to_string(), size: 1 },
+            status: None,
+        };
+        assert!(resource.is_deleting());
+    }
+
+    #[test]
+    fn is_deleting_returns_false_when_no_deletion_timestamp() {
+        let resource = TestResource {
+            metadata: test_metadata("not-deleting"),
+            system: SystemMetadata::initial(),
+            spec: TestSpec { color: "blue".to_string(), size: 2 },
+            status: None,
+        };
+        assert!(!resource.is_deleting());
+    }
+
+    #[test]
+    fn has_finalizer_returns_true_when_present() {
+        let mut metadata = test_metadata("fin-1");
+        metadata.finalizers =
+            vec!["controller.kapi.io/cleanup".to_string(), "controller.kapi.io/other".to_string()];
+        let resource = TestResource {
+            metadata,
+            system: SystemMetadata::initial(),
+            spec: TestSpec { color: "green".to_string(), size: 3 },
+            status: None,
+        };
+        assert!(resource.has_finalizer("controller.kapi.io/cleanup"));
+        assert!(resource.has_finalizer("controller.kapi.io/other"));
+    }
+
+    #[test]
+    fn has_finalizer_returns_false_when_absent() {
+        let mut metadata = test_metadata("fin-2");
+        metadata.finalizers = vec!["controller.kapi.io/other".to_string()];
+        let resource = TestResource {
+            metadata,
+            system: SystemMetadata::initial(),
+            spec: TestSpec { color: "yellow".to_string(), size: 4 },
+            status: None,
+        };
+        assert!(!resource.has_finalizer("controller.kapi.io/cleanup"));
+    }
+
+    #[test]
+    fn has_finalizer_returns_false_when_empty() {
+        let resource = TestResource {
+            metadata: test_metadata("fin-3"),
+            system: SystemMetadata::initial(),
+            spec: TestSpec { color: "purple".to_string(), size: 5 },
+            status: None,
+        };
+        assert!(!resource.has_finalizer("controller.kapi.io/cleanup"));
+    }
+
+    // --- TypedResource::to_stored_object tests ---
+
+    #[test]
+    fn to_stored_object_preserves_all_fields() {
+        let resource = TestResource {
+            metadata: test_metadata("convert-1"),
+            system: SystemMetadata::initial(),
+            spec: TestSpec { color: "orange".to_string(), size: 42 },
+            status: Some(TestStatus { ready: true, count: 7 }),
+        };
+
+        let stored = resource.to_stored_object().unwrap();
+
+        assert_eq!(stored.key, TestResource::key());
+        assert_eq!(stored.metadata.name, "convert-1");
+        assert_eq!(stored.metadata.namespace, Some("default".to_string()));
+        assert_eq!(stored.system.resource_version, 1);
+        assert_eq!(stored.spec["color"], "orange");
+        assert_eq!(stored.spec["size"], 42);
+        assert!(stored.status.is_some());
+        assert_eq!(stored.status.as_ref().unwrap()["ready"], true);
+        assert_eq!(stored.status.as_ref().unwrap()["count"], 7);
+    }
+
+    #[test]
+    fn to_stored_object_without_status() {
+        let resource = TestResource {
+            metadata: test_metadata("convert-2"),
+            system: SystemMetadata::initial(),
+            spec: TestSpec { color: "cyan".to_string(), size: 99 },
+            status: None,
+        };
+
+        let stored = resource.to_stored_object().unwrap();
+
+        assert_eq!(stored.key, TestResource::key());
+        assert_eq!(stored.spec["color"], "cyan");
+        assert!(stored.status.is_none());
     }
 }

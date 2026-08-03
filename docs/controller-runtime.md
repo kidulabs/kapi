@@ -118,17 +118,35 @@ Backoff sequence: 1 s, 2 s, 4 s, 8 s, …, capped at 5 min.
 
 ### Finalizer Helpers
 
-Three standalone functions in [`kapi_controller::finalizer`] help manage the
-finalizer lifecycle:
+The controller SDK provides two layers of finalizer support:
 
-| Function             | Description                                              |
-|----------------------|----------------------------------------------------------|
-| `is_deleting(obj)`   | Returns `true` when `deletion_timestamp` is set.         |
+**Typed lifecycle inspection** (on `TypedResource` trait):
+
+| Method | Description |
+|--------|-------------|
+| `resource.is_deleting()` | Returns `true` when `system.deletion_timestamp` is set. |
+| `resource.has_finalizer(name)` | Returns `true` when the named finalizer is present. |
+| `resource.to_stored_object()` | Converts the typed resource to `StoredObject` for raw APIs. |
+
+These methods let typed controllers inspect deletion state and finalizer membership without a second API fetch. The `to_stored_object()` method is needed because the raw finalizer mutation helpers (below) still operate on `StoredObject`.
+
+**Raw finalizer mutation** (in `kapi_controller::finalizer`):
+
+| Function | Description |
+|----------|-------------|
+| `is_deleting(obj)` | Returns `true` when `deletion_timestamp` is set (standalone function). |
 | `ensure_finalizer(client, obj, finalizer)` | Adds `finalizer` to the object (CAS retry on 409). |
-| `remove_finalizer(client, obj, finalizer)` | Removes `finalizer` from the object (CAS retry).  |
+| `remove_finalizer(client, obj, finalizer)` | Removes `finalizer` from the object (CAS retry). |
 
-These functions use **optimistic concurrency** (CAS). On a `409 Conflict` they
-re-fetch the object and retry (up to 5 attempts).
+These functions use **optimistic concurrency** (CAS). On a `409 Conflict` they re-fetch the object and retry (up to 5 attempts).
+
+**When to use each:**
+
+- Use `resource.is_deleting()` and `resource.has_finalizer()` for **inspecting** lifecycle state in typed controllers.
+- Use `ensure_finalizer()` and `remove_finalizer()` for **mutating** finalizers (they handle optimistic-concurrency retries).
+- Call `resource.to_stored_object()` to convert a typed resource when you need to pass it to the raw finalizer mutation helpers.
+
+This separation keeps the typed API simple (no network calls or retry loops) while preserving the robust optimistic-concurrency behavior of the raw helpers.
 
 ### Manager
 
@@ -271,16 +289,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 This controller watches a `Widget` kind, adds a finalizer on creation, performs
 cleanup when the object is marked for deletion, and removes the finalizer to
-allow hard-deletion.
+allow hard-deletion. It uses the typed lifecycle helpers to avoid a second API
+fetch.
 
 ```rust
 use std::sync::Arc;
 use std::time::Duration;
 
 use kapi_client::client::KapiClient;
+use kapi_client::typed::{TypedClient, TypedResource};
 use kapi_controller::reconciler::{Reconciler, ReconcileContext, ReconcileResult};
 use kapi_controller::controller::Controller;
-use kapi_controller::finalizer::{is_deleting, ensure_finalizer, remove_finalizer};
+use kapi_controller::finalizer::{ensure_finalizer, remove_finalizer};
 use kapi_core::{ObjectMeta, ResourceKey};
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -299,28 +319,31 @@ impl Reconciler for WidgetCleanupReconciler {
         &self,
         ctx: ReconcileContext,
     ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
-        // Fetch the current state of the object.
-        let obj = ctx
-            .client
-            .get(&ctx.request.key, ctx.request.namespace.as_deref(), &ctx.request.name)
+        // Fetch the typed resource (one API call).
+        let typed_client = TypedClient::<Widget>::new(ctx.client.clone());
+        let widget = typed_client
+            .get(ctx.request.namespace.as_deref(), &ctx.request.name)
             .await?;
 
         // ── Case 1: Object is being deleted ───────────────────────
-        if is_deleting(&obj) {
+        // Use typed lifecycle helper instead of raw is_deleting(&obj).
+        if widget.is_deleting() {
             // Perform external cleanup (e.g. release cloud resources).
             tracing::info!(
-                name = %obj.metadata.name,
+                name = %widget.metadata().name,
                 "performing finalizer cleanup for widget",
             );
 
             // Simulate cleanup work.
             tokio::time::sleep(Duration::from_secs(1)).await;
 
+            // Convert to StoredObject for raw finalizer mutation.
+            let stored = widget.to_stored_object()?;
             // Remove our finalizer so the object can be hard-deleted.
-            remove_finalizer(&ctx.client, &obj, FINALIZER_NAME).await?;
+            remove_finalizer(&ctx.client, &stored, FINALIZER_NAME).await?;
 
             tracing::info!(
-                name = %obj.metadata.name,
+                name = %widget.metadata().name,
                 "cleanup complete, finalizer removed",
             );
 
@@ -328,10 +351,12 @@ impl Reconciler for WidgetCleanupReconciler {
         }
 
         // ── Case 2: Object is alive — ensure finalizer is set ────
-        ensure_finalizer(&ctx.client, &obj, FINALIZER_NAME).await?;
+        // Convert to StoredObject for raw finalizer mutation.
+        let stored = widget.to_stored_object()?;
+        ensure_finalizer(&ctx.client, &stored, FINALIZER_NAME).await?;
 
         tracing::info!(
-            name = %obj.metadata.name,
+            name = %widget.metadata().name,
             "finalizer ensured on widget",
         );
 
