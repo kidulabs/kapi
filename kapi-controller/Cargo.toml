@@ -1,6 +1,6 @@
 [package]
 name = "kapi-controller"
-version = "0.3.1"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,8 +12,8 @@ categories = ["asynchronous", "web-programming"]
 readme = "README.md"
 
 [dependencies]
-kapi-client = { path = "../kapi-client", version = "0.3.1" }
-kapi-core = { path = "../kapi-core", version = "0.3.1" }
+kapi-client = { path = "../kapi-client", version = "0.4.0" }
+kapi-core = { path = "../kapi-core", version = "0.4.0" }
 async-trait = "0.1"
 tokio = { version = "1", features = ["sync", "time", "macros", "rt", "signal"] }
 tracing = "0.1"

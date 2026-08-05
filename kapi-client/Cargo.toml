@@ -1,6 +1,6 @@
 [package]
 name = "kapi-client"
-version = "0.3.1"
+version = "0.4.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -12,7 +12,7 @@ categories = ["web-programming::http-client", "network-programming"]
 readme = "README.md"
 
 [dependencies]
-kapi-core = { path = "../kapi-core", version = "0.3.1" }
+kapi-core = { path = "../kapi-core", version = "0.4.0" }
 reqwest = { version = "0.12", features = ["json", "stream"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
