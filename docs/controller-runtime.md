@@ -40,7 +40,7 @@ use kapi_core::{ResourceKey, ObjectMeta, StoredObject, WatchFilter};
 use kapi_client::client::KapiClient;
 use kapi_controller::reconciler::{Reconciler, ReconcileContext, ReconcileResult};
 use kapi_controller::controller::Controller;
-use kapi_controller::finalizer::{is_deleting, ensure_finalizer, remove_finalizer};
+use kapi_controller::finalizer::{is_deleting, ensure_finalizer, remove_finalizer, typed};
 ```
 
 ---
@@ -128,25 +128,36 @@ The controller SDK provides two layers of finalizer support:
 | `resource.has_finalizer(name)` | Returns `true` when the named finalizer is present. |
 | `resource.to_stored_object()` | Converts the typed resource to `StoredObject` for raw APIs. |
 
-These methods let typed controllers inspect deletion state and finalizer membership without a second API fetch. The `to_stored_object()` method is needed because the raw finalizer mutation helpers (below) still operate on `StoredObject`.
+These methods let typed controllers inspect deletion state and finalizer membership without a second API fetch.
 
-**Raw finalizer mutation** (in `kapi_controller::finalizer`):
+**Finalizer mutation helpers** (in `kapi_controller::finalizer`):
 
 | Function | Description |
 |----------|-------------|
 | `is_deleting(obj)` | Returns `true` when `deletion_timestamp` is set (standalone function). |
-| `ensure_finalizer(client, obj, finalizer)` | Adds `finalizer` to the object (CAS retry on 409). |
-| `remove_finalizer(client, obj, finalizer)` | Removes `finalizer` from the object (CAS retry). |
+| `ensure_finalizer(client, obj, finalizer)` | Adds `finalizer` to the object (CAS retry on 409). Raw variant takes `&StoredObject`. |
+| `remove_finalizer(client, obj, finalizer)` | Removes `finalizer` from the object (CAS retry). Raw variant takes `&StoredObject`. |
+| `typed::ensure_finalizer(client, obj, finalizer)` | Typed variant of `ensure_finalizer` — takes `&T where T: TypedResource`. |
+| `typed::remove_finalizer(client, obj, finalizer)` | Typed variant of `remove_finalizer` — takes `&T where T: TypedResource`. |
 
-These functions use **optimistic concurrency** (CAS). On a `409 Conflict` they re-fetch the object and retry (up to 5 attempts).
+All of these functions use **optimistic concurrency** (CAS). On a `409 Conflict`
+they re-fetch the object and retry (up to 5 attempts).
+
+The typed helpers live in a `typed` submodule because Rust does not allow
+same-name overloads. Each accepts any `&T where T: TypedResource`, calls
+`obj.to_stored_object()` once internally, and delegates to the raw
+`&StoredObject` helper — so typed controllers never need to convert the
+resource themselves. Note that the CAS re-fetch after a `409 Conflict`
+operates on a `StoredObject`, never `T`; the passed-in `&T` is never updated
+in place.
 
 **When to use each:**
 
 - Use `resource.is_deleting()` and `resource.has_finalizer()` for **inspecting** lifecycle state in typed controllers.
-- Use `ensure_finalizer()` and `remove_finalizer()` for **mutating** finalizers (they handle optimistic-concurrency retries).
-- Call `resource.to_stored_object()` to convert a typed resource when you need to pass it to the raw finalizer mutation helpers.
+- **Typed controllers**: use `finalizer::typed::ensure_finalizer(&ctx.client, resource, FINALIZER_NAME)` and `finalizer::typed::remove_finalizer(&ctx.client, resource, FINALIZER_NAME)` directly for **mutating** finalizers — no `to_stored_object()` call needed.
+- **Raw clients**: continue using `finalizer::ensure_finalizer(&ctx.client, &stored, FINALIZER_NAME)` and `finalizer::remove_finalizer(&ctx.client, &stored, FINALIZER_NAME)` with a `&StoredObject`.
 
-This separation keeps the typed API simple (no network calls or retry loops) while preserving the robust optimistic-concurrency behavior of the raw helpers.
+This separation keeps the typed API simple while preserving the robust optimistic-concurrency behavior of the raw helpers.
 
 ### Manager
 
@@ -289,8 +300,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 This controller watches a `Widget` kind, adds a finalizer on creation, performs
 cleanup when the object is marked for deletion, and removes the finalizer to
-allow hard-deletion. It uses the typed lifecycle helpers to avoid a second API
-fetch.
+allow hard-deletion. It uses the typed lifecycle helpers for inspection and the
+typed finalizer mutation helpers (`finalizer::typed`) to avoid a second API
+fetch and any manual `to_stored_object()` conversion.
 
 ```rust
 use std::sync::Arc;
@@ -300,7 +312,7 @@ use kapi_client::client::KapiClient;
 use kapi_client::typed::{TypedClient, TypedResource};
 use kapi_controller::reconciler::{Reconciler, ReconcileContext, ReconcileResult};
 use kapi_controller::controller::Controller;
-use kapi_controller::finalizer::{ensure_finalizer, remove_finalizer};
+use kapi_controller::finalizer;
 use kapi_core::{ObjectMeta, ResourceKey};
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -337,10 +349,10 @@ impl Reconciler for WidgetCleanupReconciler {
             // Simulate cleanup work.
             tokio::time::sleep(Duration::from_secs(1)).await;
 
-            // Convert to StoredObject for raw finalizer mutation.
-            let stored = widget.to_stored_object()?;
             // Remove our finalizer so the object can be hard-deleted.
-            remove_finalizer(&ctx.client, &stored, FINALIZER_NAME).await?;
+            // The typed helper converts to StoredObject internally and
+            // delegates to the raw finalizer::remove_finalizer.
+            finalizer::typed::remove_finalizer(&ctx.client, &widget, FINALIZER_NAME).await?;
 
             tracing::info!(
                 name = %widget.metadata().name,
@@ -351,9 +363,7 @@ impl Reconciler for WidgetCleanupReconciler {
         }
 
         // ── Case 2: Object is alive — ensure finalizer is set ────
-        // Convert to StoredObject for raw finalizer mutation.
-        let stored = widget.to_stored_object()?;
-        ensure_finalizer(&ctx.client, &stored, FINALIZER_NAME).await?;
+        finalizer::typed::ensure_finalizer(&ctx.client, &widget, FINALIZER_NAME).await?;
 
         tracing::info!(
             name = %widget.metadata().name,
@@ -567,6 +577,8 @@ impl WorkQueue {
 
 ### Finalizer Helpers
 
+**Raw helpers** — operate on `&StoredObject`:
+
 ```rust
 pub fn is_deleting(obj: &StoredObject) -> bool;
 
@@ -581,6 +593,30 @@ pub async fn remove_finalizer(
     obj: &StoredObject,
     finalizer: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+```
+
+**Typed helpers** — accept any `&T where T: TypedResource`. They call
+`obj.to_stored_object()` once and delegate to the raw helpers above, so typed
+controllers never need to convert the resource themselves. Because the CAS
+retry loop always works on `StoredObject`, the re-fetch after a `409 Conflict`
+returns a `StoredObject`, never `T` — the passed-in `&T` is not updated in
+place. The typed variants live in a `typed` submodule since Rust does not allow
+same-name overloads:
+
+```rust
+pub mod typed {
+    pub async fn ensure_finalizer<T: TypedResource>(
+        client: &KapiClient,
+        obj: &T,
+        finalizer: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+
+    pub async fn remove_finalizer<T: TypedResource>(
+        client: &KapiClient,
+        obj: &T,
+        finalizer: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
+}
 ```
 
 ### `Manager`

@@ -267,13 +267,11 @@ pub(crate) fn generate_controller_content(
          \x20       if {kind_lower}.is_deleting() {{\n\
          \x20           // TODO: Add cleanup logic here.\n\n\
          \x20           // Remove finalizer only after successful cleanup.\n\
-         \x20           let stored = {kind_lower}.to_stored_object()?;\n\
-         \x20           finalizer::remove_finalizer(&ctx.client, &stored, FINALIZER_NAME).await?;\n\
+         \x20           finalizer::typed::remove_finalizer(&ctx.client, &{kind_lower}, FINALIZER_NAME).await?;\n\
          \x20           return Ok(ReconcileResult::default());\n\
          \x20       }}\n\n\
          \x20       // Ensure finalizer is present.\n\
-         \x20       let stored = {kind_lower}.to_stored_object()?;\n\
-         \x20       finalizer::ensure_finalizer(&ctx.client, &stored, FINALIZER_NAME).await?;\n\n\
+         \x20       finalizer::typed::ensure_finalizer(&ctx.client, &{kind_lower}, FINALIZER_NAME).await?;\n\n\
          \x20       // TODO: Add your reconciliation logic here.\n\
          \x20       // Use `{kind_lower}.spec()` to read the desired state.\n\n"
     ));
@@ -442,13 +440,26 @@ mod tests {
         assert!(code.contains("controller.kapi.io/widget-cleanup"));
         assert!(code.contains("TypedClient::<Widget>::new"));
         assert!(code.contains(".is_deleting()"));
-        assert!(code.contains(".to_stored_object()"));
-        assert!(code.contains("finalizer::ensure_finalizer"));
-        assert!(code.contains("finalizer::remove_finalizer"));
+        assert!(
+            code.contains(
+                "finalizer::typed::ensure_finalizer(&ctx.client, &widget, FINALIZER_NAME)"
+            )
+        );
+        assert!(
+            code.contains(
+                "finalizer::typed::remove_finalizer(&ctx.client, &widget, FINALIZER_NAME)"
+            )
+        );
         assert!(code.contains("update_status"));
         assert!(code.contains("crate::types::example_io::v1::widget::Widget"));
         // No redundant raw fetch — only typed_client.get() is used.
         assert!(!code.contains("ctx.client.get("));
+        // Typed helpers: no intermediate StoredObject conversion in the
+        // generated reconcile path.
+        assert!(!code.contains(".to_stored_object()"));
+        assert!(!code.contains("let stored = "));
+        assert!(!code.contains("finalizer::remove_finalizer(&ctx.client, &stored"));
+        assert!(!code.contains("finalizer::ensure_finalizer(&ctx.client, &stored"));
     }
 
     #[test]
