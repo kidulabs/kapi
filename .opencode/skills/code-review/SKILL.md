@@ -6,11 +6,11 @@ globs: ["**/*.rs"]
 
 # Rust Code Review
 
-> Comprehensive review covering correctness, security, crate hygiene, OpenSpec alignment, comment quality, testing, error handling, resource management, API design, concurrency, observability, performance, cognitive complexity, architectural layering, documentation coherence, and naming clarity.
+> Comprehensive review covering correctness, security, crate hygiene, OpenSpec alignment, comment quality, testing, error handling, resource management, API design, concurrency, observability, performance, cognitive complexity, architectural layering, documentation coherence, naming clarity, and magic values.
 
 ## Review Dimensions
 
-Run all sixteen dimensions. Report findings grouped by severity (CRITICAL / WARNING / SUGGESTION).
+Run all seventeen dimensions. Report findings grouped by severity (CRITICAL / WARNING / SUGGESTION).
 
 ---
 
@@ -1061,6 +1061,65 @@ The same concept should have the same name everywhere in the codebase.
 
 ---
 
+## 17. Magic Values & Named Constants
+
+Literal values embedded directly in code are a maintenance hazard. They force readers to infer meaning from context, make changes error-prone (the same value may appear in multiple places), and prevent the compiler from catching typos. Every magic number, string, or boolean should be extracted into a named constant with a clear, descriptive name.
+
+### What Counts as a Magic Value
+
+| Check | Flag if | Fix |
+|-------|---------|-----|
+| Numeric literals | Non-obvious numbers in logic (e.g., `if retries > 5`, `sleep(Duration::from_millis(100))`) | Extract to `const MAX_RETRIES: u32 = 5;` or `const RETRY_DELAY_MS: u64 = 100;` |
+| String literals | Repeated strings or domain-specific strings (e.g., `"kcloud.io/pool-cleanup"`, `"application/json"`) | Extract to `const FINALIZER_KEY: &str = "kcloud.io/pool-cleanup";` |
+| Boolean literals | `true`/`false` in function calls where meaning is unclear (e.g., `process(true)`) | Use named constants or an enum: `const VERBOSE: bool = true;` or `enum OutputMode { Verbose, Quiet }` |
+| Byte sizes / limits | `1024`, `4096`, `1_000_000` without context | Extract to `const BUFFER_SIZE: usize = 4096;` or `const MAX_PAYLOAD_BYTES: usize = 1_000_000;` |
+| Timeouts / durations | `Duration::from_secs(30)` without explanation | Extract to `const REQUEST_TIMEOUT_SECS: u64 = 30;` |
+| Error codes / status codes | `"NotFound"`, `404`, `"Conflict"` repeated in match arms | Extract to constants or use library-provided constants |
+
+### When NOT to Flag
+
+Not all literals are magic. Do **not** flag:
+
+| Exception | Example | Why OK |
+|-----------|---------|--------|
+| `0`, `1`, `2` in obvious contexts | `i += 1`, `vec.len() == 0`, `arr[0]` | Universally understood; extracting to `const ONE: usize = 1;` adds noise |
+| Empty strings | `""` in `is_empty()` checks | Clear intent; no meaning to name |
+| Format strings | `format!("{}: {}", name, value)` | Part of formatting syntax, not domain values |
+| Test data | `"test-pool"`, `42` in test fixtures | Tests prioritize clarity over abstraction; named constants in tests are optional |
+| Self-documenting contexts | `vec![0; 10]` (zero-initialization) | The literal's role is obvious from the API |
+| Single-use, self-explanatory values | `if count == 0` | Extracting `const ZERO: usize = 0;` is worse than the literal |
+
+### Naming Constants Well
+
+A constant's name should convey **what the value represents**, not just its type or value.
+
+| Bad Name | Good Name | Why |
+|----------|-----------|-----|
+| `const FIVE: u32 = 5;` | `const MAX_RETRY_ATTEMPTS: u32 = 5;` | Describes purpose, not value |
+| `const KEY: &str = "kcloud.io/pool-cleanup";` | `const FINALIZER_KEY: &str = "kcloud.io/pool-cleanup";` | Domain context clarifies what kind of key |
+| `const TIMEOUT: u64 = 30;` | `const HTTP_REQUEST_TIMEOUT_SECS: u64 = 30;` | Specifies what is timing out and the unit |
+| `const SIZE: usize = 4096;` | `const READ_BUFFER_SIZE_BYTES: usize = 4096;` | Describes what is sized and the unit |
+
+### Scope and Visibility
+
+| Check | Flag if | Fix |
+|-------|---------|-----|
+| Module-level constants | Value used in only one function but extracted to module scope | Keep constant private to the function with `const` inside the function body |
+| Repeated literals across modules | Same string/number appears in 2+ modules | Extract to a shared module or crate-level constants |
+| Public constants without docs | `pub const` without `///` doc comment | Add doc comment explaining purpose and valid range |
+
+### Magic Value Checklist
+
+- [ ] No unexplained numeric literals in business logic (except 0, 1, 2 in obvious contexts)
+- [ ] No repeated string literals — all extracted to named constants
+- [ ] Constants have descriptive names that convey purpose, not just value
+- [ ] Units are explicit in constant names (`_SECS`, `_BYTES`, `_MS`) when not obvious
+- [ ] Constants are scoped to the smallest reasonable visibility (function < module < crate)
+- [ ] Public constants have doc comments
+- [ ] Test fixtures may use literals for clarity, but domain-specific test values should be named
+
+---
+
 ## Review Output Format
 
 ```markdown
@@ -1085,6 +1144,7 @@ The same concept should have the same name everywhere in the codebase.
 | Architectural Layering | X critical, Y warnings |
 | Documentation | X critical, Y warnings |
 | Naming | X critical, Y warnings |
+| Magic Values | X critical, Y warnings |
 
 ### CRITICAL (Must Fix)
 1. **[Dimension]** file.rs:42 — Description
@@ -1102,7 +1162,7 @@ The same concept should have the same name everywhere in the codebase.
 ### Severity Rules
 
 - **CRITICAL**: Security vulnerabilities, UB, spec violations, panics on untrusted input, doc comments that contradict current behavior, README/config examples that no longer work, breaking changes without CHANGELOG entries
-- **WARNING**: Suboptimal primitives, risky crate choices, falsifiable comments, missing "why" comments on complex logic, stale but non-blocking docs, missing doc comments on new public items, inaccurate `# Errors`/`# Panics`/`# Safety` sections, names that collide with in-scope module paths, overloaded generic terms (`core`, `manager`, `handler`, `processor`, `service`, `helper`)
+- **WARNING**: Suboptimal primitives, risky crate choices, falsifiable comments, missing "why" comments on complex logic, stale but non-blocking docs, missing doc comments on new public items, inaccurate `# Errors`/`# Panics`/`# Safety` sections, names that collide with in-scope module paths, overloaded generic terms (`core`, `manager`, `handler`, `processor`, `service`, `helper`), magic values in business logic (non-obvious literals that should be named constants)
 - **SUGGESTION**: Style improvements, minor optimizations, comment clarity, missing module-level docs, stale doc URLs, naming consistency improvements (synonym drift, suffix inconsistency)
 
 ---
@@ -1136,5 +1196,6 @@ This review skill orchestrates checks from related skills. When deep-diving is n
 - Do not flag comments that explain "why" — those are required
 - Do not approve names that collide with in-scope module paths or crate names
 - Do not approve generic terms (`core`, `manager`, `handler`, `processor`, `helper`) without domain qualification
+- Do not approve magic values (unexplained numeric/string literals) in business logic — extract to named constants
 - Do not flag TODO comments that have an owner and issue reference
 - Do not suggest removing ALL comments — only remove falsifiable or obvious ones
