@@ -1,6 +1,6 @@
 [package]
 name = "kapi-server"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -32,7 +32,7 @@ rusqlite = { version = "0.37", features = ["bundled"] }
 tower = "0.5"
 tower-http = { version = "0.6", features = ["trace", "cors"] }
 regex = "1.12.3"
-kapi-core = { path = "../kapi-core", version = "0.4.0" }
+kapi-core = { path = "../kapi-core", version = "0.5.0" }
 
 [dev-dependencies]
 http-body-util = "0.1"
