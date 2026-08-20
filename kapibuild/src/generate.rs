@@ -263,7 +263,7 @@ fn generate_type_file(project_root: &Path, res: &ResourceInfo) -> Result<PathBuf
 
     // Imports.
     code.push_str(
-        "use kapi_client::typed::TypedResource;\n\
+        "use kapi_client::TypedResource;\n\
          use kapi_core::ObjectMeta;\n\
          use kapi_core::ResourceKey;\n\
          use kapi_core::SystemMetadata;\n\
@@ -849,5 +849,53 @@ pub struct WidgetSpec {
         assert!(content.contains("schemars"), "helper Cargo.toml must depend on schemars");
         assert!(content.contains("serde"), "helper Cargo.toml must depend on serde");
         assert!(content.contains("serde_json"), "helper Cargo.toml must depend on serde_json");
+    }
+
+    #[test]
+    fn test_generate_type_file_with_status_has_typed_resource_impl() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let res = ResourceInfo {
+            group: "example.io".into(),
+            version: "v1".into(),
+            kind: "Widget".into(),
+            scope: "Namespaced".into(),
+            spec_struct_name: "WidgetSpec".into(),
+            status_struct_name: Some("WidgetStatus".into()),
+            content: String::new(),
+        };
+
+        let path = generate_type_file(tmp.path(), &res).expect("generate type file");
+        let code = std::fs::read_to_string(&path).expect("read generated file");
+
+        // TypedResource import from kapi-client root re-exports.
+        assert!(code.contains("use kapi_client::TypedResource;"), "typed resource import");
+        assert!(code.contains("impl TypedResource for Widget"), "impl block");
+        assert!(code.contains("type Spec = WidgetSpec;"), "spec type");
+        assert!(code.contains("type Status = WidgetStatus;"), "status type");
+        assert!(code.contains("fn status(&self) -> Option<&Self::Status> {"), "status accessor");
+    }
+
+    #[test]
+    fn test_generate_type_file_without_status_has_typed_resource_impl() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let res = ResourceInfo {
+            group: "io".into(),
+            version: "v1".into(),
+            kind: "Gadget".into(),
+            scope: "Cluster".into(),
+            spec_struct_name: "GadgetSpec".into(),
+            status_struct_name: None,
+            content: String::new(),
+        };
+
+        let path = generate_type_file(tmp.path(), &res).expect("generate type file");
+        let code = std::fs::read_to_string(&path).expect("read generated file");
+
+        assert!(code.contains("impl TypedResource for Gadget"), "impl block");
+        assert!(code.contains("type Status = serde_json::Value;"), "status type fallback");
+        assert!(
+            code.contains("fn status(&self) -> Option<&Self::Status> {\n        None\n"),
+            "no status"
+        );
     }
 }

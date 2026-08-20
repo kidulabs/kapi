@@ -13,6 +13,7 @@ readme = "README.md"
 
 [dependencies]
 kapi-client = { path = "../kapi-client", version = "0.4.0" }
+kapi-core = { path = "../kapi-core", version = "0.4.0" }
 clap = { version = "4", features = ["derive"] }
 clap_complete = "4"
 serde = { version = "1", features = ["derive"] }

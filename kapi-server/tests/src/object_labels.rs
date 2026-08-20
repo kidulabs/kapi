@@ -163,7 +163,8 @@ pub async fn test_invalid_label_key_format(app: &TestApp) -> Result<(), String> 
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidLabel", "expected InvalidLabel error code");
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code");
+    assert_eq!(err["details"]["what"], "label", "expected what=label in error details");
 
     Ok(())
 }
@@ -185,7 +186,8 @@ pub async fn test_invalid_label_value_format(app: &TestApp) -> Result<(), String
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidLabel", "expected InvalidLabel error code");
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code");
+    assert_eq!(err["details"]["what"], "label", "expected what=label in error details");
 
     Ok(())
 }
@@ -208,7 +210,8 @@ pub async fn test_label_key_exceeds_length(app: &TestApp) -> Result<(), String> 
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidLabel", "expected InvalidLabel error code");
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code");
+    assert_eq!(err["details"]["what"], "label", "expected what=label in error details");
 
     Ok(())
 }
@@ -231,7 +234,8 @@ pub async fn test_label_value_exceeds_length(app: &TestApp) -> Result<(), String
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidLabel", "expected InvalidLabel error code");
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code");
+    assert_eq!(err["details"]["what"], "label", "expected what=label in error details");
 
     Ok(())
 }

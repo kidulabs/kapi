@@ -317,7 +317,7 @@ Controllers watch for objects with `deletionTimestamp` set, perform cleanup, the
 - Cannot add new finalizers (only removal allowed)
 - Cannot create a new object with the same name (→ 409 `AlreadyExists`)
 
-**Finalizer validation:** Max 20 finalizers per object. Names must be label-key-shaped (e.g., `example.io/cleanup`). Invalid names → 400 `InvalidFinalizer`.
+**Finalizer validation:** Max 20 finalizers per object. Names must be label-key-shaped (e.g., `example.io/cleanup`). Invalid names → 400 `InvalidRequest` (`what: "finalizer"`).
 
 ---
 
@@ -413,7 +413,7 @@ Watch streams terminate when the client disconnects or the watcher's buffer is f
 
 ## Label Validation
 
-Labels on `ObjectMeta` follow structured validation rules. Invalid labels cause the request to be rejected with `400 Bad Request` and error code `InvalidLabel`.
+Labels on `ObjectMeta` follow structured validation rules. Invalid labels cause the request to be rejected with `400 Bad Request` and error code `InvalidRequest` (`what: "label"`).
 
 ### Key Rules
 
@@ -462,9 +462,9 @@ Labels on `ObjectMeta` follow structured validation rules. Invalid labels cause 
 
 ```json
 {
-    "error": "invalid label: label key 'invalid key!' contains invalid characters",
-    "code": "InvalidLabel",
+    "code": "InvalidRequest",
     "details": {
+        "what": "label",
         "message": "label key 'invalid key!' contains invalid characters"
     }
 }
@@ -474,7 +474,7 @@ Labels on `ObjectMeta` follow structured validation rules. Invalid labels cause 
 
 ## Annotation Validation
 
-Annotations on `ObjectMeta` follow minimal validation rules. Invalid annotations cause the request to be rejected with `400 Bad Request` and error code `InvalidAnnotation`.
+Annotations on `ObjectMeta` follow minimal validation rules. Invalid annotations cause the request to be rejected with `400 Bad Request` and error code `InvalidRequest` (`what: "annotation"`).
 
 ### Key Rules
 
@@ -518,9 +518,9 @@ The total serialized size of all annotations for a single object must not exceed
 
 ```json
 {
-    "error": "invalid annotation: annotation key '' exceeds maximum length of 256 characters",
-    "code": "InvalidAnnotation",
+    "code": "InvalidRequest",
     "details": {
+        "what": "annotation",
         "message": "annotation key '' exceeds maximum length of 256 characters"
     }
 }
@@ -552,7 +552,6 @@ GET /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}/status         
 
 ```json
 {
-    "error": "status subresource not enabled for kind 'Widget'",
     "code": "StatusSubresourceNotEnabled",
     "details": { "kind": "Widget" }
 }
@@ -594,12 +593,9 @@ PUT /apis/{group}/{version}/namespaces/{namespace}/{kind}/{name}/status         
 
 ```json
 {
-    "error": "object data violates schema",
     "code": "SchemaValidation",
     "details": {
-        "errors": [
-            { "path": "phase", "message": "expected string, got integer" }
-        ]
+        "errors": ["phase: expected string, got integer"]
     }
 }
 ```
@@ -626,7 +622,6 @@ All errors follow this format:
 
 ```json
 {
-    "error": "human-readable message",
     "code": "ErrorCode",
     "details": {}
 }
@@ -634,18 +629,16 @@ All errors follow this format:
 
 | Status | Code | Description |
 |--------|------|-------------|
-| 400 | `InvalidRequest` | Namespace mismatch (URL vs body), or cluster-scoped kind used with namespace URL |
+| 400 | `InvalidRequest` | Invalid input — `what` identifies the offending input: `"request body"` (missing spec, unknown fields, empty spec), `"label"`, `"annotation"`, `"finalizer"` (invalid name or >20 finalizers), `"label selector"`, `"field selector"`, or a namespace mismatch (URL vs body, or cluster-scoped kind used with a namespace URL) |
+| 403 | `ProtectedNamespace` | Cannot delete a protected namespace (e.g., `"default"`) |
 | 404 | `NotFound` | Resource not found |
 | 404 | `StatusSubresourceNotEnabled` | Status subresource accessed for kind without statusSchema |
+| 409 | `AlreadyExists` | Resource with the same name already exists |
 | 409 | `Conflict` | OCC version mismatch or duplicate |
-| 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
+| 409 | `NamespaceNotEmpty` | Cannot delete namespace that contains objects |
 | 409 | `ObjectBeingDeleted` | Object is being deleted; only finalizer modifications are allowed |
-| 400 | `InvalidFieldSelector` | Invalid fieldSelector query parameter (unsupported field or malformed syntax) |
-| 400 | `InvalidLabelSelector` | Invalid labelSelector query parameter (malformed syntax, empty value) |
-| 400 | `InvalidAnnotation` | Annotation key is empty, exceeds 256 chars, or total size exceeds 256KB |
-| 400 | `InvalidLabel` | Label key or value violates format or length rules |
-| 400 | `InvalidFinalizer` | Finalizer name is invalid or too many finalizers (max 20) |
-| 400 | `InvalidRequestBody` | Request body validation failed (missing spec, unknown fields, empty spec) |
+| 409 | `SchemaHasObjects` | Cannot delete schema with existing objects |
 | 422 | `SchemaValidation` | Object data doesn't match schema |
 | 422 | `InvalidSchema` | Schema registration failed validation |
 | 500 | `Internal` | Unexpected server error |
+| 500 | `StoredSchemaCompilationFailed` | Stored schema fails to compile |

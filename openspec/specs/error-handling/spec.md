@@ -3,53 +3,56 @@
 Define the application-wide error handling strategy including a unified error enum, structured error context, and HTTP response mapping.
 ## Requirements
 ### Requirement: Application errors are represented by a single enum
-The system SHALL define an `AppError` enum that is the sole error type used across all services, stores, and handlers.
+The system SHALL define an `AppError` enum in `kapi-server` that wraps `ApiError` for all structured domain errors. The `AppError` enum SHALL be the sole error type used across all services, stores, and handlers in the server.
 
 #### Scenario: Error variants cover all application failure modes
 - **WHEN** an operation fails
-- **THEN** the error SHALL be representable as one of: `NotFound`, `Conflict`, `AlreadyExists`, `InvalidLabel`, `InvalidRequestBody`, `SchemaValidation`, `SchemaHasObjects`, `InvalidSchema`, `StoredSchemaCompilationFailed`, or `Internal`
+- **THEN** the error SHALL be representable as one of: `AppError::Api(ApiError)` for structured domain errors, `AppError::Internal(anyhow::Error)` for unexpected failures, `AppError::InvalidSchema(String)` for schema registration errors, or `AppError::StoredSchemaCompilationFailed { schema_name, reason }` for schema compilation errors
+
+#### Scenario: AppError wraps ApiError
+- **WHEN** a handler returns a domain error like `NotFound`
+- **THEN** it SHALL be constructed as `AppError::Api(ApiError::NotFound { what, identifier })`
+
+#### Scenario: Internal error wraps anyhow
+- **WHEN** an underlying operation returns `anyhow::Error`
+- **THEN** propagating it with `?` SHALL produce `AppError::Internal`
+
+### Requirement: InvalidLabel error response
+The server SHALL produce `ApiError::InvalidRequest { what: "label", message }` for invalid label errors.
 
 #### Scenario: InvalidLabel error response
-- **WHEN** an `AppError::InvalidLabel("label key 'invalid key!' contains invalid characters")` is returned
-- **THEN** the HTTP response SHALL have status 400, reason `"InvalidLabel"`, and a JSON body with the error message
-
-#### Scenario: InvalidLabel error display
-- **WHEN** an `InvalidLabel` error is formatted
-- **THEN** the error message SHALL be prefixed with `"invalid label: "` for consistency with `InvalidFieldSelector`
+- **WHEN** an `ApiError::InvalidRequest { what: "label", message: "label key 'invalid key!' contains invalid characters" }` is returned
+- **THEN** the HTTP response SHALL have status 400, code `"InvalidRequest"`, and details `{"what": "label", "message": "..."}`
 
 ### Requirement: InvalidLabelSelector error variant
-`AppError` SHALL include an `InvalidLabelSelector(String)` variant for label selector parse failures. This variant SHALL map to HTTP 400 Bad Request with reason `"InvalidLabelSelector"` and a descriptive error message.
+The server SHALL produce `ApiError::InvalidRequest { what: "label selector", message }` for label selector parse failures.
 
 #### Scenario: InvalidLabelSelector error response
-- **WHEN** an `AppError::InvalidLabelSelector("malformed selector: 'invalid selector'")` is returned
-- **THEN** the HTTP response SHALL have status 400, reason `"InvalidLabelSelector"`, and a JSON body with the error message
-
-#### Scenario: InvalidLabelSelector error display
-- **WHEN** an `InvalidLabelSelector` error is formatted
-- **THEN** the error message SHALL be prefixed with `"invalid label selector: "` for consistency
+- **WHEN** an `ApiError::InvalidRequest { what: "label selector", message: "malformed selector: 'invalid selector'" }` is returned
+- **THEN** the HTTP response SHALL have status 400, code `"InvalidRequest"`, and details `{"what": "label selector", "message": "..."}`
 
 ### Requirement: InvalidRequestBody error variant
-`AppError` SHALL include an `InvalidRequestBody(String)` variant for request body validation failures. This variant SHALL map to HTTP 400 Bad Request with reason `"InvalidRequestBody"` and a descriptive error message.
+The server SHALL produce `ApiError::InvalidRequest { what: "request body", message }` for request body validation failures.
 
 #### Scenario: InvalidRequestBody error response
-- **WHEN** an `AppError::InvalidRequestBody("'spec' field is required")` is returned
-- **THEN** the HTTP response SHALL have status 400, reason `"InvalidRequestBody"`, and a JSON body with the error message
+- **WHEN** an `ApiError::InvalidRequest { what: "request body", message: "'spec' field is required" }` is returned
+- **THEN** the HTTP response SHALL have status 400, code `"InvalidRequest"`, and details `{"what": "request body", "message": "..."}`
 
 #### Scenario: InvalidRequestBody for missing spec
 - **WHEN** a create request is missing the `spec` field
-- **THEN** the error SHALL be `InvalidRequestBody("'spec' field is required")`
+- **THEN** the error SHALL be `ApiError::InvalidRequest { what: "request body", message: "'spec' field is required" }`
 
 #### Scenario: InvalidRequestBody for empty spec
 - **WHEN** a create request contains `spec: {}`
-- **THEN** the error SHALL be `InvalidRequestBody("'spec' must not be empty")`
+- **THEN** the error SHALL be `ApiError::InvalidRequest { what: "request body", message: "'spec' must not be empty" }`
 
 #### Scenario: InvalidRequestBody for non-object spec
 - **WHEN** a create request contains `spec` as a non-object type
-- **THEN** the error SHALL be `InvalidRequestBody("'spec' must be a JSON object")`
+- **THEN** the error SHALL be `ApiError::InvalidRequest { what: "request body", message: "'spec' must be a JSON object" }`
 
 #### Scenario: InvalidRequestBody for unknown fields
 - **WHEN** a create request contains top-level fields other than `metadata` and `spec`
-- **THEN** the error SHALL be `InvalidRequestBody` with a message indicating the unknown field(s)
+- **THEN** the error SHALL be `ApiError::InvalidRequest { what: "request body", message: "..." }` with a message indicating the unknown field(s)
 
 ### Requirement: NotFound errors carry structured context
 The system SHALL produce `NotFound` errors with `what` and `identifier` fields so that error messages are unambiguous.
@@ -81,18 +84,18 @@ The system SHALL produce `AlreadyExists { kind: String, name: String }` errors w
 - **THEN** the error SHALL be `AlreadyExists { kind: "Schema", name: "Widget.example.io" }`
 
 ### Requirement: AlreadyExists maps to HTTP 409
-The system SHALL map `AlreadyExists` to HTTP 409 Conflict with JSON body `{ "error": "...", "code": "AlreadyExists", "details": { "kind": "...", "name": "..." } }`.
+The system SHALL map `ApiError::AlreadyExists` to HTTP 409 Conflict with JSON body `{"code": "AlreadyExists", "details": {"kind": "...", "name": "..."}}`.
 
 #### Scenario: AlreadyExists response body
-- **WHEN** a handler returns `AlreadyExists { kind: "Widget".into(), name: "my-widget".into() }`
-- **THEN** the response is HTTP 409 with JSON body containing `"code": "AlreadyExists"` and `"details": { "kind": "Widget", "name": "my-widget" }`
+- **WHEN** a handler returns `ApiError::AlreadyExists { kind: "Widget", name: "my-widget" }`
+- **THEN** the response is HTTP 409 with JSON body containing `"code": "AlreadyExists"` and `"details": {"kind": "Widget", "name": "my-widget"}`
 
 ### Requirement: Schema validation errors are structured
-The system SHALL produce `SchemaValidation` errors as a list of `ValidationError` objects, each with a `path` (JSON pointer) and `message`.
+The system SHALL produce `ApiError::SchemaValidation` errors as a list of validation error strings.
 
 #### Scenario: Invalid object payload
 - **WHEN** a create or update request fails JSON Schema validation
-- **THEN** the error SHALL contain `ValidationError { path: "/spec/replicas", message: "must be >= 0" }`
+- **THEN** the error SHALL contain `SchemaValidation { errors: Vec<String> }` where each string describes a validation failure
 
 ### Requirement: Internal errors wrap anyhow::Error
 The system SHALL allow any `anyhow::Error` to convert automatically into `AppError::Internal` via the `?` operator.
@@ -102,27 +105,29 @@ The system SHALL allow any `anyhow::Error` to convert automatically into `AppErr
 - **THEN** propagating it with `?` SHALL produce `AppError::Internal`
 
 ### Requirement: Errors map to structured HTTP responses
-The system SHALL implement `axum::response::IntoResponse` for `AppError` so that every error variant maps to a specific HTTP status code and a structured JSON body.
+The system SHALL implement `axum::response::IntoResponse` for `AppError` so that every error variant maps to a specific HTTP status code and a structured JSON body. The implementation SHALL delegate to `ApiError::http_status()` and serde serialization for `AppError::Api` variants.
 
 #### Scenario: NotFound maps to 404
-- **WHEN** `AppError::NotFound` is returned from a handler
-- **THEN** the response SHALL be HTTP 404 with JSON body `{ "error": "...", "code": "NotFound", "details": { "what": "...", "identifier": "..." } }`
+- **WHEN** `AppError::Api(ApiError::NotFound { .. })` is returned from a handler
+- **THEN** the response SHALL be HTTP 404 with JSON body `{"code": "NotFound", "details": {"what": "...", "identifier": "..."}}`
 
 #### Scenario: Conflict maps to 409
-- **WHEN** `AppError::Conflict` is returned from a handler
-- **THEN** the response SHALL be HTTP 409 with JSON body `{ "error": "...", "code": "Conflict", "details": { "expected": N, "actual": M } }`
+- **WHEN** `AppError::Api(ApiError::Conflict { .. })` is returned from a handler
+- **THEN** the response SHALL be HTTP 409 with JSON body `{"code": "Conflict", "details": {"expected": N, "actual": M}}`
 
 #### Scenario: SchemaValidation maps to 422
-- **WHEN** `AppError::SchemaValidation` is returned from a handler
-- **THEN** the response SHALL be HTTP 422 with JSON body `{ "error": "...", "code": "SchemaValidation", "details": { "errors": [...] } }`
+- **WHEN** `AppError::Api(ApiError::SchemaValidation { .. })` is returned from a handler
+- **THEN** the response SHALL be HTTP 422 with JSON body `{"code": "SchemaValidation", "details": {"errors": [...]}}`
 
 #### Scenario: Internal maps to 500
-- **WHEN** `AppError::Internal` is returned from a handler
-- **THEN** the response SHALL be HTTP 500 with JSON body `{ "error": "internal error", "code": "Internal", "details": null }`
+- **WHEN** `AppError::Internal(anyhow_error)` is returned from a handler
+- **THEN** the response SHALL be HTTP 500 with JSON body `{"code": "Internal", "details": {"message": "internal error"}}`
+- **THEN** the server SHALL log the full anyhow error with tracing
 
-#### Scenario: Client preserves structured details from error responses
-- **WHEN** the kapi-client receives a structured error response with a `details` field
-- **THEN** the client SHALL preserve the `details` value in `ClientError::ApiError` so that the typed client can extract structured fields (e.g., `what`, `identifier`, `kind`, `name`, `expected`, `actual`) for first-class error variants
+#### Scenario: IntoResponse implementation is simplified
+- **WHEN** the `IntoResponse` impl for `AppError` is written
+- **THEN** it SHALL be approximately 30 lines (down from 142 lines)
+- **THEN** it SHALL delegate to `ApiError::http_status()` and serde for `AppError::Api` variants
 
 ### Requirement: InvalidSchema error for broken schema registrations
 The system SHALL produce `InvalidSchema` errors when a schema registration fails meta-schema validation or when the nested `jsonSchema` fails compilation.
@@ -136,11 +141,11 @@ The system SHALL produce `InvalidSchema` errors when a schema registration fails
 - **THEN** the error SHALL be `InvalidSchema` with the compilation error message
 
 ### Requirement: InvalidSchema maps to HTTP 422
-The system SHALL map `InvalidSchema` to HTTP 422 Unprocessable Entity with JSON body `{ "error": "...", "code": "InvalidSchema", "details": { "message": "..." } }`.
+The system SHALL map `AppError::InvalidSchema` to HTTP 422 Unprocessable Entity with JSON body `{"code": "InvalidSchema", "details": {"message": "..."}}`.
 
 #### Scenario: InvalidSchema response body
-- **WHEN** a handler returns `InvalidSchema("missing field: targetGroup")`
-- **THEN** the response is HTTP 422 with JSON body containing `"code": "InvalidSchema"` and `"details": { "message": "missing field: targetGroup" }`
+- **WHEN** a handler returns `AppError::InvalidSchema("missing field: targetGroup")`
+- **THEN** the response is HTTP 422 with JSON body containing `"code": "InvalidSchema"` and `"details": {"message": "missing field: targetGroup"}`
 
 ### Requirement: SchemaHasObjects error blocks schema deletion
 The system SHALL produce `SchemaHasObjects` errors when attempting to delete a Schema that has existing objects of the target kind.
@@ -149,13 +154,10 @@ The system SHALL produce `SchemaHasObjects` errors when attempting to delete a S
 - **WHEN** a DELETE request targets a Schema and objects of the target kind exist
   - **THEN** the error SHALL be `SchemaHasObjects { kind: "..." }`
 
-  ### Requirement: SchemaHasObjects maps to HTTP 409
+### Requirement: SchemaHasObjects maps to HTTP 409
+The system SHALL map `ApiError::SchemaHasObjects` to HTTP 409 Conflict with JSON body `{"code": "SchemaHasObjects", "details": {"kind": "..."}}`.
 
-  The system SHALL map `SchemaHasObjects` to HTTP 409 Conflict with JSON body `{ "error": "...", "code": "SchemaHasObjects", "details": { "kind": "..." } }`.
-
-  #### Scenario: SchemaHasObjects response body
-
-  - **WHEN** a handler returns `SchemaHasObjects { kind: "Widget".into() }`
-
-  - **THEN** the response is HTTP 409 with JSON body containing `"code": "SchemaHasObjects"` and `"details": { "kind": "Widget" }`
+#### Scenario: SchemaHasObjects response body
+- **WHEN** a handler returns `ApiError::SchemaHasObjects { kind: "Widget" }`
+- **THEN** the response is HTTP 409 with JSON body containing `"code": "SchemaHasObjects"` and `"details": {"kind": "Widget"}`
 

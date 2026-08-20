@@ -46,7 +46,7 @@ pub trait ObjectStore: Send + Sync {
     ///
     /// The implementation SHALL NOT modify any system metadata fields.
     /// If an object with the same key/name already exists, returns
-    /// AppError::AlreadyExists.
+    /// `AppError::Api(ApiError::AlreadyExists)`.
     async fn create(&self, object: StoredObject) -> Result<StoredObject, AppError>;
     async fn get(
         &self,
@@ -87,8 +87,8 @@ pub trait ObjectStore: Send + Sync {
     ///
     /// # Errors
     ///
-    /// Returns [`AppError::NotFound`] if the object does not exist (before
-    /// calling the callback).
+    /// Returns [`AppError::Api`] wrapping [`ApiError::NotFound`] if the object
+    /// does not exist (before calling the callback).
     fn transaction(
         &self,
         key: &ResourceKey,

@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::Value;
 
+use crate::ApiError;
 use crate::error::AppError;
 use crate::object::types::{
     FieldSelector, LabelRequirement, LabelSelector, ListOptions, ListResponse, ObjectMeta,
@@ -367,10 +368,10 @@ impl SQLiteStore {
                     Self::query_labels(conn, &key.group, &key.version, &key.kind, namespace, name)?;
                 Ok(obj.clone())
             }
-            None => Err(AppError::NotFound {
+            None => Err(AppError::Api(ApiError::NotFound {
                 what: "object".to_string(),
                 identifier: format!("{}/{}", key.kind, name),
-            }),
+            })),
         }
     }
 
@@ -486,10 +487,10 @@ impl SQLiteStore {
             )
             .map_err(|e| AppError::Internal(e.into()))?;
         if rows == 0 {
-            return Err(AppError::NotFound {
+            return Err(AppError::Api(ApiError::NotFound {
                 what: "object".to_string(),
                 identifier: format!("{}/{}", key.kind, name),
-            });
+            }));
         }
         Ok(())
     }
@@ -768,10 +769,10 @@ impl ObjectStore for SQLiteStore {
                     if err.code == rusqlite::ErrorCode::ConstraintViolation =>
                 {
                     // Primary key conflict → duplicate
-                    Err(AppError::AlreadyExists {
+                    Err(AppError::Api(ApiError::AlreadyExists {
                         kind: object.key.kind.clone(),
                         name: object.metadata.name.clone(),
-                    })
+                    }))
                 }
                 Err(e) => Err(AppError::Internal(e.into())),
             }
@@ -869,10 +870,10 @@ impl ObjectStore for SQLiteStore {
                     )?;
                     Ok(obj.clone())
                 }
-                None => Err(AppError::NotFound {
+                None => Err(AppError::Api(ApiError::NotFound {
                     what: "object".to_string(),
                     identifier: format!("{}/{}", key.kind, name),
-                }),
+                })),
             }
         })
         .await
@@ -1084,7 +1085,7 @@ mod tests {
 
         let err =
             store.create(test_obj(key.clone(), "my-widget", json!({"x": 2}))).await.unwrap_err();
-        assert!(matches!(err, AppError::AlreadyExists { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::AlreadyExists { .. })));
     }
 
     #[tokio::test]
@@ -1093,7 +1094,7 @@ mod tests {
         let key = test_key();
 
         let err = store.get(&key, None, "nonexistent").await.unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -1209,7 +1210,7 @@ mod tests {
         let err = store
             .transaction(&key, None, "nonexistent", Box::new(|_| TransactionOp::Delete))
             .unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -1225,7 +1226,7 @@ mod tests {
         assert_eq!(deleted.metadata.name, created.metadata.name);
 
         let err = store.get(&key, None, "my-widget").await.unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -1236,7 +1237,7 @@ mod tests {
         let err = store
             .transaction(&key, None, "nonexistent", Box::new(|_| TransactionOp::Delete))
             .unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -1665,7 +1666,7 @@ mod tests {
         let err = store
             .transaction(&key, None, "nonexistent", Box::new(|_| TransactionOp::Delete))
             .unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -1814,7 +1815,7 @@ mod tests {
         store.transaction(&key, None, "test", Box::new(|_| TransactionOp::Delete)).unwrap();
 
         let err = store.get(&key, None, "test").await.unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     // --- Namespace tests ---

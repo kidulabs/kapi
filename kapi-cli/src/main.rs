@@ -15,6 +15,7 @@ use kapi_client::{
     ContinueToken, LabelSelector, ListOptions, ListResponse, ObjectMeta, ResourceKey, StoredObject,
     WatchFilter,
 };
+use kapi_core::ApiError;
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -527,7 +528,7 @@ async fn cmd_apply(
             let updated = client.update(namespace.as_deref(), &merged).await?;
             print_object(&updated, output, &scope)?;
         }
-        Err(ClientError::ApiError { status: 404, .. }) => {
+        Err(ClientError::Api(ApiError::NotFound { .. })) => {
             // --- Create ---
             let meta = ObjectMeta {
                 name: manifest.metadata.name.clone(),

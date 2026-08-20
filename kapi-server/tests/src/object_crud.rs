@@ -177,7 +177,7 @@ pub async fn test_list_exhausted(app: &TestApp) -> Result<(), String> {
     Ok(())
 }
 
-/// Create with missing `spec` field returns 400 InvalidRequestBody
+/// Create with missing `spec` field returns 400 InvalidRequest
 pub async fn test_create_missing_spec(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
@@ -192,16 +192,16 @@ pub async fn test_create_missing_spec(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest, got: {}", err["code"]);
     assert_eq!(
-        err["code"], "InvalidRequestBody",
-        "expected InvalidRequestBody, got: {}",
-        err["code"]
+        err["details"]["what"], "request body",
+        "expected what=request body in error details"
     );
 
     Ok(())
 }
 
-/// Create with empty `spec: {}` returns 400 InvalidRequestBody
+/// Create with empty `spec: {}` returns 400 InvalidRequest
 pub async fn test_create_empty_spec(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
@@ -217,16 +217,16 @@ pub async fn test_create_empty_spec(app: &TestApp) -> Result<(), String> {
         .await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest, got: {}", err["code"]);
     assert_eq!(
-        err["code"], "InvalidRequestBody",
-        "expected InvalidRequestBody, got: {}",
-        err["code"]
+        err["details"]["what"], "request body",
+        "expected what=request body in error details"
     );
 
     Ok(())
 }
 
-/// Create with non-object `spec` (array, string) returns 400 InvalidRequestBody
+/// Create with non-object `spec` (array, string) returns 400 InvalidRequest
 pub async fn test_create_non_object_spec(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
@@ -244,9 +244,13 @@ pub async fn test_create_non_object_spec(app: &TestApp) -> Result<(), String> {
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(
-        err["code"], "InvalidRequestBody",
-        "expected InvalidRequestBody for array spec, got: {}",
+        err["code"], "InvalidRequest",
+        "expected InvalidRequest for array spec, got: {}",
         err["code"]
+    );
+    assert_eq!(
+        err["details"]["what"], "request body",
+        "expected what=request body in error details"
     );
 
     // spec as string
@@ -262,15 +266,19 @@ pub async fn test_create_non_object_spec(app: &TestApp) -> Result<(), String> {
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(
-        err["code"], "InvalidRequestBody",
-        "expected InvalidRequestBody for string spec, got: {}",
+        err["code"], "InvalidRequest",
+        "expected InvalidRequest for string spec, got: {}",
         err["code"]
+    );
+    assert_eq!(
+        err["details"]["what"], "request body",
+        "expected what=request body in error details"
     );
 
     Ok(())
 }
 
-/// Create with unknown top-level field returns 400 InvalidRequestBody
+/// Create with unknown top-level field returns 400 InvalidRequest
 pub async fn test_create_unknown_top_level_field(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
@@ -287,10 +295,10 @@ pub async fn test_create_unknown_top_level_field(app: &TestApp) -> Result<(), St
         .await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest, got: {}", err["code"]);
     assert_eq!(
-        err["code"], "InvalidRequestBody",
-        "expected InvalidRequestBody, got: {}",
-        err["code"]
+        err["details"]["what"], "request body",
+        "expected what=request body in error details"
     );
 
     Ok(())

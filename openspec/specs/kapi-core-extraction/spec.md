@@ -25,31 +25,18 @@ The `kapi-core` crate SHALL define the following types: `ResourceKey`, `StoredOb
 - **WHEN** inspecting `kapi-core/src/`
 - **THEN** `ListOptions`, `ListResponse`, `ContinueToken` SHALL be defined in `kapi-core`
 
-### Requirement: CoreError defined in kapi-core
-The `kapi-core` crate SHALL define a `CoreError` enum with at least `InvalidFieldSelector(String)` and `InvalidLabelSelector(String)` variants. `FieldSelector::parse()` and `LabelSelector::parse()` SHALL return `Result<_, CoreError>` instead of `Result<_, AppError>`.
+### Requirement: FieldSelector and LabelSelector parse errors
+The `FieldSelector::parse()` and `LabelSelector::parse()` methods SHALL return `Result<_, ApiError>` instead of `Result<_, AppError>`. Parse errors SHALL be represented as `ApiError::InvalidRequest` with appropriate `what` fields.
 
-#### Scenario: CoreError enum exists
-- **WHEN** inspecting `kapi-core/src/`
-- **THEN** a `CoreError` enum SHALL be defined with `InvalidFieldSelector(String)` and `InvalidLabelSelector(String)` variants
-
-#### Scenario: FieldSelector::parse returns CoreError
+#### Scenario: FieldSelector::parse returns ApiError
 - **WHEN** `FieldSelector::parse()` is called with invalid input
-- **THEN** it SHALL return `Err(CoreError::InvalidFieldSelector(msg))`
+- **THEN** it SHALL return `Err(ApiError::InvalidRequest { what: "field selector", message })`
 
-#### Scenario: LabelSelector::parse returns CoreError
+#### Scenario: LabelSelector::parse returns ApiError
 - **WHEN** `LabelSelector::parse()` is called with invalid input
-- **THEN** it SHALL return `Err(CoreError::InvalidLabelSelector(msg))`
+- **THEN** it SHALL return `Err(ApiError::InvalidRequest { what: "label selector", message })`
 
-### Requirement: Server adapts CoreError to AppError
-The `kapi-server` crate SHALL implement `From<CoreError> for AppError` to convert core parsing errors into HTTP-appropriate error responses.
-
-#### Scenario: CoreError converts to AppError
-- **WHEN** a `CoreError::InvalidFieldSelector(msg)` is converted via `Into<AppError>`
-- **THEN** the result SHALL be `AppError::InvalidFieldSelector(msg)`
-
-#### Scenario: CoreError converts to AppError for label selector
-- **WHEN** a `CoreError::InvalidLabelSelector(msg)` is converted via `Into<AppError>`
-- **THEN** the result SHALL be `AppError::InvalidLabelSelector(msg)`
+**Note**: The `CoreError` type has been removed. Parse errors now use `ApiError::InvalidRequest` directly, eliminating the need for `From<CoreError> for AppError` conversion.
 
 ### Requirement: Server re-exports core types
 The `kapi-server` crate SHALL re-export all public types from `kapi-core` to maintain backward compatibility. Existing code using `kapi::object::types::StoredObject` SHALL continue to work.

@@ -19,6 +19,7 @@ use serde_json::Value;
 
 use std::collections::HashMap;
 
+use crate::ApiError;
 use crate::error::AppError;
 use crate::object::types::{
     ContinueToken, FieldSelector, LabelSelector, ListOptions, ObjectMeta, StoredObject, WatchFilter,
@@ -27,8 +28,6 @@ use crate::routes::AppState;
 use crate::schema::SCHEMA_KIND;
 use crate::schema::schema_cache_key;
 use crate::store::ResourceKey;
-#[cfg(test)]
-use kapi_core::CoreError;
 
 /// Path parameters for /apis/{group}/{version}/{kind}
 #[derive(Deserialize)]
@@ -101,19 +100,24 @@ fn extract_schema_name(body: &Value) -> Result<String, AppError> {
     // Length validation to prevent abuse (e.g., massive cache keys)
     const MAX_FIELD_LENGTH: usize = 256;
     if target_kind.len() > MAX_FIELD_LENGTH {
-        return Err(AppError::InvalidRequest(format!(
-            "targetKind exceeds maximum length of {MAX_FIELD_LENGTH} characters"
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "request".into(),
+            message: format!("targetKind exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+        }));
     }
     if target_group.len() > MAX_FIELD_LENGTH {
-        return Err(AppError::InvalidRequest(format!(
-            "targetGroup exceeds maximum length of {MAX_FIELD_LENGTH} characters"
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "request".into(),
+            message: format!("targetGroup exceeds maximum length of {MAX_FIELD_LENGTH} characters"),
+        }));
     }
     if target_version.len() > MAX_FIELD_LENGTH {
-        return Err(AppError::InvalidRequest(format!(
-            "targetVersion exceeds maximum length of {MAX_FIELD_LENGTH} characters"
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "request".into(),
+            message: format!(
+                "targetVersion exceeds maximum length of {MAX_FIELD_LENGTH} characters"
+            ),
+        }));
     }
 
     Ok(schema_cache_key(target_kind, target_group, target_version))
@@ -133,16 +137,19 @@ fn extract_annotations(body: &Value) -> Result<HashMap<String, String>, AppError
     };
 
     let annotations_obj = annotations_value.as_object().ok_or_else(|| {
-        AppError::InvalidAnnotation("metadata.annotations must be an object".to_string())
+        AppError::Api(ApiError::InvalidRequest {
+            what: "annotation".into(),
+            message: "metadata.annotations must be an object".to_string(),
+        })
     })?;
 
     let mut annotations = HashMap::with_capacity(annotations_obj.len());
     for (key, value) in annotations_obj {
         let str_value = value.as_str().ok_or_else(|| {
-            AppError::InvalidAnnotation(format!(
-                "annotation value for key '{}' must be a string",
-                key
-            ))
+            AppError::Api(ApiError::InvalidRequest {
+                what: "annotation".into(),
+                message: format!("annotation value for key '{}' must be a string", key),
+            })
         })?;
         annotations.insert(key.clone(), str_value.to_string());
     }
@@ -160,14 +167,20 @@ fn extract_labels(body: &Value) -> Result<HashMap<String, String>, AppError> {
         None => return Ok(HashMap::new()),
     };
 
-    let labels_obj = labels_value
-        .as_object()
-        .ok_or_else(|| AppError::InvalidLabel("metadata.labels must be an object".to_string()))?;
+    let labels_obj = labels_value.as_object().ok_or_else(|| {
+        AppError::Api(ApiError::InvalidRequest {
+            what: "label".into(),
+            message: "metadata.labels must be an object".to_string(),
+        })
+    })?;
 
     let mut labels = HashMap::with_capacity(labels_obj.len());
     for (key, value) in labels_obj {
         let str_value = value.as_str().ok_or_else(|| {
-            AppError::InvalidLabel(format!("label value for key '{}' must be a string", key))
+            AppError::Api(ApiError::InvalidRequest {
+                what: "label".into(),
+                message: format!("label value for key '{}' must be a string", key),
+            })
         })?;
         labels.insert(key.clone(), str_value.to_string());
     }
@@ -185,14 +198,20 @@ fn extract_finalizers(body: &Value) -> Result<Vec<String>, AppError> {
     };
 
     let finalizers_arr = finalizers_value.as_array().ok_or_else(|| {
-        AppError::InvalidFinalizer("metadata.finalizers must be an array".to_string())
+        AppError::Api(ApiError::InvalidRequest {
+            what: "finalizer".into(),
+            message: "metadata.finalizers must be an array".to_string(),
+        })
     })?;
 
     let mut finalizers = Vec::with_capacity(finalizers_arr.len());
     for value in finalizers_arr {
-        let str_value = value
-            .as_str()
-            .ok_or_else(|| AppError::InvalidFinalizer("finalizer must be a string".to_string()))?;
+        let str_value = value.as_str().ok_or_else(|| {
+            AppError::Api(ApiError::InvalidRequest {
+                what: "finalizer".into(),
+                message: "finalizer must be a string".to_string(),
+            })
+        })?;
         finalizers.push(str_value.to_string());
     }
     Ok(finalizers)
@@ -247,7 +266,10 @@ async fn create_impl(
                 obj.keys().filter(|k| *k != "metadata" && *k != "spec").collect();
             if !unknown.is_empty() {
                 let fields = unknown.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ");
-                return Err(AppError::InvalidRequestBody(format!("unknown field(s): {fields}")));
+                return Err(AppError::Api(ApiError::InvalidRequest {
+                    what: "request body".into(),
+                    message: format!("unknown field(s): {fields}"),
+                }));
             }
         }
 
@@ -256,20 +278,34 @@ async fn create_impl(
             .get("metadata")
             .and_then(|m| m.get("name"))
             .and_then(|n| n.as_str())
-            .ok_or_else(|| AppError::InvalidRequestBody("'metadata.name' is required".to_string()))?
+            .ok_or_else(|| {
+                AppError::Api(ApiError::InvalidRequest {
+                    what: "request body".into(),
+                    message: "'metadata.name' is required".to_string(),
+                })
+            })?
             .to_string();
 
         // Extract and validate spec
-        let spec = body
-            .get("spec")
-            .ok_or_else(|| AppError::InvalidRequestBody("'spec' field is required".to_string()))?;
+        let spec = body.get("spec").ok_or_else(|| {
+            AppError::Api(ApiError::InvalidRequest {
+                what: "request body".into(),
+                message: "'spec' field is required".to_string(),
+            })
+        })?;
 
         if !spec.is_object() {
-            return Err(AppError::InvalidRequestBody("'spec' must be a JSON object".to_string()));
+            return Err(AppError::Api(ApiError::InvalidRequest {
+                what: "request body".into(),
+                message: "'spec' must be a JSON object".to_string(),
+            }));
         }
 
         if spec.as_object().is_some_and(|o| o.is_empty()) {
-            return Err(AppError::InvalidRequestBody("'spec' must not be empty".to_string()));
+            return Err(AppError::Api(ApiError::InvalidRequest {
+                what: "request body".into(),
+                message: "'spec' must not be empty".to_string(),
+            }));
         }
 
         // URL namespace takes precedence: discard metadata.namespace from body
@@ -486,17 +522,23 @@ async fn update_impl(
         ResourceKey { group: group.clone(), version: version.clone(), kind: kind.clone() };
 
     if body.key != url_key {
-        return Err(AppError::InvalidRequest(format!(
-            "URL key does not match body key: expected {url_key:?}, got {:?}",
-            body.key
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "request".into(),
+            message: format!(
+                "URL key does not match body key: expected {url_key:?}, got {:?}",
+                body.key
+            ),
+        }));
     }
 
     if body.metadata.name != name {
-        return Err(AppError::InvalidRequest(format!(
-            "URL name does not match body name: expected {name:?}, got {:?}",
-            body.metadata.name
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "request".into(),
+            message: format!(
+                "URL name does not match body name: expected {name:?}, got {:?}",
+                body.metadata.name
+            ),
+        }));
     }
 
     // Ensure the body object has the correct key and name from URL
@@ -507,9 +549,12 @@ async fn update_impl(
     if let Some(ref ns) = namespace {
         match &mut body.metadata.namespace {
             Some(existing_ns) if existing_ns != ns => {
-                return Err(AppError::InvalidRequest(format!(
-                    "namespace mismatch: URL has '{ns}', body has '{existing_ns}'"
-                )));
+                return Err(AppError::Api(ApiError::InvalidRequest {
+                    what: "request".into(),
+                    message: format!(
+                        "namespace mismatch: URL has '{ns}', body has '{existing_ns}'"
+                    ),
+                }));
             }
             existing @ None => {
                 *existing = Some(ns.clone());
@@ -803,8 +848,9 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "expected 400 for invalid label key, got {status}: {resp_body}"
         );
-        // Should be an InvalidLabel error, not a service error
-        let error_msg = resp_body["error"].as_str().unwrap_or("");
+        // Should be an InvalidRequest (what: "label") error, not a service error
+        assert_eq!(resp_body["code"], "InvalidRequest", "got: {resp_body}");
+        let error_msg = resp_body["details"]["message"].as_str().unwrap_or("");
         assert!(
             error_msg.contains("label"),
             "expected a label-related error message, got: {error_msg}"
@@ -832,7 +878,8 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "expected 400 for oversized annotations, got {status}: {resp_body}"
         );
-        let error_msg = resp_body["error"].as_str().unwrap_or("");
+        assert_eq!(resp_body["code"], "InvalidRequest", "got: {resp_body}");
+        let error_msg = resp_body["details"]["message"].as_str().unwrap_or("");
         assert!(
             error_msg.contains("annotation"),
             "expected an annotation-related error message, got: {error_msg}"
@@ -885,7 +932,8 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "expected 400 for invalid label in update, got {status}: {resp_body}"
         );
-        let error_msg = resp_body["error"].as_str().unwrap_or("");
+        assert_eq!(resp_body["code"], "InvalidRequest", "got: {resp_body}");
+        let error_msg = resp_body["details"]["message"].as_str().unwrap_or("");
         assert!(
             error_msg.contains("label"),
             "expected a label-related error message, got: {error_msg}"
@@ -908,7 +956,7 @@ mod tests {
         let result = FieldSelector::parse("metadata.namespace=default");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(CoreError::InvalidFieldSelector(msg)) if msg.contains("metadata.namespace"))
+            matches!(result, Err(ApiError::InvalidRequest { what, message }) if what == "field selector" && message.contains("metadata.namespace"))
         );
     }
 
@@ -917,7 +965,7 @@ mod tests {
         let result = FieldSelector::parse("invalid-format");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(CoreError::InvalidFieldSelector(msg)) if msg.contains("expected 'field=value'"))
+            matches!(result, Err(ApiError::InvalidRequest { what, message }) if what == "field selector" && message.contains("expected 'field=value'"))
         );
     }
 
@@ -1060,7 +1108,7 @@ mod tests {
         let result = LabelSelector::parse("app=");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(CoreError::InvalidLabelSelector(msg)) if msg.contains("empty value"))
+            matches!(result, Err(ApiError::InvalidRequest { what, message }) if what == "label selector" && message.contains("empty value"))
         );
     }
 
@@ -1069,7 +1117,7 @@ mod tests {
         let result = LabelSelector::parse("invalid key!=value");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(CoreError::InvalidLabelSelector(msg)) if msg.contains("whitespace"))
+            matches!(result, Err(ApiError::InvalidRequest { what, message }) if what == "label selector" && message.contains("whitespace"))
         );
     }
 
@@ -1078,7 +1126,7 @@ mod tests {
         let result = LabelSelector::parse("app=nginx,,env=prod");
         assert!(result.is_err());
         assert!(
-            matches!(result, Err(CoreError::InvalidLabelSelector(msg)) if msg.contains("empty segment"))
+            matches!(result, Err(ApiError::InvalidRequest { what, message }) if what == "label selector" && message.contains("empty segment"))
         );
     }
 
@@ -1450,7 +1498,8 @@ mod tests {
             StatusCode::BAD_REQUEST,
             "cluster-scoped kind should be rejected via namespaced route"
         );
-        let error_msg = resp_body["error"].as_str().unwrap_or("");
+        assert_eq!(resp_body["code"], "InvalidRequest", "got: {resp_body}");
+        let error_msg = resp_body["details"]["message"].as_str().unwrap_or("");
         assert!(
             error_msg.contains("does not accept namespace"),
             "expected 'does not accept namespace' error, got: {error_msg}"

@@ -232,7 +232,8 @@ pub(crate) fn generate_controller_content(
     // Imports.
     out.push_str(
         "use async_trait::async_trait;\n\
-         use kapi_client::typed::{TypedClient, TypedResource};\n\
+         use kapi_client::TypedClient;\n\
+         use kapi_client::TypedResource;\n\
          use kapi_controller::finalizer;\n\
          use kapi_controller::reconciler::{ReconcileContext, ReconcileResult, Reconciler};\n\n",
     );
@@ -474,7 +475,8 @@ mod tests {
     fn test_generate_controller_content_has_imports() {
         let code = generate_controller_content("Widget", "example.io", "v1", true);
         assert!(code.contains("use async_trait::async_trait;"));
-        assert!(code.contains("use kapi_client::typed::{TypedClient, TypedResource};"));
+        assert!(code.contains("use kapi_client::TypedClient;"));
+        assert!(code.contains("use kapi_client::TypedResource;"));
         assert!(code.contains("use kapi_controller::finalizer;"));
         assert!(code.contains(
             "use kapi_controller::reconciler::{ReconcileContext, ReconcileResult, Reconciler};"

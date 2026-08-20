@@ -17,7 +17,7 @@ pub use store::ObjectStore;
 
 // Re-export core types for backward compatibility
 pub use kapi_core::{
-    ContinueToken, CoreError, FieldSelector, LabelRequirement, LabelSelector, ListOptions,
+    ApiError, ContinueToken, FieldSelector, LabelRequirement, LabelSelector, ListOptions,
     ListResponse, ObjectMeta, ResourceKey, SchemaData, StoredObject, SystemMetadata,
     ValidationError, WatchEvent, WatchEventType, WatchFilter,
 };

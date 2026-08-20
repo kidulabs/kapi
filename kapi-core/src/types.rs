@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use chrono::{DateTime, Utc};
 
-use crate::error::CoreError;
+use crate::error::ApiError;
 use crate::key::ResourceKey;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -41,20 +41,21 @@ impl FieldSelector {
     /// Parses a `fieldSelector` query parameter value into a [`WatchFilter`].
     ///
     /// Supports standard syntax: `metadata.name=<value>`.
-    /// Returns [`CoreError::InvalidFieldSelector`] for unsupported fields or malformed input.
-    pub fn parse(raw: &str) -> Result<WatchFilter, CoreError> {
-        let (field, value) = raw.split_once('=').ok_or_else(|| {
-            CoreError::InvalidFieldSelector(format!(
-                "invalid field selector format: expected 'field=value', got '{raw}'"
-            ))
+    /// Returns [`ApiError::InvalidRequest`] (`what: "field selector"`) for unsupported
+    /// fields or malformed input.
+    pub fn parse(raw: &str) -> Result<WatchFilter, ApiError> {
+        let (field, value) = raw.split_once('=').ok_or_else(|| ApiError::InvalidRequest {
+            what: "field selector".into(),
+            message: format!("invalid field selector format: expected 'field=value', got '{raw}'"),
         })?;
         match field {
             "metadata.name" => {
                 Ok(WatchFilter::FieldSelector(FieldSelector::NameEquals(value.to_string())))
             }
-            _ => Err(CoreError::InvalidFieldSelector(format!(
-                "unsupported field '{field}': only 'metadata.name' is supported"
-            ))),
+            _ => Err(ApiError::InvalidRequest {
+                what: "field selector".into(),
+                message: format!("unsupported field '{field}': only 'metadata.name' is supported"),
+            }),
         }
     }
 }
@@ -102,21 +103,22 @@ impl LabelSelector {
     /// - `!key` — non-existence (key not present)
     /// - Comma-separated — AND combinator (e.g., `app=nginx,env=prod`)
     ///
-    /// Returns [`CoreError::InvalidLabelSelector`] for malformed selectors.
+    /// Returns [`ApiError::InvalidRequest`] (`what: "label selector"`) for malformed selectors.
     /// Empty string returns a `LabelSelector` with no requirements (matches all).
-    pub fn parse(raw: &str) -> Result<WatchFilter, CoreError> {
+    pub fn parse(raw: &str) -> Result<WatchFilter, ApiError> {
         if raw.is_empty() {
             return Ok(WatchFilter::LabelSelector(LabelSelector { requirements: vec![] }));
         }
 
-        let requirements: Result<Vec<LabelRequirement>, CoreError> = raw
+        let requirements: Result<Vec<LabelRequirement>, ApiError> = raw
             .split(',')
             .map(|segment| {
                 let segment = segment.trim();
                 if segment.is_empty() {
-                    return Err(CoreError::InvalidLabelSelector(
-                        "empty segment in label selector".to_string(),
-                    ));
+                    return Err(ApiError::InvalidRequest {
+                        what: "label selector".into(),
+                        message: "empty segment in label selector".to_string(),
+                    });
                 }
                 parse_label_requirement(segment)
             })
@@ -127,16 +129,17 @@ impl LabelSelector {
 }
 
 /// Parses a single label requirement string into a [`LabelRequirement`].
-fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, CoreError> {
+fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, ApiError> {
     // Check for inequality first (must be before equality check)
     if let Some((key, value)) = segment.split_once("!=") {
         let key = key.trim();
         let value = value.trim();
         validate_label_key(key)?;
         if value.is_empty() {
-            return Err(CoreError::InvalidLabelSelector(format!(
-                "empty value in inequality selector: '{segment}'"
-            )));
+            return Err(ApiError::InvalidRequest {
+                what: "label selector".into(),
+                message: format!("empty value in inequality selector: '{segment}'"),
+            });
         }
         return Ok(LabelRequirement::NotEquals { key: key.to_string(), value: value.to_string() });
     }
@@ -147,9 +150,10 @@ fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, CoreError>
         let value = value.trim();
         validate_label_key(key)?;
         if value.is_empty() {
-            return Err(CoreError::InvalidLabelSelector(format!(
-                "empty value in equality selector: '{segment}'"
-            )));
+            return Err(ApiError::InvalidRequest {
+                what: "label selector".into(),
+                message: format!("empty value in equality selector: '{segment}'"),
+            });
         }
         return Ok(LabelRequirement::Equals { key: key.to_string(), value: value.to_string() });
     }
@@ -169,14 +173,18 @@ fn parse_label_requirement(segment: &str) -> Result<LabelRequirement, CoreError>
 
 /// Validates a label key format for selector parsing.
 /// Label keys must not be empty or contain whitespace.
-fn validate_label_key(key: &str) -> Result<(), CoreError> {
+fn validate_label_key(key: &str) -> Result<(), ApiError> {
     if key.is_empty() {
-        return Err(CoreError::InvalidLabelSelector("empty label key".to_string()));
+        return Err(ApiError::InvalidRequest {
+            what: "label selector".into(),
+            message: "empty label key".to_string(),
+        });
     }
     if key.contains(|c: char| c.is_whitespace()) {
-        return Err(CoreError::InvalidLabelSelector(format!(
-            "label key contains whitespace: '{key}'"
-        )));
+        return Err(ApiError::InvalidRequest {
+            what: "label selector".into(),
+            message: format!("label key contains whitespace: '{key}'"),
+        });
     }
     Ok(())
 }

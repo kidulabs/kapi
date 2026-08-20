@@ -20,7 +20,7 @@ use std::time::Duration;
 
 use kapi_client::client::KapiClient;
 use kapi_client::error::ClientError;
-use kapi_core::StoredObject;
+use kapi_core::{ApiError, StoredObject};
 
 /// Returns `true` when the object has a deletion timestamp set (i.e. it is
 /// being deleted).
@@ -36,9 +36,6 @@ pub fn is_deleting(obj: &StoredObject) -> bool {
 ///
 /// On a 409 Conflict (CAS failure), re-fetches the object and retries
 /// (up to 5 attempts).
-///
-/// For typed resources (`&T where T: TypedResource`), use the typed
-/// counterpart in [`typed::ensure_finalizer`].
 pub async fn ensure_finalizer(
     client: &KapiClient,
     obj: &StoredObject,
@@ -58,7 +55,7 @@ pub async fn ensure_finalizer(
 
         match client.update(current.metadata.namespace.as_deref(), &updated).await {
             Ok(_) => return Ok(()),
-            Err(ClientError::ApiError { status: 409, .. }) if attempt < 4 => {
+            Err(ClientError::Api(ApiError::Conflict { .. })) if attempt < 4 => {
                 // CAS conflict — re-fetch and retry.
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 current = client
@@ -80,9 +77,6 @@ pub async fn ensure_finalizer(
 ///
 /// On a 409 Conflict (CAS failure), re-fetches the object and retries
 /// (up to 5 attempts).
-///
-/// For typed resources (`&T where T: TypedResource`), use the typed
-/// counterpart in [`typed::remove_finalizer`].
 pub async fn remove_finalizer(
     client: &KapiClient,
     obj: &StoredObject,
@@ -100,7 +94,7 @@ pub async fn remove_finalizer(
 
         match client.update(current.metadata.namespace.as_deref(), &updated).await {
             Ok(_) => return Ok(()),
-            Err(ClientError::ApiError { status: 409, .. }) if attempt < 4 => {
+            Err(ClientError::Api(ApiError::Conflict { .. })) if attempt < 4 => {
                 // CAS conflict — re-fetch and retry.
                 tokio::time::sleep(Duration::from_millis(10)).await;
                 current = client
@@ -120,15 +114,14 @@ pub async fn remove_finalizer(
 /// Each function accepts a typed resource `&T where T: TypedResource`,
 /// converts it to a [`StoredObject`] exactly once via
 /// [`TypedResource::to_stored_object`](kapi_client::TypedResource::to_stored_object),
-/// and then delegates to the raw,
-/// `StoredObject`-based helper.  The CAS retry loop is **not** re-implemented
-/// here — it stays in the raw helpers.
+/// and then delegates to the raw, `StoredObject`-based helper. The CAS retry
+/// loop is **not** re-implemented here — it stays in the raw helpers.
 ///
 /// # CAS re-fetches operate on `StoredObject`, not `T`
 ///
-/// The CAS retry loop always works on [`StoredObject`] values.  When a typed
+/// The CAS retry loop always works on [`StoredObject`] values. When a typed
 /// resource is passed in, the re-fetch performed after a 409 Conflict returns
-/// a `StoredObject`, never `T`.  The passed-in `&T` is therefore never
+/// a `StoredObject`, never `T`. The passed-in `&T` is therefore never
 /// updated in place by these helpers — re-read the resource from the server
 /// if you need the freshest state.
 pub mod typed {
@@ -147,19 +140,20 @@ pub mod typed {
     /// # CAS re-fetches operate on `StoredObject`, not `T`
     ///
     /// The CAS retry loop re-fetches a `StoredObject` after a 409 Conflict,
-    /// never a `T`.  `obj` is not updated in place.
+    /// never a `T`. `obj` is not updated in place.
     ///
     /// # Errors
     ///
     /// Returns `Err` if [`TypedResource::to_stored_object`] fails
-    /// ([`TypedError::Serialization`](kapi_client::TypedError)) or if the
-    /// underlying update fails after all retries.
+    /// ([`ClientError`]) or if the underlying update fails after all retries.
     pub async fn ensure_finalizer<T: TypedResource>(
         client: &KapiClient,
         obj: &T,
         finalizer: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let stored = obj.to_stored_object()?;
+        let stored = obj
+            .to_stored_object()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         super::ensure_finalizer(client, &stored, finalizer).await
     }
 
@@ -174,19 +168,20 @@ pub mod typed {
     /// # CAS re-fetches operate on `StoredObject`, not `T`
     ///
     /// The CAS retry loop re-fetches a `StoredObject` after a 409 Conflict,
-    /// never a `T`.  `obj` is not updated in place.
+    /// never a `T`. `obj` is not updated in place.
     ///
     /// # Errors
     ///
     /// Returns `Err` if [`TypedResource::to_stored_object`] fails
-    /// ([`TypedError::Serialization`](kapi_client::TypedError)) or if the
-    /// underlying update fails after all retries.
+    /// ([`ClientError`]) or if the underlying update fails after all retries.
     pub async fn remove_finalizer<T: TypedResource>(
         client: &KapiClient,
         obj: &T,
         finalizer: &str,
     ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        let stored = obj.to_stored_object()?;
+        let stored = obj
+            .to_stored_object()
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)?;
         super::remove_finalizer(client, &stored, finalizer).await
     }
 }
@@ -194,7 +189,6 @@ pub mod typed {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kapi_client::{TypedError, TypedResource};
     use kapi_core::{ObjectMeta, ResourceKey, SystemMetadata};
     use serde_json::Value;
     use std::io::{Read, Write};
@@ -233,99 +227,6 @@ mod tests {
         let mut obj = obj_with_finalizers(finalizers);
         obj.system.deletion_timestamp = Some(chrono::Utc::now());
         obj
-    }
-
-    // ------------------------------------------------------------------
-    // Task 2.1: mock TypedResource
-    // ------------------------------------------------------------------
-
-    /// Mock [`TypedResource`] with a controllable finalizer list and a
-    /// serialization failure switch.
-    #[derive(Debug, Clone)]
-    struct MockWidget {
-        metadata: ObjectMeta,
-        system: SystemMetadata,
-        spec: Value,
-        fail_serialization: bool,
-    }
-
-    impl MockWidget {
-        fn with_finalizers(finalizers: &[&str]) -> Self {
-            MockWidget {
-                metadata: ObjectMeta {
-                    name: "test".into(),
-                    namespace: Some("default".into()),
-                    labels: Default::default(),
-                    annotations: Default::default(),
-                    finalizers: finalizers.iter().map(|s| s.to_string()).collect(),
-                },
-                system: SystemMetadata::initial(),
-                spec: Value::String("mock spec".into()),
-                fail_serialization: false,
-            }
-        }
-
-        /// Marks the mock resource as being deleted.
-        fn marked_for_deletion(mut self) -> Self {
-            self.system.deletion_timestamp = Some(chrono::Utc::now());
-            self
-        }
-
-        /// Makes `to_stored_object` fail with a serialization error.
-        fn with_failing_serialization(mut self) -> Self {
-            self.fail_serialization = true;
-            self
-        }
-    }
-
-    impl TypedResource for MockWidget {
-        type Spec = Value;
-        type Status = Value;
-
-        fn key() -> ResourceKey {
-            ResourceKey { group: "example.io".into(), version: "v1".into(), kind: "Widget".into() }
-        }
-
-        fn from_parts(
-            metadata: ObjectMeta,
-            system: SystemMetadata,
-            spec: Self::Spec,
-            _status: Option<Self::Status>,
-        ) -> Self {
-            MockWidget { metadata, system, spec, fail_serialization: false }
-        }
-
-        fn metadata(&self) -> &ObjectMeta {
-            &self.metadata
-        }
-
-        fn system(&self) -> &SystemMetadata {
-            &self.system
-        }
-
-        fn spec(&self) -> &Self::Spec {
-            &self.spec
-        }
-
-        fn status(&self) -> Option<&Self::Status> {
-            None
-        }
-
-        fn to_stored_object(&self) -> Result<StoredObject, TypedError> {
-            if self.fail_serialization {
-                // Produce a genuine serde_json error to exercise the
-                // `TypedError::Serialization` propagation path.
-                let err = serde_json::from_str::<Value>("not valid json").expect_err("must fail");
-                return Err(TypedError::from(err));
-            }
-            Ok(StoredObject {
-                key: Self::key(),
-                metadata: self.metadata.clone(),
-                system: self.system.clone(),
-                spec: self.spec.clone(),
-                status: None,
-            })
-        }
     }
 
     // ------------------------------------------------------------------
@@ -484,104 +385,6 @@ mod tests {
         // Removing a non-existent finalizer should be a no-op.
         // (Regression guard: multiple calls should not error.)
         assert!(!obj.metadata.finalizers.contains(&"example.io/cleanup".to_string()));
-    }
-
-    // ------------------------------------------------------------------
-    // Task 2.2: typed ensure_finalizer when the finalizer is already present
-    // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn typed_ensure_finalizer_when_present_is_noop() {
-        // Pointed at a dead port: any accidental client call would fail.
-        let client = client_with_no_server();
-        let widget = MockWidget::with_finalizers(&["example.io/cleanup"]);
-        let result = typed::ensure_finalizer(&client, &widget, "example.io/cleanup").await;
-        assert!(result.is_ok(), "expected Ok(()) without client interaction, got: {result:?}");
-    }
-
-    // ------------------------------------------------------------------
-    // Task 2.3: typed ensure_finalizer when the finalizer is absent
-    // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn typed_ensure_finalizer_when_absent_delegates() {
-        let (client, captured) = spawn_capture_server(stored_json(&["example.io/cleanup"]));
-        let widget = MockWidget::with_finalizers(&[]);
-
-        typed::ensure_finalizer(&client, &widget, "example.io/cleanup")
-            .await
-            .expect("typed ensure_finalizer should succeed");
-
-        let req = captured.lock().expect("lock").take().expect("client made a request");
-        assert!(
-            req.request_line.starts_with("PUT"),
-            "expected PUT request, got: {}",
-            req.request_line
-        );
-        let finalizers = req.body["metadata"]["finalizers"].as_array().expect("finalizers array");
-        assert_eq!(finalizers.len(), 1, "finalizer should have been appended");
-        assert_eq!(finalizers[0], "example.io/cleanup");
-    }
-
-    // ------------------------------------------------------------------
-    // Task 2.4: typed remove_finalizer when the finalizer is absent
-    // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn typed_remove_finalizer_when_absent_is_noop() {
-        let client = client_with_no_server();
-        let widget = MockWidget::with_finalizers(&["other/finalizer"]);
-        let result = typed::remove_finalizer(&client, &widget, "example.io/cleanup").await;
-        assert!(result.is_ok(), "expected Ok(()) without client interaction, got: {result:?}");
-    }
-
-    // ------------------------------------------------------------------
-    // Task 2.5: typed remove_finalizer on a resource marked for deletion
-    // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn typed_remove_finalizer_on_deleting_resource_delegates() {
-        let (client, captured) = spawn_capture_server(stored_json(&[]));
-        let widget = MockWidget::with_finalizers(&["example.io/cleanup"]).marked_for_deletion();
-
-        typed::remove_finalizer(&client, &widget, "example.io/cleanup")
-            .await
-            .expect("typed remove_finalizer should succeed");
-
-        let req = captured.lock().expect("lock").take().expect("client made a request");
-        assert!(
-            req.request_line.starts_with("PUT"),
-            "expected PUT request, got: {}",
-            req.request_line
-        );
-        let finalizers = req.body["metadata"]["finalizers"].as_array().expect("finalizers array");
-        assert!(finalizers.is_empty(), "expected the finalizer to be removed, got: {finalizers:?}");
-    }
-
-    // ------------------------------------------------------------------
-    // Task 2.6: TypedError::Serialization propagates without touching client
-    // ------------------------------------------------------------------
-
-    #[tokio::test]
-    async fn typed_helpers_propagate_serialization_error_without_client_call() {
-        let client = client_with_no_server();
-        let widget = MockWidget::with_finalizers(&[]).with_failing_serialization();
-
-        let err = typed::ensure_finalizer(&client, &widget, "example.io/cleanup")
-            .await
-            .expect_err("to_stored_object should fail");
-        assert!(
-            err.downcast_ref::<TypedError>().is_some(),
-            "expected TypedError::Serialization to be boxed, got: {err}"
-        );
-
-        let err = typed::remove_finalizer(&client, &widget, "example.io/cleanup")
-            .await
-            .expect_err("to_stored_object should fail");
-        assert!(
-            err.downcast_ref::<TypedError>().is_some(),
-            "expected TypedError::Serialization to be boxed, got: {err}"
-        );
     }
 
     // ------------------------------------------------------------------

@@ -194,7 +194,8 @@ pub async fn test_invalid_annotation_key_empty(app: &TestApp) -> Result<(), Stri
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidAnnotation", "expected InvalidAnnotation error code");
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code");
+    assert_eq!(err["details"]["what"], "annotation", "expected what=annotation in error details");
 
     Ok(())
 }
@@ -219,7 +220,8 @@ pub async fn test_invalid_annotation_key_too_long(app: &TestApp) -> Result<(), S
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidAnnotation", "expected InvalidAnnotation error code");
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code");
+    assert_eq!(err["details"]["what"], "annotation", "expected what=annotation in error details");
 
     Ok(())
 }
@@ -243,7 +245,8 @@ pub async fn test_invalid_annotation_value_non_string(app: &TestApp) -> Result<(
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidAnnotation", "expected InvalidAnnotation error code");
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code");
+    assert_eq!(err["details"]["what"], "annotation", "expected what=annotation in error details");
 
     Ok(())
 }
@@ -267,7 +270,8 @@ pub async fn test_invalid_annotations_format(app: &TestApp) -> Result<(), String
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidAnnotation", "expected InvalidAnnotation error code");
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code");
+    assert_eq!(err["details"]["what"], "annotation", "expected what=annotation in error details");
 
     Ok(())
 }
@@ -292,10 +296,8 @@ pub async fn test_annotation_size_limit(app: &TestApp) -> Result<(), String> {
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(
-        err["code"], "InvalidAnnotation",
-        "expected InvalidAnnotation error code for size limit"
-    );
+    assert_eq!(err["code"], "InvalidRequest", "expected InvalidRequest error code for size limit");
+    assert_eq!(err["details"]["what"], "annotation", "expected what=annotation in error details");
 
     Ok(())
 }
@@ -334,9 +336,10 @@ pub async fn test_annotation_size_limit_on_update(app: &TestApp) -> Result<(), S
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(
-        err["code"], "InvalidAnnotation",
-        "expected InvalidAnnotation error code for size limit on update"
+        err["code"], "InvalidRequest",
+        "expected InvalidRequest error code for size limit on update"
     );
+    assert_eq!(err["details"]["what"], "annotation", "expected what=annotation in error details");
 
     Ok(())
 }

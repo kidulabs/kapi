@@ -9,6 +9,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use serde_json::Value;
 
+use crate::ApiError;
 use crate::error::AppError;
 use crate::object::types::{ListOptions, SchemaData};
 use crate::schema::{
@@ -122,10 +123,10 @@ impl SchemaRegistry {
 
         let schema_obj =
             self.store.get(&schema_key, None, &schema_name).await.map_err(|e| match e {
-                AppError::NotFound { .. } => AppError::NotFound {
+                AppError::Api(ApiError::NotFound { .. }) => AppError::Api(ApiError::NotFound {
                     what: "Schema".to_string(),
                     identifier: schema_name.clone(),
-                },
+                }),
                 other => other,
             })?;
 
@@ -210,10 +211,10 @@ impl SchemaRegistry {
 
         let schema_obj =
             self.store.get(&schema_key, None, &schema_name).await.map_err(|e| match e {
-                AppError::NotFound { .. } => AppError::NotFound {
+                AppError::Api(ApiError::NotFound { .. }) => AppError::Api(ApiError::NotFound {
                     what: "Schema".to_string(),
                     identifier: schema_name.clone(),
-                },
+                }),
                 other => other,
             })?;
 
@@ -222,9 +223,9 @@ impl SchemaRegistry {
             .map_err(|e| AppError::InvalidSchema(format!("failed to parse schema data: {}", e)))?;
 
         // Check if status_schema is present
-        let status_schema = schema_data
-            .status_schema
-            .ok_or_else(|| AppError::StatusSubresourceNotEnabled { kind: key.kind.clone() })?;
+        let status_schema = schema_data.status_schema.ok_or_else(|| {
+            AppError::Api(ApiError::StatusSubresourceNotEnabled { kind: key.kind.clone() })
+        })?;
 
         // Compile status_schema
         let compiled = JsonSchemaValidator::compile(&status_schema)
@@ -292,10 +293,10 @@ impl SchemaRegistry {
 
         let schema_obj =
             self.store.get(&schema_key, None, &schema_name).await.map_err(|e| match e {
-                AppError::NotFound { .. } => AppError::NotFound {
+                AppError::Api(ApiError::NotFound { .. }) => AppError::Api(ApiError::NotFound {
                     what: "Schema".to_string(),
                     identifier: schema_name.clone(),
-                },
+                }),
                 other => other,
             })?;
 
@@ -519,7 +520,7 @@ mod tests {
         };
 
         let result = registry.get_validator(&key).await;
-        assert!(matches!(result, Err(AppError::NotFound { .. })));
+        assert!(matches!(result, Err(AppError::Api(ApiError::NotFound { .. }))));
     }
 
     #[tokio::test]
@@ -721,7 +722,7 @@ mod tests {
             .expect("store create should succeed");
 
         let result = registry.get_status_validator(&key).await;
-        assert!(matches!(result, Err(AppError::StatusSubresourceNotEnabled { .. })));
+        assert!(matches!(result, Err(AppError::Api(ApiError::StatusSubresourceNotEnabled { .. }))));
     }
 
     // --- insert_status tests ---

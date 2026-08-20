@@ -10,6 +10,7 @@ use std::sync::{
 
 use serde_json::Value;
 
+use crate::ApiError;
 use crate::error::AppError;
 use crate::event::EventPublisher;
 use crate::namespace::namespace_key;
@@ -134,12 +135,15 @@ impl ObjectService {
         if key == namespace_key() {
             // The "default" namespace is protected from deletion.
             if name == DEFAULT_NAMESPACE {
-                return Err(AppError::ProtectedNamespace { name });
+                return Err(AppError::Api(ApiError::ProtectedNamespace { name }));
             }
             // Other namespaces can only be deleted when empty.
             let object_count = self.count_objects_in_namespace(&name).await?;
             if object_count > 0 {
-                return Err(AppError::NamespaceNotEmpty { namespace: name, object_count });
+                return Err(AppError::Api(ApiError::NamespaceNotEmpty {
+                    namespace: name,
+                    object_count,
+                }));
             }
         }
 
@@ -207,7 +211,7 @@ impl ObjectService {
         let validator = self.schema_registry.get_status_validator(&key).await?;
         if !validator.is_valid(&status) {
             let errors = helpers::map_validation_errors(validator.validate(&status));
-            return Err(AppError::SchemaValidation(errors));
+            return Err(AppError::Api(ApiError::SchemaValidation { errors }));
         }
 
         // Update status in store via transaction
@@ -277,10 +281,13 @@ impl ObjectService {
         let resolved_namespace = match scope {
             Scope::Cluster => {
                 if namespace.is_some() {
-                    return Err(AppError::InvalidRequest(format!(
-                        "cluster-scoped kind '{}' does not accept namespace",
-                        key.kind
-                    )));
+                    return Err(AppError::Api(ApiError::InvalidRequest {
+                        what: "request".into(),
+                        message: format!(
+                            "cluster-scoped kind '{}' does not accept namespace",
+                            key.kind
+                        ),
+                    }));
                 }
                 None
             }
@@ -300,7 +307,7 @@ impl ObjectService {
 
         if !validator.is_valid(&spec) {
             let errors = helpers::map_validation_errors(validator.validate(&spec));
-            return Err(AppError::SchemaValidation(errors));
+            return Err(AppError::Api(ApiError::SchemaValidation { errors }));
         }
 
         let stored = self
@@ -320,18 +327,21 @@ impl ObjectService {
     /// Verifies that a Namespace object with the given name exists.
     ///
     /// Used by [`validate_and_create_object`] to enforce that objects can only
-    /// be created in known namespaces. Returns [`AppError::NotFound`] (with
-    /// `what: "namespace"`) if the Namespace object is missing.
+    /// be created in known namespaces. Returns [`AppError::Api`] wrapping
+    /// [`ApiError::NotFound`] (with `what: "namespace"`) if the Namespace
+    /// object is missing.
     ///
     /// This is a single `store.get` call against the Namespace kind (which is
     /// cluster-scoped, so `namespace: None` is used).
     async fn ensure_namespace_exists(&self, namespace: &str) -> Result<(), AppError> {
         match self.store.get(&namespace_key(), None, namespace).await {
             Ok(_) => Ok(()),
-            Err(AppError::NotFound { .. }) => Err(AppError::NotFound {
-                what: "namespace".to_string(),
-                identifier: namespace.to_string(),
-            }),
+            Err(AppError::Api(ApiError::NotFound { .. })) => {
+                Err(AppError::Api(ApiError::NotFound {
+                    what: "namespace".to_string(),
+                    identifier: namespace.to_string(),
+                }))
+            }
             Err(e) => Err(e),
         }
     }
@@ -376,10 +386,13 @@ impl ObjectService {
         match scope {
             Scope::Cluster => {
                 if metadata.namespace.is_some() {
-                    return Err(AppError::InvalidRequest(format!(
-                        "cluster-scoped kind '{}' does not accept namespace",
-                        kind
-                    )));
+                    return Err(AppError::Api(ApiError::InvalidRequest {
+                        what: "request".into(),
+                        message: format!(
+                            "cluster-scoped kind '{}' does not accept namespace",
+                            kind
+                        ),
+                    }));
                 }
                 Ok(None)
             }
@@ -389,10 +402,13 @@ impl ObjectService {
                 if let Some(expected_ns) = url_namespace
                     && ns.as_str() != expected_ns
                 {
-                    return Err(AppError::InvalidRequest(format!(
-                        "namespace mismatch: expected '{}', got '{}'",
-                        expected_ns, ns
-                    )));
+                    return Err(AppError::Api(ApiError::InvalidRequest {
+                        what: "request".into(),
+                        message: format!(
+                            "namespace mismatch: expected '{}', got '{}'",
+                            expected_ns, ns
+                        ),
+                    }));
                 }
                 Ok(Some(ns.clone()))
             }
@@ -413,19 +429,19 @@ impl ObjectService {
     ) -> TransactionOp {
         // OCC check: reject if resource_version doesn't match
         if incoming_rv != existing.system.resource_version {
-            return TransactionOp::Abort(AppError::Conflict {
+            return TransactionOp::Abort(AppError::Api(ApiError::Conflict {
                 expected: existing.system.resource_version,
                 actual: incoming_rv,
-            });
+            }));
         }
 
         // If object is being deleted, use finalizer state machine
         if finalizer::evaluate_update(existing, incoming_metadata)
             == finalizer::FinalizerDecision::RejectBeingDeleted
         {
-            return TransactionOp::Abort(AppError::ObjectBeingDeleted {
+            return TransactionOp::Abort(AppError::Api(ApiError::ObjectBeingDeleted {
                 name: existing.metadata.name.clone(),
-            });
+            }));
         }
 
         // Build the updated object
@@ -472,7 +488,7 @@ impl ObjectService {
 
         if !validator.is_valid(&spec) {
             let errors = helpers::map_validation_errors(validator.validate(&spec));
-            return Err(AppError::SchemaValidation(errors));
+            return Err(AppError::Api(ApiError::SchemaValidation { errors }));
         }
 
         let key = object.key.clone();
@@ -710,7 +726,7 @@ mod tests {
                 json!({}),
             )
             .await;
-        assert!(matches!(result, Err(AppError::NotFound { .. })));
+        assert!(matches!(result, Err(AppError::Api(ApiError::NotFound { .. }))));
     }
 
     // T23: Create object with invalid data → SchemaValidation
@@ -741,7 +757,7 @@ mod tests {
                 invalid_data,
             )
             .await;
-        assert!(matches!(result, Err(AppError::SchemaValidation(_))));
+        assert!(matches!(result, Err(AppError::Api(ApiError::SchemaValidation { .. }))));
     }
 
     // T24: Update with correct version → success, Modified event published
@@ -814,7 +830,7 @@ mod tests {
 
         // OCC check in service layer rejects stale versions
         let result = service.update(None, wrong_version_obj).await;
-        assert!(matches!(result, Err(AppError::Conflict { .. })));
+        assert!(matches!(result, Err(AppError::Api(ApiError::Conflict { .. }))));
     }
 
     // T26: Delete Schema with no objects → success, cache evicted, Deleted event published
@@ -879,7 +895,9 @@ mod tests {
         // Try to delete the schema via SchemaService
         let schema_key = schema_key();
         let result = schema_service.delete(schema_key, "Widget.example.io.v1".to_string()).await;
-        assert!(matches!(result, Err(AppError::SchemaHasObjects { kind }) if kind == "Widget"));
+        assert!(
+            matches!(result, Err(AppError::Api(ApiError::SchemaHasObjects { kind })) if kind == "Widget")
+        );
     }
 
     // T28: Delete regular object → success, Deleted event published
@@ -954,7 +972,7 @@ mod tests {
                 schema_data,
             )
             .await;
-        assert!(matches!(result, Err(AppError::AlreadyExists { .. })));
+        assert!(matches!(result, Err(AppError::Api(ApiError::AlreadyExists { .. }))));
     }
 
     // T30: Schema cache eviction on Schema delete
@@ -1422,7 +1440,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::StatusSubresourceNotEnabled { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::StatusSubresourceNotEnabled { .. })));
     }
 
     #[tokio::test]
@@ -1456,7 +1474,7 @@ mod tests {
             .update_status(widget_key.clone(), None, "my-widget".to_string(), json!({"phase": 123}))
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::SchemaValidation(_)));
+        assert!(matches!(err, AppError::Api(ApiError::SchemaValidation { .. })));
     }
 
     #[tokio::test]
@@ -1479,7 +1497,7 @@ mod tests {
             )
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -1560,7 +1578,7 @@ mod tests {
             .get_status(widget_key.clone(), None, "my-widget".to_string())
             .await
             .unwrap_err();
-        assert!(matches!(err, AppError::StatusSubresourceNotEnabled { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::StatusSubresourceNotEnabled { .. })));
     }
 
     #[tokio::test]
@@ -1810,7 +1828,7 @@ mod tests {
 
         let result = service.update(None, update_obj).await;
         assert!(
-            matches!(result, Err(AppError::Conflict { .. })),
+            matches!(result, Err(AppError::Api(ApiError::Conflict { .. }))),
             "expected Conflict error, got {:?}",
             result
         );
@@ -2099,7 +2117,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(result, Err(AppError::InvalidRequest(msg)) if msg.contains("cluster-scoped"))
+            matches!(result, Err(AppError::Api(ApiError::InvalidRequest { message, .. })) if message.contains("cluster-scoped"))
         );
     }
 
@@ -2160,7 +2178,7 @@ mod tests {
             )
             .await;
         assert!(
-            matches!(result, Err(AppError::InvalidRequest(msg)) if msg.contains("cluster-scoped"))
+            matches!(result, Err(AppError::Api(ApiError::InvalidRequest { message, .. })) if message.contains("cluster-scoped"))
         );
     }
 
@@ -2276,7 +2294,7 @@ mod tests {
             )
             .await;
         match result {
-            Err(AppError::NotFound { what, identifier }) => {
+            Err(AppError::Api(ApiError::NotFound { what, identifier })) => {
                 assert_eq!(what, "namespace");
                 assert_eq!(identifier, "nonexistent");
             }
@@ -2342,7 +2360,7 @@ mod tests {
         // make_services bootstraps the "default" namespace
         let result = service.delete(namespace_key(), None, "default".to_string()).await;
         assert!(
-            matches!(result, Err(AppError::ProtectedNamespace { ref name }) if name == "default"),
+            matches!(result, Err(AppError::Api(ApiError::ProtectedNamespace { ref name })) if name == "default"),
             "expected ProtectedNamespace error, got {result:?}"
         );
     }
@@ -2374,7 +2392,7 @@ mod tests {
         // Try to delete the namespace — should fail with NamespaceNotEmpty
         let result = service.delete(namespace_key(), None, "production".to_string()).await;
         match result {
-            Err(AppError::NamespaceNotEmpty { namespace, object_count }) => {
+            Err(AppError::Api(ApiError::NamespaceNotEmpty { namespace, object_count })) => {
                 assert_eq!(namespace, "production");
                 assert!(object_count >= 1);
             }

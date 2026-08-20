@@ -19,6 +19,7 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+use crate::ApiError;
 use crate::error::AppError;
 
 /// Regex for DNS subdomain prefix format: lowercase alphanumeric with hyphens and dots.
@@ -39,36 +40,45 @@ static VALUE_RE: LazyLock<Regex> =
 /// with optional `/` prefix separator (prefix: max 253 chars, DNS subdomain format).
 pub fn validate_label_key(key: &str) -> Result<(), AppError> {
     if key.is_empty() {
-        return Err(AppError::InvalidLabel("label key must not be empty".to_string()));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "label".into(),
+            message: "label key must not be empty".to_string(),
+        }));
     }
     if key.len() > 256 {
-        return Err(AppError::InvalidLabel(format!(
-            "label key '{}' exceeds maximum length of 256 characters",
-            key
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "label".into(),
+            message: format!("label key '{}' exceeds maximum length of 256 characters", key),
+        }));
     }
 
     let (_prefix, name) = if let Some(slash_pos) = key.find('/') {
         let prefix = &key[..slash_pos];
         let name = &key[slash_pos + 1..];
         if prefix.is_empty() {
-            return Err(AppError::InvalidLabel(format!(
-                "label key '{}' has empty prefix before '/'",
-                key
-            )));
+            return Err(AppError::Api(ApiError::InvalidRequest {
+                what: "label".into(),
+                message: format!("label key '{}' has empty prefix before '/'", key),
+            }));
         }
         if prefix.len() > 253 {
-            return Err(AppError::InvalidLabel(format!(
-                "label key '{}' prefix exceeds maximum length of 253 characters",
-                key
-            )));
+            return Err(AppError::Api(ApiError::InvalidRequest {
+                what: "label".into(),
+                message: format!(
+                    "label key '{}' prefix exceeds maximum length of 253 characters",
+                    key
+                ),
+            }));
         }
         // Validate prefix as DNS subdomain: lowercase alphanumeric, hyphens, dots
         if !PREFIX_RE.is_match(prefix) {
-            return Err(AppError::InvalidLabel(format!(
-                "label key '{}' has invalid prefix '{}' (must be a valid DNS subdomain)",
-                key, prefix
-            )));
+            return Err(AppError::Api(ApiError::InvalidRequest {
+                what: "label".into(),
+                message: format!(
+                    "label key '{}' has invalid prefix '{}' (must be a valid DNS subdomain)",
+                    key, prefix
+                ),
+            }));
         }
         (Some(prefix), name)
     } else {
@@ -76,18 +86,21 @@ pub fn validate_label_key(key: &str) -> Result<(), AppError> {
     };
 
     if name.is_empty() {
-        return Err(AppError::InvalidLabel(format!(
-            "label key '{}' has empty name after '/'",
-            key
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "label".into(),
+            message: format!("label key '{}' has empty name after '/'", key),
+        }));
     }
 
     // Validate name part: starts with alphanumeric, followed by [-_.a-zA-Z0-9]*
     if !NAME_RE.is_match(name) {
-        return Err(AppError::InvalidLabel(format!(
-            "label key '{}' contains invalid characters (name part must match [a-zA-Z0-9][-_.a-zA-Z0-9]*)",
-            key
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "label".into(),
+            message: format!(
+                "label key '{}' contains invalid characters (name part must match [a-zA-Z0-9][-_.a-zA-Z0-9]*)",
+                key
+            ),
+        }));
     }
 
     Ok(())
@@ -100,17 +113,23 @@ pub fn validate_label_value(key: &str, value: &str) -> Result<(), AppError> {
         return Ok(()); // Empty values are allowed
     }
     if value.len() > 256 {
-        return Err(AppError::InvalidLabel(format!(
-            "label value for key '{}' exceeds maximum length of 256 characters",
-            key
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "label".into(),
+            message: format!(
+                "label value for key '{}' exceeds maximum length of 256 characters",
+                key
+            ),
+        }));
     }
 
     if !VALUE_RE.is_match(value) {
-        return Err(AppError::InvalidLabel(format!(
-            "label value '{}' for key '{}' contains invalid characters (must match [a-zA-Z0-9][-_.a-zA-Z0-9]* or be empty)",
-            value, key
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "label".into(),
+            message: format!(
+                "label value '{}' for key '{}' contains invalid characters (must match [a-zA-Z0-9][-_.a-zA-Z0-9]* or be empty)",
+                value, key
+            ),
+        }));
     }
 
     Ok(())
@@ -129,13 +148,16 @@ pub fn validate_labels(labels: &HashMap<String, String>) -> Result<(), AppError>
 /// Validates an annotation key: non-empty, max 256 chars, no character restrictions.
 pub fn validate_annotation_key(key: &str) -> Result<(), AppError> {
     if key.is_empty() {
-        return Err(AppError::InvalidAnnotation("annotation key must not be empty".to_string()));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "annotation".into(),
+            message: "annotation key must not be empty".to_string(),
+        }));
     }
     if key.len() > 256 {
-        return Err(AppError::InvalidAnnotation(format!(
-            "annotation key '{}' exceeds maximum length of 256 characters",
-            key
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "annotation".into(),
+            message: format!("annotation key '{}' exceeds maximum length of 256 characters", key),
+        }));
     }
     Ok(())
 }
@@ -156,9 +178,10 @@ pub fn validate_annotations(annotations: &HashMap<String, String>) -> Result<(),
         .sum::<usize>()
         + 2; // +2 for opening/closing braces
     if total_size > 256 * 1024 {
-        return Err(AppError::InvalidAnnotation(format!(
-            "total annotations size {total_size} bytes exceeds maximum of 256KB"
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "annotation".into(),
+            message: format!("total annotations size {total_size} bytes exceeds maximum of 256KB"),
+        }));
     }
 
     Ok(())
@@ -167,14 +190,17 @@ pub fn validate_annotations(annotations: &HashMap<String, String>) -> Result<(),
 /// Validates a list of finalizers: max 20, each name must be label-key-shaped.
 pub fn validate_finalizers(finalizers: &[String]) -> Result<(), AppError> {
     if finalizers.len() > 20 {
-        return Err(AppError::InvalidFinalizer(format!(
-            "too many finalizers: {} (max 20)",
-            finalizers.len()
-        )));
+        return Err(AppError::Api(ApiError::InvalidRequest {
+            what: "finalizer".into(),
+            message: format!("too many finalizers: {} (max 20)", finalizers.len()),
+        }));
     }
     for finalizer in finalizers {
         validate_label_key(finalizer).map_err(|_| {
-            AppError::InvalidFinalizer(format!("invalid finalizer name: '{finalizer}'"))
+            AppError::Api(ApiError::InvalidRequest {
+                what: "finalizer".into(),
+                message: format!("invalid finalizer name: '{finalizer}'"),
+            })
         })?;
     }
     Ok(())
@@ -340,7 +366,10 @@ mod tests {
     #[test]
     fn validate_finalizers_invalid_name() {
         let finalizers = vec!["invalid name with spaces".to_string()];
-        assert!(matches!(validate_finalizers(&finalizers), Err(AppError::InvalidFinalizer(_))));
+        assert!(matches!(
+            validate_finalizers(&finalizers),
+            Err(AppError::Api(ApiError::InvalidRequest { what, .. })) if what == "finalizer"
+        ));
     }
 
     #[test]
@@ -348,7 +377,7 @@ mod tests {
         let finalizers: Vec<String> = (0..21).map(|i| format!("finalizer-{}", i)).collect();
         assert!(matches!(
             validate_finalizers(&finalizers),
-            Err(AppError::InvalidFinalizer(msg)) if msg.contains("max 20")
+            Err(AppError::Api(ApiError::InvalidRequest { message, .. })) if message.contains("max 20")
         ));
     }
 }

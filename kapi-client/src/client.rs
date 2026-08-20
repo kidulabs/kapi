@@ -11,8 +11,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 
 use kapi_core::{
-    FieldSelector, LabelRequirement, LabelSelector, ListOptions, ListResponse, ObjectMeta,
-    ResourceKey, StoredObject, WatchEvent, WatchFilter,
+    ApiError, FieldSelector, LabelRequirement, LabelSelector, ListOptions, ListResponse,
+    ObjectMeta, ResourceKey, StoredObject, WatchEvent, WatchFilter,
 };
 
 use crate::error::ClientError;
@@ -27,7 +27,7 @@ use crate::error::ClientError;
 ///
 /// Every fallible method returns [`ClientError`]:
 /// - [`ClientError::HttpError`] for transport-level failures.
-/// - [`ClientError::ApiError`] when the server responds with a non-2xx status
+/// - [`ClientError::Api`] when the server responds with a non-2xx status
 ///   and a structured JSON error body.
 /// - [`ClientError::SerializationError`] for JSON parse/serialize failures.
 /// - [`ClientError::StreamError`] for SSE stream parse errors.
@@ -90,7 +90,7 @@ impl KapiClient {
     // ------------------------------------------------------------------
 
     /// Checks the response status and either returns the response for further
-    /// processing or deserialises the error body into [`ClientError::ApiError`].
+    /// processing or deserialises the error body into [`ClientError::Api`].
     async fn check_response(
         &self,
         response: reqwest::Response,
@@ -99,17 +99,13 @@ impl KapiClient {
             return Ok(response);
         }
         let status = response.status().as_u16();
-        let body: Value = response.json().await.map_err(|e| {
-            // If we can't even parse the error body, wrap it as a serialization error.
+        let body = response.text().await.map_err(|e| {
+            // If we can't even read the error body, wrap it as a stream error.
             ClientError::StreamError(format!(
-                "failed to parse error response (status {status}): {e}"
+                "failed to read error response body (status {status}): {e}"
             ))
         })?;
-        let code = body.get("code").and_then(Value::as_str).unwrap_or("Unknown").to_string();
-        let message =
-            body.get("error").and_then(Value::as_str).unwrap_or("Unknown error").to_string();
-        let details = body.get("details").cloned().unwrap_or(Value::Null);
-        Err(ClientError::ApiError { status, code, message, details })
+        Err(ClientError::Api(parse_error_body(&body, status)))
     }
 
     /// Deserialises a successful response into the target type `T`.
@@ -473,16 +469,12 @@ impl KapiClient {
         // Check for HTTP error before consuming the body stream.
         if !response.status().is_success() {
             let status = response.status().as_u16();
-            let body: Value = response.json().await.map_err(|e| {
+            let body = response.text().await.map_err(|e| {
                 ClientError::StreamError(format!(
-                    "failed to parse error response (status {status}): {e}"
+                    "failed to read error response body (status {status}): {e}"
                 ))
             })?;
-            let code = body.get("code").and_then(Value::as_str).unwrap_or("Unknown").to_string();
-            let message =
-                body.get("error").and_then(Value::as_str).unwrap_or("Unknown error").to_string();
-            let details = body.get("details").cloned().unwrap_or(Value::Null);
-            return Err(ClientError::ApiError { status, code, message, details });
+            return Err(ClientError::Api(parse_error_body(&body, status)));
         }
 
         let event_stream = response.bytes_stream().eventsource();
@@ -545,6 +537,32 @@ impl KapiClient {
 // ------------------------------------------------------------------
 // Serialisation helpers for selectors
 // ------------------------------------------------------------------
+
+/// Parses a non-success HTTP response body into an [`ApiError`].
+///
+/// Deserializes the body directly into the shared [`ApiError`] enum using the
+/// tagged wire format `{"code": "...", "details": ...}`. If the body cannot be
+/// deserialized (e.g. a non-JSON error page from a proxy, or a JSON body with
+/// an unknown error code), falls back to [`ApiError::Unknown`] preserving the
+/// raw code (when present) and body text.
+fn parse_error_body(body: &str, status: u16) -> ApiError {
+    match serde_json::from_str::<ApiError>(body) {
+        Ok(api_error) => api_error,
+        Err(_) => {
+            // Preserve the unknown code from the server when the body is JSON
+            // but doesn't match any known variant (forward compatibility).
+            let raw_code = serde_json::from_str::<Value>(body)
+                .ok()
+                .and_then(|v| v.get("code").and_then(|c| c.as_str()).map(str::to_string))
+                .unwrap_or_else(|| "Unknown".to_string());
+            ApiError::Unknown {
+                code: raw_code,
+                message: format!("HTTP {status}: {body}"),
+                details: serde_json::from_str(body).unwrap_or(Value::Null),
+            }
+        }
+    }
+}
 
 /// Converts a [`FieldSelector`] into its query-string representation.
 ///
@@ -775,32 +793,43 @@ mod tests {
     #[test]
     fn api_error_from_json_body() {
         let body = json!({
-            "error": "something went wrong",
             "code": "Conflict",
-            "details": {}
+            "details": { "expected": 2, "actual": 5 }
         });
-        let status: u16 = 409;
-        let code = body["code"].as_str().unwrap().to_string();
-        let message = body["error"].as_str().unwrap().to_string();
-        let details = body["details"].clone();
-        let err = ClientError::ApiError { status, code, message, details };
-        let msg = format!("{err}");
-        assert!(msg.contains("409"));
-        assert!(msg.contains("Conflict"));
-        assert!(msg.contains("something went wrong"));
+        let api_error = parse_error_body(&body.to_string(), 409);
+        match api_error {
+            ApiError::Conflict { expected, actual } => {
+                assert_eq!(expected, 2);
+                assert_eq!(actual, 5);
+            }
+            other => panic!("expected ApiError::Conflict, got {other:?}"),
+        }
+        let msg = format!("{}", ClientError::Api(api_error));
+        assert!(msg.contains("conflict"), "unexpected message: {msg}");
     }
 
     #[test]
-    fn api_error_from_minimal_json_body() {
-        let status: u16 = 500;
-        let err = ClientError::ApiError {
-            status,
-            code: "Unknown".to_string(),
-            message: "internal error".to_string(),
-            details: Value::Null,
-        };
-        let msg = format!("{err}");
-        assert!(msg.contains("500"));
-        assert!(msg.contains("internal error"));
+    fn api_error_from_unparseable_body_falls_back_to_unknown() {
+        let api_error = parse_error_body("not-json-at-all", 502);
+        match api_error {
+            ApiError::Unknown { code, message, .. } => {
+                assert_eq!(code, "Unknown");
+                assert!(message.contains("502"));
+            }
+            other => panic!("expected ApiError::Unknown, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn api_error_from_unknown_code_falls_back_to_unknown() {
+        let body = json!({
+            "code": "SomeNewerError",
+            "details": { "hint": "upgrade your client" }
+        });
+        let api_error = parse_error_body(&body.to_string(), 500);
+        match api_error {
+            ApiError::Unknown { code, .. } => assert_eq!(code, "SomeNewerError"),
+            other => panic!("expected ApiError::Unknown, got {other:?}"),
+        }
     }
 }

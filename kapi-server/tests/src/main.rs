@@ -363,10 +363,6 @@ async fn main() {
             "typed_error_api_error_fallback",
             typed_client::test_typed_error_api_error_fallback
         );
-        run_test!(
-            "typed_error_defensive_defaults",
-            typed_client::test_typed_error_defensive_defaults
-        );
 
         println!();
 

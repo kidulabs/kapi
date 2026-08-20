@@ -100,7 +100,7 @@ This command also generates typed wrapper structs in `src/types/`:
 The typed wrappers enable type-safe access in controllers:
 
 ```rust
-use kapi_client::typed::TypedClient;
+use kapi_client::TypedClient;
 
 let typed_client = TypedClient::<Widget>::new(ctx.client.clone());
 let widget = typed_client.get(namespace, &name).await?;
@@ -137,7 +137,7 @@ Open `src/controllers/widget_controller.rs` and implement your business logic. T
 ```rust
 use async_trait::async_trait;
 use kapi_controller::reconciler::{ReconcileContext, ReconcileResult, Reconciler};
-use kapi_controller::TypedClient;
+use kapi_client::TypedClient;
 use tracing::info;
 
 pub struct WidgetReconciler;
@@ -274,7 +274,7 @@ kapibuild api generate
 ```
 
 This gives you a crate with:
-- **`src/types/`** — Wrapper structs implementing `TypedResource`, ready for `TypedClient<T>`
+- **`src/types/`** — Wrapper structs with typed `spec`/`status` accessors
 - **`schemas/`** — JSON schema files for server registration
 
 You can then depend on this crate from your controller project and use the

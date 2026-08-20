@@ -171,7 +171,6 @@ All errors conform to a standard JSON envelope:
 
 ```json
 {
-    "error": "description",
     "code": "ErrorCode",
     "details": { }
 }
@@ -185,10 +184,10 @@ All errors conform to a standard JSON envelope:
 | `InvalidSchema` | 422 | Schema registration fails meta-schema or compilation |
 | `SchemaHasObjects` | 409 | Attempting to delete a Schema that has existing objects |
 | `StatusSubresourceNotEnabled` | 404 | Attempting to access `/status` for a kind without `statusSchema` |
-| `InvalidAnnotation` | 400 | Annotation key is empty, exceeds 256 chars, or total size exceeds 256KB |
-| `InvalidLabel` | 400 | Label key or value violates format or length rules |
-| `InvalidLabelSelector` | 400 | labelSelector query parameter is malformed or used without watch=true |
-| `InvalidFieldSelector` | 400 | fieldSelector query parameter is malformed, unsupported field, or used without watch=true |
+| `InvalidRequest` | 400 | `what: "annotation"` — annotation key is empty, exceeds 256 chars, or total size exceeds 256KB |
+| `InvalidRequest` | 400 | `what: "label"` — label key or value violates format or length rules |
+| `InvalidRequest` | 400 | `what: "label selector"` — labelSelector query parameter is malformed or used without watch=true |
+| `InvalidRequest` | 400 | `what: "field selector"` — fieldSelector query parameter is malformed, unsupported field, or used without watch=true |
 | `Internal` | 500 | Unexpected errors |
 
 ## Watch Semantics

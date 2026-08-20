@@ -3,239 +3,75 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use serde_json::json;
 
-use crate::object::types::ValidationError;
+use crate::ApiError;
 
+/// Application error type wrapping the shared [`ApiError`] wire contract plus
+/// server-only variants.
+///
+/// - [`AppError::Api`] — structured domain errors serialized via
+///   [`ApiError`]'s tagged serde representation.
+/// - [`AppError::Internal`] — unexpected internal failures (logged, HTTP 500).
+/// - [`AppError::InvalidSchema`] — broken schema registration payloads (HTTP 422).
+/// - [`AppError::StoredSchemaCompilationFailed`] — a stored schema that fails
+///   to compile (HTTP 500).
 #[derive(thiserror::Error, Debug)]
 pub enum AppError {
-    #[error("{what} '{identifier}' not found")]
-    NotFound { what: String, identifier: String },
-
-    #[error("{kind} '{name}' already exists")]
-    AlreadyExists { kind: String, name: String },
-
-    #[error("conflict: expected version {expected}, actual version {actual}")]
-    Conflict { expected: u64, actual: u64 },
-
-    #[error("schema validation failed")]
-    SchemaValidation(Vec<ValidationError>),
-
-    // fieldSelector query parameter parsing failed (unsupported field, malformed syntax)
-    // Maps to HTTP 400 Bad Request in into_response
-    #[error("invalid field selector: {0}")]
-    InvalidFieldSelector(String),
-
-    // Label validation failure (key/value format, length limits)
-    // Maps to HTTP 400 Bad Request in into_response
-    #[error("invalid label: {0}")]
-    InvalidLabel(String),
-
-    // Annotation validation failure (key length, total size)
-    // Maps to HTTP 400 Bad Request in into_response
-    #[error("invalid annotation: {0}")]
-    InvalidAnnotation(String),
-
-    // Finalizer validation failure (format, uniqueness, referenced object existence)
-    // Maps to HTTP 400 Bad Request in into_response
-    #[error("invalid finalizer: {0}")]
-    InvalidFinalizer(String),
-
-    // labelSelector query parameter parsing failed (malformed syntax)
-    // Maps to HTTP 400 Bad Request in into_response
-    #[error("invalid label selector: {0}")]
-    InvalidLabelSelector(String),
-
-    // Request body validation failure (missing spec, unknown fields, etc.)
-    // Maps to HTTP 400 Bad Request in into_response
-    #[error("invalid request body: {0}")]
-    InvalidRequestBody(String),
-
-    // The schema itself is broken (meta-schema validation or compilation failure)
-    #[error("invalid schema: {0}")]
-    InvalidSchema(String),
-
-    // Attempting to delete a Schema that has existing objects of the target kind
-    #[error("schema has objects: kind={kind}")]
-    SchemaHasObjects { kind: String },
-
-    // Object is being deleted; only finalizer modifications are permitted
-    #[error("object '{name}' is being deleted; only finalizer modifications are allowed")]
-    ObjectBeingDeleted { name: String },
-
-    // Attempting to delete the protected "default" namespace.
-    // Maps to HTTP 403 Forbidden in into_response.
-    #[error("the '{name}' namespace is protected and cannot be deleted")]
-    ProtectedNamespace { name: String },
-
-    // Attempting to delete a namespace that still contains objects.
-    // Maps to HTTP 409 Conflict in into_response. The caller must delete
-    // all contained objects first (Phase 2 will introduce cascade deletion).
-    #[error("namespace '{namespace}' is not empty: contains {object_count} object(s)")]
-    NamespaceNotEmpty { namespace: String, object_count: usize },
-
-    // Status subresource is not enabled for this kind (no statusSchema defined)
-    #[error("status subresource not enabled for kind '{kind}'")]
-    StatusSubresourceNotEnabled { kind: String },
-
-    #[error("invalid request: {0}")]
-    InvalidRequest(String),
-
-    #[error("stored schema '{schema_name}' compilation failed: {reason}")]
-    StoredSchemaCompilationFailed { schema_name: String, reason: String },
+    #[error(transparent)]
+    Api(ApiError),
 
     #[error(transparent)]
     Internal(#[from] anyhow::Error),
+
+    #[error("invalid schema: {0}")]
+    InvalidSchema(String),
+
+    #[error("stored schema '{schema_name}' compilation failed: {reason}")]
+    StoredSchemaCompilationFailed { schema_name: String, reason: String },
 }
 
-impl From<kapi_core::CoreError> for AppError {
-    fn from(err: kapi_core::CoreError) -> Self {
-        match err {
-            kapi_core::CoreError::InvalidFieldSelector(msg) => AppError::InvalidFieldSelector(msg),
-            kapi_core::CoreError::InvalidLabelSelector(msg) => AppError::InvalidLabelSelector(msg),
-        }
+impl From<ApiError> for AppError {
+    fn from(err: ApiError) -> Self {
+        AppError::Api(err)
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
-        let (status, code, error, details) = match self {
-            AppError::NotFound { what, identifier } => (
-                StatusCode::NOT_FOUND,
-                "NotFound",
-                format!("{what} '{identifier}' not found"),
-                json!({ "what": what, "identifier": identifier }),
-            ),
-            AppError::AlreadyExists { kind, name } => (
-                StatusCode::CONFLICT,
-                "AlreadyExists",
-                format!("{kind} '{name}' already exists"),
-                json!({ "kind": kind, "name": name }),
-            ),
-            AppError::Conflict { expected, actual } => (
-                StatusCode::CONFLICT,
-                "Conflict",
-                format!("conflict: expected version {expected}, actual version {actual}"),
-                json!({ "expected": expected, "actual": actual }),
-            ),
-            AppError::SchemaValidation(errors) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "SchemaValidation",
-                "schema validation failed".to_string(),
-                json!({ "errors": errors }),
-            ),
-            // InvalidFieldSelector maps to HTTP 400 with the error message
-            AppError::InvalidFieldSelector(msg) => (
-                StatusCode::BAD_REQUEST,
-                "InvalidFieldSelector",
-                format!("invalid field selector: {msg}"),
-                json!({ "message": msg }),
-            ),
-            // InvalidLabel maps to HTTP 400 with the error message
-            AppError::InvalidLabel(msg) => (
-                StatusCode::BAD_REQUEST,
-                "InvalidLabel",
-                format!("invalid label: {msg}"),
-                json!({ "message": msg }),
-            ),
-            // InvalidAnnotation maps to HTTP 400 with the error message
-            AppError::InvalidAnnotation(msg) => (
-                StatusCode::BAD_REQUEST,
-                "InvalidAnnotation",
-                format!("invalid annotation: {msg}"),
-                json!({ "message": msg }),
-            ),
-            // InvalidLabelSelector maps to HTTP 400 with the error message
-            AppError::InvalidLabelSelector(msg) => (
-                StatusCode::BAD_REQUEST,
-                "InvalidLabelSelector",
-                format!("invalid label selector: {msg}"),
-                json!({ "message": msg }),
-            ),
-            // InvalidRequestBody maps to HTTP 400 with the error message
-            AppError::InvalidRequestBody(msg) => (
-                StatusCode::BAD_REQUEST,
-                "InvalidRequestBody",
-                format!("invalid request body: {msg}"),
-                json!({ "message": msg }),
-            ),
-            // InvalidSchema maps to HTTP 422 Unprocessable Entity
-            AppError::InvalidSchema(msg) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                "InvalidSchema",
-                format!("invalid schema: {msg}"),
-                json!({ "message": msg }),
-            ),
-            // StoredSchemaCompilationFailed maps to HTTP 500 Internal Server Error
-            AppError::StoredSchemaCompilationFailed { schema_name, reason } => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "StoredSchemaCompilationFailed",
-                format!("stored schema '{schema_name}' compilation failed: {reason}"),
-                json!({ "schemaName": schema_name, "reason": reason }),
-            ),
-            // StatusSubresourceNotEnabled maps to HTTP 404 Not Found
-            AppError::StatusSubresourceNotEnabled { kind } => (
-                StatusCode::NOT_FOUND,
-                "StatusSubresourceNotEnabled",
-                format!("status subresource not enabled for kind '{kind}'"),
-                json!({ "kind": kind }),
-            ),
-            // SchemaHasObjects maps to HTTP 409 Conflict
-            AppError::SchemaHasObjects { kind } => (
-                StatusCode::CONFLICT,
-                "SchemaHasObjects",
-                format!("schema has objects: kind={kind}"),
-                json!({ "kind": kind }),
-            ),
-            // InvalidRequest maps to HTTP 400 Bad Request
-            AppError::InvalidRequest(msg) => {
-                (StatusCode::BAD_REQUEST, "InvalidRequest", msg.clone(), json!({ "message": msg }))
+        match self {
+            AppError::Api(api_err) => {
+                let status = StatusCode::from_u16(api_err.http_status()).unwrap();
+                (status, Json(api_err)).into_response()
             }
-            // InvalidFinalizer maps to HTTP 400 Bad Request
-            AppError::InvalidFinalizer(msg) => (
-                StatusCode::BAD_REQUEST,
-                "InvalidFinalizer",
-                format!("invalid finalizer: {msg}"),
-                json!({ "message": msg }),
-            ),
-            // ObjectBeingDeleted maps to HTTP 409 Conflict
-            AppError::ObjectBeingDeleted { name } => (
-                StatusCode::CONFLICT,
-                "ObjectBeingDeleted",
-                format!(
-                    "object '{name}' is being deleted; only finalizer modifications are allowed"
-                ),
-                json!({ "name": name }),
-            ),
-            // ProtectedNamespace maps to HTTP 403 Forbidden
-            AppError::ProtectedNamespace { name } => (
-                StatusCode::FORBIDDEN,
-                "ProtectedNamespace",
-                format!("the '{name}' namespace is protected and cannot be deleted"),
-                json!({ "name": name }),
-            ),
-            // NamespaceNotEmpty maps to HTTP 409 Conflict
-            AppError::NamespaceNotEmpty { namespace, object_count } => (
-                StatusCode::CONFLICT,
-                "NamespaceNotEmpty",
-                format!("namespace '{namespace}' is not empty: contains {object_count} object(s)"),
-                json!({ "namespace": namespace, "objectCount": object_count }),
-            ),
             AppError::Internal(err) => {
                 tracing::error!(error = %err, "internal error");
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
-                    "Internal",
-                    "internal error".to_string(),
-                    json!(null),
+                    Json(json!({
+                        "code": "Internal",
+                        "details": { "message": "internal error" }
+                    })),
                 )
+                    .into_response()
             }
-        };
-
-        let body = json!({
-            "error": error,
-            "code": code,
-            "details": details,
-        });
-
-        (status, Json(body)).into_response()
+            AppError::InvalidSchema(msg) => (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                Json(json!({
+                    "code": "InvalidSchema",
+                    "details": { "message": msg }
+                })),
+            )
+                .into_response(),
+            AppError::StoredSchemaCompilationFailed { schema_name, reason } => {
+                tracing::error!(%schema_name, %reason, "stored schema compilation failed");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(json!({
+                        "code": "StoredSchemaCompilationFailed",
+                        "details": { "schema_name": schema_name, "reason": reason }
+                    })),
+                )
+                    .into_response()
+            }
+        }
     }
 }

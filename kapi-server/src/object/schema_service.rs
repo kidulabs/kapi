@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+use crate::ApiError;
 use crate::error::AppError;
 use crate::event::EventPublisher;
 use crate::object::helpers;
@@ -106,10 +107,10 @@ impl SchemaService {
             &name,
             Box::new(move |existing| {
                 if incoming_rv != existing.system.resource_version {
-                    return TransactionOp::Abort(AppError::Conflict {
+                    return TransactionOp::Abort(AppError::Api(ApiError::Conflict {
                         expected: existing.system.resource_version,
                         actual: incoming_rv,
-                    });
+                    }));
                 }
                 helpers::apply_with_metadata(existing, |_existing| {
                     let mut updated = existing.clone();
@@ -147,7 +148,7 @@ impl SchemaService {
             kind: schema_data.target_kind,
         };
         if self.store.exists(&target_key).await? {
-            return Err(AppError::SchemaHasObjects { kind: target_key.kind });
+            return Err(AppError::Api(ApiError::SchemaHasObjects { kind: target_key.kind }));
         }
         let deleted = self.store.transaction(
             &key,

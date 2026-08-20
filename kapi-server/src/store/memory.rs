@@ -1,6 +1,7 @@
 use async_trait::async_trait;
 use dashmap::DashMap;
 
+use crate::ApiError;
 use crate::error::AppError;
 use crate::object::types::{FieldSelector, ListOptions, ListResponse, StoredObject};
 use crate::store::continue_token::{decode_continue_token, encode_continue_token};
@@ -28,10 +29,10 @@ impl ObjectStore for InMemoryStore {
         let entry =
             (object.key.clone(), object.metadata.namespace.clone(), object.metadata.name.clone());
         if self.objects.contains_key(&entry) {
-            return Err(AppError::AlreadyExists {
+            return Err(AppError::Api(ApiError::AlreadyExists {
                 kind: object.key.kind.clone(),
                 name: object.metadata.name.clone(),
-            });
+            }));
         }
 
         self.objects.insert(entry, object.clone());
@@ -47,10 +48,10 @@ impl ObjectStore for InMemoryStore {
         let entry = (key.clone(), namespace.map(|s| s.to_string()), name.to_string());
         self.objects.get(&entry).map(|r| r.clone()).ok_or_else(|| {
             let ns_prefix = namespace.map(|ns| format!("{ns}/")).unwrap_or_default();
-            AppError::NotFound {
+            AppError::Api(ApiError::NotFound {
                 what: "object".to_string(),
                 identifier: format!("{}{}/{}", ns_prefix, key.kind, name),
-            }
+            })
         })
     }
 
@@ -150,10 +151,10 @@ impl ObjectStore for InMemoryStore {
         // The lock is held for the entire transaction (read → callback → write).
         let mut guard = self.objects.get_mut(&entry).ok_or_else(|| {
             let ns_prefix = namespace.map(|ns| format!("{ns}/")).unwrap_or_default();
-            AppError::NotFound {
+            AppError::Api(ApiError::NotFound {
                 what: "object".to_string(),
                 identifier: format!("{}{}/{}", ns_prefix, key.kind, name),
-            }
+            })
         })?;
 
         let existing = guard.clone();
@@ -242,7 +243,7 @@ mod tests {
 
         let err =
             store.create(test_obj(key.clone(), "my-widget", json!({"x": 2}))).await.unwrap_err();
-        assert!(matches!(err, AppError::AlreadyExists { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::AlreadyExists { .. })));
     }
 
     #[tokio::test]
@@ -251,7 +252,7 @@ mod tests {
         let key = test_key();
 
         let err = store.get(&key, None, "nonexistent").await.unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -369,7 +370,7 @@ mod tests {
         let err = store
             .transaction(&key, None, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -387,7 +388,7 @@ mod tests {
         assert_eq!(deleted.spec, created.spec);
 
         let err = store.get(&key, None, "my-widget").await.unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -403,7 +404,7 @@ mod tests {
             .unwrap();
 
         let err = store.get(&key, None, "my-widget").await.unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
 
         let other = store.get(&key, None, "other").await.unwrap();
         assert_eq!(other.spec, json!({"x": 2}));
@@ -417,7 +418,7 @@ mod tests {
         let err = store
             .transaction(&key, None, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -679,7 +680,7 @@ mod tests {
         let err = store
             .transaction(&key, None, "nonexistent", Box::new(|_existing| unreachable!()))
             .unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     #[tokio::test]
@@ -919,7 +920,7 @@ mod tests {
 
         // Get should now fail with NotFound
         let err = store.get(&key, None, "my-widget").await.unwrap_err();
-        assert!(matches!(err, AppError::NotFound { .. }));
+        assert!(matches!(err, AppError::Api(ApiError::NotFound { .. })));
     }
 
     // --- Namespace tests ---

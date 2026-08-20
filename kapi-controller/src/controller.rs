@@ -10,7 +10,7 @@ use std::time::Duration;
 use futures_util::StreamExt;
 use kapi_client::client::KapiClient;
 use kapi_client::error::ClientError;
-use kapi_core::{ListOptions, ResourceKey, WatchEvent, WatchEventType, WatchFilter};
+use kapi_core::{ApiError, ListOptions, ResourceKey, WatchEvent, WatchEventType, WatchFilter};
 use tokio::sync::broadcast;
 
 use crate::reconciler::{ReconcileContext, ReconcileRequest, Reconciler};
@@ -236,7 +236,7 @@ impl Controller {
             }
             Err(e) => {
                 // 404 = object was deleted before we could fetch it, skip.
-                if matches!(&e, ClientError::ApiError { status: 404, .. }) {
+                if matches!(&e, ClientError::Api(ApiError::NotFound { .. })) {
                     tracing::warn!(
                         kind = %item.key.kind,
                         name = %item.name,

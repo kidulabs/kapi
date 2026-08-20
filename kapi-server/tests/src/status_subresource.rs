@@ -239,9 +239,13 @@ pub async fn test_create_rejects_unknown_top_level_fields(app: &TestApp) -> Resu
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert_eq!(
-        err["code"], "InvalidRequestBody",
-        "expected InvalidRequestBody error code, got: {}",
+        err["code"], "InvalidRequest",
+        "expected InvalidRequest error code, got: {}",
         err["code"]
+    );
+    assert_eq!(
+        err["details"]["what"], "request body",
+        "expected what=request body in error details"
     );
 
     Ok(())

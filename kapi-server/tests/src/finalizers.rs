@@ -368,7 +368,7 @@ pub async fn test_create_with_valid_finalizers(app: &TestApp) -> Result<(), Stri
     Ok(())
 }
 
-/// Create with invalid finalizer name (contains spaces) → 400 InvalidFinalizer.
+/// Create with invalid finalizer name (contains spaces) → 400 InvalidRequest.
 pub async fn test_create_with_invalid_finalizer_name(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
@@ -383,12 +383,13 @@ pub async fn test_create_with_invalid_finalizer_name(app: &TestApp) -> Result<()
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidFinalizer");
+    assert_eq!(err["code"], "InvalidRequest");
+    assert_eq!(err["details"]["what"], "finalizer", "expected what=finalizer in error details");
 
     Ok(())
 }
 
-/// Create with 21 finalizers (exceeds max 20) → 400 InvalidFinalizer.
+/// Create with 21 finalizers (exceeds max 20) → 400 InvalidRequest.
 pub async fn test_create_with_too_many_finalizers(app: &TestApp) -> Result<(), String> {
     let client = app.client();
     register_widget_schema(&client).await;
@@ -404,7 +405,8 @@ pub async fn test_create_with_too_many_finalizers(app: &TestApp) -> Result<(), S
     let resp = client.post("/apis/example.io/v1/namespaces/default/Widget", body).await;
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
-    assert_eq!(err["code"], "InvalidFinalizer");
+    assert_eq!(err["code"], "InvalidRequest");
+    assert_eq!(err["details"]["what"], "finalizer", "expected what=finalizer in error details");
 
     Ok(())
 }

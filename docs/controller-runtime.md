@@ -140,14 +140,16 @@ These methods let typed controllers inspect deletion state and finalizer members
 | `typed::ensure_finalizer(client, obj, finalizer)` | Typed variant of `ensure_finalizer` — takes `&T where T: TypedResource`. |
 | `typed::remove_finalizer(client, obj, finalizer)` | Typed variant of `remove_finalizer` — takes `&T where T: TypedResource`. |
 
-All of these functions use **optimistic concurrency** (CAS). On a `409 Conflict`
-they re-fetch the object and retry (up to 5 attempts).
+All of these functions use **optimistic concurrency** (CAS). On a
+`ClientError::Api(ApiError::Conflict { .. })` they re-fetch the object and
+retry (up to 5 attempts). Non-conflict errors (e.g. `ApiError::ObjectBeingDeleted`)
+are not retried.
 
 The typed helpers live in a `typed` submodule because Rust does not allow
 same-name overloads. Each accepts any `&T where T: TypedResource`, calls
 `obj.to_stored_object()` once internally, and delegates to the raw
 `&StoredObject` helper — so typed controllers never need to convert the
-resource themselves. Note that the CAS re-fetch after a `409 Conflict`
+resource themselves. Note that the CAS re-fetch after a 409 Conflict
 operates on a `StoredObject`, never `T`; the passed-in `&T` is never updated
 in place.
 
@@ -577,7 +579,8 @@ impl WorkQueue {
 
 ### Finalizer Helpers
 
-**Raw helpers** — operate on `&StoredObject`:
+The finalizer helpers operate on `&StoredObject` — the type returned by
+`KapiClient::get()`/`update()`:
 
 ```rust
 pub fn is_deleting(obj: &StoredObject) -> bool;
@@ -593,30 +596,6 @@ pub async fn remove_finalizer(
     obj: &StoredObject,
     finalizer: &str,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-```
-
-**Typed helpers** — accept any `&T where T: TypedResource`. They call
-`obj.to_stored_object()` once and delegate to the raw helpers above, so typed
-controllers never need to convert the resource themselves. Because the CAS
-retry loop always works on `StoredObject`, the re-fetch after a `409 Conflict`
-returns a `StoredObject`, never `T` — the passed-in `&T` is not updated in
-place. The typed variants live in a `typed` submodule since Rust does not allow
-same-name overloads:
-
-```rust
-pub mod typed {
-    pub async fn ensure_finalizer<T: TypedResource>(
-        client: &KapiClient,
-        obj: &T,
-        finalizer: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-
-    pub async fn remove_finalizer<T: TypedResource>(
-        client: &KapiClient,
-        obj: &T,
-        finalizer: &str,
-    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>>;
-}
 ```
 
 ### `Manager`

@@ -14,7 +14,7 @@ For Schema objects (`kind == "Schema"`), the handler SHALL extract `targetKind` 
 
 For non-Schema objects, the handler SHALL extract the object `name` from the body's `metadata.name` field and `labels` from `metadata.labels` (defaulting to empty if absent), extract the `spec` field from the body, construct an `ObjectMeta` with those values, and call `ObjectService::create(key, namespace, meta, spec)`. The handler SHALL discard `metadata.namespace` from the body — the URL namespace takes precedence.
 
-The handler SHALL validate that the request body contains only `metadata` and `spec` as top-level fields; any other field SHALL return `AppError::InvalidRequestBody`. The handler SHALL validate that `spec` is present and is a JSON object; if missing or not an object, the handler SHALL return `AppError::InvalidRequestBody`. The handler SHALL validate that `spec` is non-empty; if `spec` is an empty object `{}`, the handler SHALL return `AppError::InvalidRequestBody`.
+The handler SHALL validate that the request body contains only `metadata` and `spec` as top-level fields; any other field SHALL return `AppError::Api(ApiError::InvalidRequest { what: "request body", .. })`. The handler SHALL validate that `spec` is present and is a JSON object; if missing or not an object, the handler SHALL return `AppError::Api(ApiError::InvalidRequest { what: "request body", .. })`. The handler SHALL validate that `spec` is non-empty; if `spec` is an empty object `{}`, the handler SHALL return `AppError::Api(ApiError::InvalidRequest { what: "request body", .. })`.
 
 The handler SHALL NOT perform label, annotation, or finalizer format validation. Format validation is the responsibility of the service layer.
 
@@ -38,15 +38,15 @@ The handler SHALL NOT perform label, annotation, or finalizer format validation.
 
 #### Scenario: Create with missing spec returns 400
 - **WHEN** a non-Schema object is POSTed without a `spec` field
-- **THEN** the response is 400 Bad Request with `InvalidRequestBody` error
+- **THEN** the response is 400 Bad Request with `InvalidRequest` error (`what: "request body"`)
 
 #### Scenario: Create with empty spec returns 400
 - **WHEN** a non-Schema object is POSTed with `spec: {}`
-- **THEN** the response is 400 Bad Request with `InvalidRequestBody` error
+- **THEN** the response is 400 Bad Request with `InvalidRequest` error (`what: "request body"`)
 
 #### Scenario: Create with unknown top-level field returns 400
 - **WHEN** a non-Schema object is POSTed with a top-level field other than `metadata` or `spec`
-- **THEN** the response is 400 Bad Request with `InvalidRequestBody` error
+- **THEN** the response is 400 Bad Request with `InvalidRequest` error (`what: "request body"`)
 
 ### Requirement: Get handler accepts GET to namespace-scoped and cluster-scoped URLs
 The get handler SHALL support two URL patterns:

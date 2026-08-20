@@ -35,9 +35,9 @@ Namespace is a first-class **cluster-scoped** core type (`kind: "Namespace"`, `g
 
 ### Lifecycle rules
 
-- **`"default"` namespace**: auto-created at startup, undeletable (DELETE returns 403 Forbidden via `AppError::ProtectedNamespace`).
-- **Other namespaces**: created via the normal object API; can be deleted only when empty (DELETE returns 409 Conflict with `AppError::NamespaceNotEmpty` if any objects exist in the namespace).
-- **Namespace existence validation**: on object CREATE, namespaced kinds check that the target namespace exists. Returns 404 Not Found with `AppError::NotFound { what: "namespace", identifier }` if missing.
+- **`"default"` namespace**: auto-created at startup, undeletable (DELETE returns 403 Forbidden via `AppError::Api(ApiError::ProtectedNamespace { .. })`).
+- **Other namespaces**: created via the normal object API; can be deleted only when empty (DELETE returns 409 Conflict with `AppError::Api(ApiError::NamespaceNotEmpty { .. })` if any objects exist in the namespace).
+- **Namespace existence validation**: on object CREATE, namespaced kinds check that the target namespace exists. Returns 404 Not Found with `AppError::Api(ApiError::NotFound { what: "namespace", identifier })` if missing.
 - **Cluster-scoped kinds** skip namespace existence checks (they have no namespace).
 
 ### Namespace-scoped watch

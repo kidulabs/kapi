@@ -144,7 +144,7 @@ kapi/
 │   ├── Cargo.toml          # Minimal deps: serde, serde_json, chrono, thiserror
 │   └── src/
 │       ├── lib.rs          # Module declarations and re-exports
-│       ├── error.rs        # CoreError enum (InvalidFieldSelector, InvalidLabelSelector)
+│       ├── error.rs        # ApiError enum (shared wire contract)
 │       ├── key.rs          # ResourceKey struct
 │       └── types.rs        # Core types (StoredObject, ObjectMeta, SystemMetadata, etc.) + tests
 ├── kapi-server/            # API server crate

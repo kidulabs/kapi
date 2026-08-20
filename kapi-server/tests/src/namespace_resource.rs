@@ -155,10 +155,13 @@ pub async fn test_delete_default_namespace_rejected(app: &TestApp) -> Result<(),
     let resp = client.delete(&format!("{NAMESPACE_ITEM_API}/default")).await;
     assert_status(&resp, StatusCode::FORBIDDEN);
     let body: Value = parse_body(resp).await;
-    let error_msg = body["error"].as_str().unwrap_or("");
-    assert!(
-        error_msg.contains("protected") || error_msg.contains("default"),
-        "expected protected/default error, got: {body}"
+    assert_eq!(
+        body["code"], "ProtectedNamespace",
+        "expected ProtectedNamespace error, got: {body}"
+    );
+    assert_eq!(
+        body["details"]["name"], "default",
+        "expected protected namespace name 'default', got: {body}"
     );
     Ok(())
 }
@@ -189,10 +192,10 @@ pub async fn test_create_in_nonexistent_namespace_404(app: &TestApp) -> Result<(
         client.post(&widget_collection_url("nonexistent"), widget("my-widget", "red", 1)).await;
     assert_status(&resp, StatusCode::NOT_FOUND);
     let body: Value = parse_body(resp).await;
-    let error_msg = body["error"].as_str().unwrap_or("");
-    assert!(
-        error_msg.contains("namespace") || error_msg.contains("nonexistent"),
-        "expected namespace-related error, got: {body}"
+    assert_eq!(body["code"], "NotFound", "expected NotFound error, got: {body}");
+    assert_eq!(
+        body["details"]["what"], "namespace",
+        "expected what=namespace in error details, got: {body}"
     );
     Ok(())
 }
@@ -238,11 +241,7 @@ pub async fn test_delete_non_empty_namespace_409(app: &TestApp) -> Result<(), St
     let resp = client.delete(&format!("{NAMESPACE_ITEM_API}/populated")).await;
     assert_status(&resp, StatusCode::CONFLICT);
     let body: Value = parse_body(resp).await;
-    let error_msg = body["error"].as_str().unwrap_or("");
-    assert!(
-        error_msg.contains("not empty") || error_msg.contains("objects"),
-        "expected not-empty error, got: {body}"
-    );
+    assert_eq!(body["code"], "NamespaceNotEmpty", "expected NamespaceNotEmpty error, got: {body}");
     Ok(())
 }
 
@@ -266,8 +265,8 @@ pub async fn test_delete_non_empty_namespace_error_includes_count(
     assert_status(&resp, StatusCode::CONFLICT);
     let body: Value = parse_body(resp).await;
     let details = body["details"].clone();
-    let count = details["objectCount"].as_u64().unwrap_or(0);
-    assert_eq!(count, 2, "expected objectCount=2 in error details, got: {body}");
+    let count = details["object_count"].as_u64().unwrap_or(0);
+    assert_eq!(count, 2, "expected object_count=2 in error details, got: {body}");
     Ok(())
 }
 

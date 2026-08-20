@@ -7,7 +7,7 @@
 use chrono::Utc;
 
 use crate::event::EventPublisher;
-use crate::object::types::{StoredObject, ValidationError, WatchEvent, WatchEventType};
+use crate::object::types::{StoredObject, WatchEvent, WatchEventType};
 use crate::schema::SchemaValidationError;
 use crate::store::{ResourceKey, TransactionOp};
 
@@ -66,14 +66,11 @@ pub(crate) fn publish_event(
     event_bus.publish(key, WatchEvent { event_type, object: object.clone() });
 }
 
-/// Maps schema validation errors to domain validation errors.
+/// Maps schema validation errors to flat message strings.
 ///
 /// Converts each [`SchemaValidationError`] (which contains `instance_path`
-/// and `message`) into a [`ValidationError`] with the same fields,
-/// for use in [`AppError::SchemaValidation`].
-pub(crate) fn map_validation_errors(errors: Vec<SchemaValidationError>) -> Vec<ValidationError> {
-    errors
-        .into_iter()
-        .map(|e| ValidationError { path: e.instance_path, message: e.message })
-        .collect()
+/// and `message`) into a single `"{path}: {message}"` string,
+/// for use in [`crate::ApiError::SchemaValidation`].
+pub(crate) fn map_validation_errors(errors: Vec<SchemaValidationError>) -> Vec<String> {
+    errors.into_iter().map(|e| format!("{}: {}", e.instance_path, e.message)).collect()
 }

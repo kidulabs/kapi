@@ -253,8 +253,7 @@ pub async fn test_cluster_scoped_rejects_namespace_in_url(app: &TestApp) -> Resu
     assert_status(&resp, StatusCode::BAD_REQUEST);
     let err: Value = parse_body(resp).await;
     assert!(
-        err["error"].as_str().unwrap_or("").contains("does not accept namespace")
-            || err["message"].as_str().unwrap_or("").contains("does not accept namespace"),
+        err["details"]["message"].as_str().unwrap_or("").contains("does not accept namespace"),
         "expected 'does not accept namespace' error, got: {:?}",
         err
     );

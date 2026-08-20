@@ -3,6 +3,7 @@
 use std::fmt;
 
 use kapi_client::error::ClientError;
+use kapi_core::ApiError;
 
 /// Errors that can occur in the kapi CLI.
 #[derive(Debug)]
@@ -72,7 +73,7 @@ impl CliError {
         namespace: Option<&str>,
     ) -> Self {
         match &err {
-            ClientError::ApiError { status: 404, .. } => CliError::NotFound {
+            ClientError::Api(ApiError::NotFound { .. }) => CliError::NotFound {
                 kind: kind.to_string(),
                 name: name.to_string(),
                 namespace: namespace.map(|s| s.to_string()),
@@ -85,21 +86,18 @@ impl CliError {
 impl From<ClientError> for CliError {
     fn from(err: ClientError) -> Self {
         match &err {
-            ClientError::ApiError { status: 409, code, message, .. } => {
-                // Distinguish between different types of conflicts
-                let conflict_msg = match code.as_str() {
-                    "ObjectBeingDeleted" => {
-                        "object is being deleted; only finalizer modifications are allowed"
-                            .to_string()
-                    }
-                    "Conflict" => "conflict: object was modified, retry manually".to_string(),
-                    "AlreadyExists" => message.clone(),
-                    "SchemaHasObjects" => message.clone(),
-                    "NamespaceNotEmpty" => message.clone(),
-                    _ => message.clone(),
-                };
-                CliError::Conflict { message: conflict_msg }
-            }
+            ClientError::Api(ApiError::ObjectBeingDeleted { .. }) => CliError::Conflict {
+                message: "object is being deleted; only finalizer modifications are allowed"
+                    .to_string(),
+            },
+            ClientError::Api(ApiError::Conflict { .. }) => CliError::Conflict {
+                message: "conflict: object was modified, retry manually".to_string(),
+            },
+            ClientError::Api(
+                api_err @ (ApiError::AlreadyExists { .. }
+                | ApiError::SchemaHasObjects { .. }
+                | ApiError::NamespaceNotEmpty { .. }),
+            ) => CliError::Conflict { message: api_err.to_string() },
             _ => CliError::ClientError(err),
         }
     }
@@ -123,8 +121,8 @@ impl From<serde_yaml::Error> for CliError {
     }
 }
 
-impl From<kapi_client::CoreError> for CliError {
-    fn from(err: kapi_client::CoreError) -> Self {
+impl From<ApiError> for CliError {
+    fn from(err: ApiError) -> Self {
         CliError::FormatError(err.to_string())
     }
 }
