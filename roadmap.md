@@ -29,7 +29,7 @@
 - [x] **Annotations** — Free-form key-value metadata on `ObjectMeta` without selection semantics (no validation beyond key-value structure)
 - [ ] **Schema object status** — kapi-defined status shape for Schema objects (server-maintained: objectCount, schemaVersion, validationState)
 - [ ] **Watch event type filtering** — `WatchFilter` support for filtering by `StatusModified` vs `Modified` event types
-- [ ] **kapi-controller-multi** — Manager for orchestrating multiple controllers in one process with coordinated shutdown, health checks, and metrics
+- [x] **kapi-controller-multi** — Manager for orchestrating multiple controllers in one process with coordinated shutdown, health checks, and metrics
 
 ## Controller Runtime Roadmap
 
@@ -46,11 +46,11 @@
 
 ### In Progress — Controller Runtime: Multi Controller (controller-runtime-multi)
 
-- [ ] Manager for orchestrating multiple controllers in one process
-- [ ] `ControllerBuilder` / `ControllerHandle` pattern for structured registration
-- [ ] Coordinated shutdown with timeout
-- [ ] Panic isolation (one controller panic does not take down others)
-- [ ] Shared client from Manager (not per-controller instances)
+- [x] Manager for orchestrating multiple controllers in one process
+- [x] `ControllerBuilder` / `ControllerHandle` pattern for structured registration
+- [x] Coordinated shutdown with timeout
+- [x] Panic isolation (one controller panic does not take down others)
+- [x] Shared client from Manager (not per-controller instances)
 
 ### Future Work — Controller Runtime
 
