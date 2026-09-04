@@ -76,7 +76,7 @@ register_namespaced_schema() {
 
 # Check server is running
 check_server() {
-  if ! lsof -ti :8080 > /dev/null 2>&1; then
+  if ! curl -sf http://localhost:8080/apis/kapi.io/v1/Schema > /dev/null 2>&1; then
     echo "ERROR: Server not running on port 8080"
     echo "Please start the server first:"
     echo "  RUST_LOG=kapi=trace cargo run --bin kapi-server > /tmp/kapi-server.log 2>&1 &"

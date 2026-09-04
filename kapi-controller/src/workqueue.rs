@@ -41,11 +41,19 @@ struct QueueState {
     queue: VecDeque<QueueKey>,
     /// Number of consecutive failures per key (for backoff).
     retry_count: HashMap<QueueKey, u32>,
+    /// Whether the 80%-capacity warning has been logged for the current
+    /// fill cycle (reset when the queue drains below the watermark).
+    warned_at_80: bool,
 }
 
 impl QueueState {
     fn new() -> Self {
-        QueueState { pending: HashSet::new(), queue: VecDeque::new(), retry_count: HashMap::new() }
+        QueueState {
+            pending: HashSet::new(),
+            queue: VecDeque::new(),
+            retry_count: HashMap::new(),
+            warned_at_80: false,
+        }
     }
 }
 
@@ -67,25 +75,79 @@ impl QueueState {
 pub struct WorkQueue {
     state: Arc<Mutex<QueueState>>,
     notify: Arc<Notify>,
+    /// Maximum number of pending items. [`add`](Self::add) drops items once
+    /// the queue is at capacity (they are recovered on the next watch
+    /// reconnect via `list()`).
+    capacity: usize,
 }
 
 impl WorkQueue {
-    /// Creates an empty work queue.
+    /// Default queue capacity (maximum number of pending items).
+    pub const DEFAULT_CAPACITY: usize = 1024;
+
+    /// Creates an empty work queue with [`DEFAULT_CAPACITY`](Self::DEFAULT_CAPACITY).
     pub fn new() -> Self {
+        Self::with_capacity(Self::DEFAULT_CAPACITY)
+    }
+
+    /// Creates an empty work queue with the given capacity.
+    ///
+    /// When the queue is full, [`add`](Self::add) drops new items (logging a
+    /// warning) instead of blocking; they are recovered on the next watch
+    /// reconnect.
+    pub fn with_capacity(capacity: usize) -> Self {
         WorkQueue {
             state: Arc::new(Mutex::new(QueueState::new())),
             notify: Arc::new(Notify::new()),
+            capacity,
         }
+    }
+
+    /// Returns the number of items currently pending in the queue.
+    pub async fn len(&self) -> usize {
+        self.state.lock().await.queue.len()
+    }
+
+    /// Returns the configured capacity of the queue.
+    pub fn capacity(&self) -> usize {
+        self.capacity
     }
 
     /// Adds a key to the queue.
     ///
     /// If the key is already pending (has been added but not yet processed
     /// via [`get`](Self::get)), this call is a no-op.
+    ///
+    /// Non-blocking: when the queue is at capacity the item is dropped and a
+    /// warning is logged. It will be recovered on the next watch reconnect.
     pub async fn add(&self, key: QueueKey) {
         let mut state = self.state.lock().await;
         if state.pending.insert(key.clone()) {
+            // Queue full → drop the item (drop-and-log).
+            if state.queue.len() >= self.capacity {
+                state.pending.remove(&key);
+                warn!(
+                    kind = %key.key.kind,
+                    name = %key.name,
+                    capacity = self.capacity,
+                    "work queue at capacity, dropping item (will be recovered on next watch reconnect)",
+                );
+                return;
+            }
+
             state.queue.push_back(key);
+
+            // Warn once per fill cycle when the queue reaches 80% of capacity.
+            let high_watermark = self.capacity * 4 / 5;
+            if !state.warned_at_80 && state.queue.len() >= high_watermark {
+                state.warned_at_80 = true;
+                warn!(
+                    capacity = self.capacity,
+                    len = state.queue.len(),
+                    "work queue at 80% of capacity",
+                );
+            }
+
             self.notify.notify_one();
         }
     }
@@ -99,6 +161,13 @@ impl WorkQueue {
             let mut state = self.state.lock().await;
             if let Some(key) = state.queue.pop_front() {
                 state.pending.remove(&key);
+
+                // Reset the 80%-capacity warning once the queue drains below
+                // the watermark so a future fill cycle warns again.
+                if state.warned_at_80 && state.queue.len() < self.capacity * 4 / 5 {
+                    state.warned_at_80 = false;
+                }
+
                 return key;
             }
             // Release the lock and wait for a notification.
@@ -156,13 +225,28 @@ impl WorkQueue {
 
     /// Spawns a background task that sleeps for `duration` and then adds
     /// the key back to the queue.
+    ///
+    /// Respects the queue capacity: if the queue is full when the delay
+    /// elapses, the item is dropped (it will be recovered on the next watch
+    /// reconnect).
     async fn requeue_after_inner(&self, key: QueueKey, duration: Duration) {
         let state = self.state.clone();
         let notify = self.notify.clone();
+        let capacity = self.capacity;
         tokio::spawn(async move {
             tokio::time::sleep(duration).await;
             let mut s = state.lock().await;
             if s.pending.insert(key.clone()) {
+                if s.queue.len() >= capacity {
+                    s.pending.remove(&key);
+                    warn!(
+                        kind = %key.key.kind,
+                        name = %key.name,
+                        capacity,
+                        "work queue at capacity, dropping requeued item (will be recovered on next watch reconnect)",
+                    );
+                    return;
+                }
                 s.queue.push_back(key);
                 notify.notify_one();
             }
@@ -307,6 +391,36 @@ mod tests {
         let got = timeout(Duration::from_millis(200), wq.get()).await;
         assert!(got.is_ok(), "expected key after requeue_after delay");
         assert_eq!(got.unwrap(), k);
+    }
+
+    #[tokio::test]
+    async fn test_default_capacity() {
+        let wq = WorkQueue::new();
+        assert_eq!(wq.capacity(), WorkQueue::DEFAULT_CAPACITY);
+        assert_eq!(wq.len().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_capacity_limit_drops_overflow() {
+        let wq = WorkQueue::with_capacity(2);
+        assert_eq!(wq.capacity(), 2);
+        assert_eq!(wq.len().await, 0);
+
+        wq.add(test_key("a")).await;
+        wq.add(test_key("b")).await;
+        wq.add(test_key("c")).await; // at capacity → dropped
+
+        assert_eq!(wq.len().await, 2);
+
+        // The first two items are still processed in FIFO order.
+        let got = wq.get().await;
+        assert_eq!(got.name, "a");
+        let got = wq.get().await;
+        assert_eq!(got.name, "b");
+
+        // "c" was dropped — queue is now empty.
+        let result = timeout(Duration::from_millis(50), wq.get()).await;
+        assert!(result.is_err(), "expected timeout — third item was dropped");
     }
 
     #[tokio::test]

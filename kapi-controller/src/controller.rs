@@ -39,9 +39,14 @@ pub struct Controller {
     client: KapiClient,
     work_queue: Arc<WorkQueue>,
     shutdown_rx: Option<broadcast::Receiver<()>>,
+    /// Maximum duration for a single reconciliation pass (fetch + reconcile).
+    reconcile_timeout: Duration,
 }
 
 impl Controller {
+    /// Default reconcile timeout: 15 minutes.
+    pub const DEFAULT_RECONCILE_TIMEOUT: Duration = Duration::from_secs(900);
+
     /// Creates a new controller for the given resource key.
     pub fn new(key: ResourceKey, reconciler: Arc<dyn Reconciler>, client: KapiClient) -> Self {
         Controller {
@@ -52,6 +57,7 @@ impl Controller {
             client,
             work_queue: Arc::new(WorkQueue::new()),
             shutdown_rx: None,
+            reconcile_timeout: Self::DEFAULT_RECONCILE_TIMEOUT,
         }
     }
 
@@ -79,6 +85,16 @@ impl Controller {
     /// loop finishes its current item and then exits.
     pub fn shutdown_signal(mut self, rx: broadcast::Receiver<()>) -> Self {
         self.shutdown_rx = Some(rx);
+        self
+    }
+
+    /// Sets the maximum duration for a single reconciliation pass (fetch +
+    /// reconciler run). Defaults to [`DEFAULT_RECONCILE_TIMEOUT`](Self::DEFAULT_RECONCILE_TIMEOUT).
+    ///
+    /// When the timeout elapses, the reconciliation is aborted and the item
+    /// is marked as failed, so it is re-queued with exponential backoff.
+    pub fn reconcile_timeout(mut self, timeout: Duration) -> Self {
+        self.reconcile_timeout = timeout;
         self
     }
 
@@ -201,57 +217,83 @@ impl Controller {
     // ------------------------------------------------------------------
 
     /// Fetches the object identified by `key` and runs the reconciler.
+    ///
+    /// The entire operation (fetch + reconciler run) is bounded by
+    /// [`reconcile_timeout`](Self::reconcile_timeout). When the timeout
+    /// elapses the item is marked as failed so it is retried with exponential
+    /// backoff.
     async fn reconcile_one(&self, item: QueueKey) {
-        let result = self.client.get(&item.key, item.namespace.as_deref(), &item.name).await;
+        // Clone so `item` stays available for the timeout branch below.
+        let inner_item = item.clone();
 
-        match result {
-            Ok(_) => {
-                let ctx = ReconcileContext {
-                    request: ReconcileRequest {
-                        key: item.key.clone(),
-                        name: item.name.clone(),
-                        namespace: item.namespace.clone(),
-                    },
-                    client: self.client.clone(),
-                };
+        match tokio::time::timeout(self.reconcile_timeout, async {
+            let result = self
+                .client
+                .get(&inner_item.key, inner_item.namespace.as_deref(), &inner_item.name)
+                .await;
 
-                match self.reconciler.reconcile(ctx).await {
-                    Ok(reconcile_result) => {
-                        self.work_queue.done(item.clone(), true).await;
+            match result {
+                Ok(_) => {
+                    let ctx = ReconcileContext {
+                        request: ReconcileRequest {
+                            key: inner_item.key.clone(),
+                            name: inner_item.name.clone(),
+                            namespace: inner_item.namespace.clone(),
+                        },
+                        client: self.client.clone(),
+                    };
 
-                        if let Some(duration) = reconcile_result.requeue_after {
-                            self.work_queue.requeue_after(item, duration).await;
+                    match self.reconciler.reconcile(ctx).await {
+                        Ok(reconcile_result) => {
+                            self.work_queue.done(inner_item.clone(), true).await;
+
+                            if let Some(duration) = reconcile_result.requeue_after {
+                                self.work_queue.requeue_after(inner_item, duration).await;
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(
+                                kind = %inner_item.key.kind,
+                                name = %inner_item.name,
+                                error = %e,
+                                "reconciliation failed",
+                            );
+                            self.work_queue.done(inner_item, false).await;
                         }
                     }
-                    Err(e) => {
+                }
+                Err(e) => {
+                    // 404 = object was deleted before we could fetch it, skip.
+                    if matches!(&e, ClientError::Api(ApiError::NotFound { .. })) {
                         tracing::warn!(
-                            kind = %item.key.kind,
-                            name = %item.name,
-                            error = %e,
-                            "reconciliation failed",
+                            kind = %inner_item.key.kind,
+                            name = %inner_item.name,
+                            "object not found, skipping",
                         );
-                        self.work_queue.done(item, false).await;
+                        self.work_queue.done(inner_item, true).await;
+                    } else {
+                        tracing::warn!(
+                            kind = %inner_item.key.kind,
+                            name = %inner_item.name,
+                            error = %e,
+                            "failed to fetch object",
+                        );
+                        self.work_queue.done(inner_item, false).await;
                     }
                 }
             }
-            Err(e) => {
-                // 404 = object was deleted before we could fetch it, skip.
-                if matches!(&e, ClientError::Api(ApiError::NotFound { .. })) {
-                    tracing::warn!(
-                        kind = %item.key.kind,
-                        name = %item.name,
-                        "object not found, skipping",
-                    );
-                    self.work_queue.done(item, true).await;
-                } else {
-                    tracing::warn!(
-                        kind = %item.key.kind,
-                        name = %item.name,
-                        error = %e,
-                        "failed to fetch object",
-                    );
-                    self.work_queue.done(item, false).await;
-                }
+        })
+        .await
+        {
+            Ok(()) => {} // inner body handled done()
+            Err(_elapsed) => {
+                tracing::error!(
+                    kind = %item.key.kind,
+                    name = %item.name,
+                    timeout_secs = self.reconcile_timeout.as_secs(),
+                    "reconciliation timed out",
+                );
+                self.work_queue.done(item, false).await;
             }
         }
     }

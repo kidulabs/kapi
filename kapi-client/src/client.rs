@@ -4,6 +4,7 @@
 //! list, get, create, update, delete, status sub-resources, and watch (SSE).
 
 use std::pin::Pin;
+use std::time::Duration;
 
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
@@ -16,6 +17,15 @@ use kapi_core::{
 };
 
 use crate::error::ClientError;
+
+/// Default maximum total time for a single CRUD request, including body
+/// transfer.  Watch (SSE) streams are exempt — they must live indefinitely.
+pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Default maximum time to establish a TCP/TLS connection.  Applies to every
+/// request including long-lived watch connections, since connection setup is
+/// always expected to be fast.
+pub const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A client for interacting with a kapi API server.
 ///
@@ -35,6 +45,7 @@ use crate::error::ClientError;
 pub struct KapiClient {
     client: reqwest::Client,
     base_url: String,
+    request_timeout: Duration,
 }
 
 impl KapiClient {
@@ -56,8 +67,46 @@ impl KapiClient {
     /// let client = KapiClient::new("http://localhost:8080").unwrap();
     /// ```
     pub fn new(base_url: &str) -> Result<Self, ClientError> {
-        let client = reqwest::Client::builder().build()?;
-        Ok(KapiClient { client, base_url: base_url.trim_end_matches('/').to_string() })
+        let client = reqwest::Client::builder().connect_timeout(DEFAULT_CONNECT_TIMEOUT).build()?;
+        Ok(KapiClient {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            request_timeout: DEFAULT_REQUEST_TIMEOUT,
+        })
+    }
+
+    /// Creates a new client targeting the given server base URL with a custom
+    /// per-request timeout.
+    ///
+    /// The `request_timeout` applies to all CRUD operations (list, get, create,
+    /// update, delete, status).  Long-lived watch (SSE) streams are exempt —
+    /// only the [`DEFAULT_CONNECT_TIMEOUT`] applies to them.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ClientError::HttpError`] if the underlying HTTP client cannot
+    /// be initialised (e.g. TLS backend failure).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kapi_client::client::KapiClient;
+    /// use std::time::Duration;
+    ///
+    /// let client =
+    ///     KapiClient::with_request_timeout("http://localhost:8080", Duration::from_secs(60))
+    ///         .unwrap();
+    /// ```
+    pub fn with_request_timeout(
+        base_url: &str,
+        request_timeout: Duration,
+    ) -> Result<Self, ClientError> {
+        let client = reqwest::Client::builder().connect_timeout(DEFAULT_CONNECT_TIMEOUT).build()?;
+        Ok(KapiClient {
+            client,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            request_timeout,
+        })
     }
 
     // ------------------------------------------------------------------
@@ -146,7 +195,7 @@ impl KapiClient {
         opts: &ListOptions,
     ) -> Result<ListResponse, ClientError> {
         let url = self.build_url(key, namespace, "");
-        let mut req = self.client.get(&url);
+        let mut req = self.client.get(&url).timeout(self.request_timeout);
 
         let mut params: Vec<(&str, String)> = Vec::new();
         if let Some(limit) = opts.limit {
@@ -192,7 +241,7 @@ impl KapiClient {
         name: &str,
     ) -> Result<StoredObject, ClientError> {
         let url = self.build_url(key, namespace, &format!("/{name}"));
-        let response = self.client.get(&url).send().await?;
+        let response = self.client.get(&url).timeout(self.request_timeout).send().await?;
         self.parse_response(response).await
     }
 
@@ -232,7 +281,8 @@ impl KapiClient {
     ) -> Result<StoredObject, ClientError> {
         let url = self.build_url(key, namespace, "");
         let body = serde_json::json!({ "metadata": meta, "spec": spec });
-        let response = self.client.post(&url).json(&body).send().await?;
+        let response =
+            self.client.post(&url).json(&body).timeout(self.request_timeout).send().await?;
         self.parse_response(response).await
     }
 
@@ -282,7 +332,13 @@ impl KapiClient {
         // Merge metadata and schema fields at top level.
         let mut body = schema_data.as_object().cloned().unwrap_or_default();
         body.insert("metadata".to_string(), serde_json::to_value(meta)?);
-        let response = self.client.post(&url).json(&Value::Object(body)).send().await?;
+        let response = self
+            .client
+            .post(&url)
+            .json(&Value::Object(body))
+            .timeout(self.request_timeout)
+            .send()
+            .await?;
         self.parse_response(response).await
     }
 
@@ -312,7 +368,7 @@ impl KapiClient {
         obj: &StoredObject,
     ) -> Result<StoredObject, ClientError> {
         let url = self.build_url(&obj.key, namespace, &format!("/{}", obj.metadata.name));
-        let response = self.client.put(&url).json(obj).send().await?;
+        let response = self.client.put(&url).json(obj).timeout(self.request_timeout).send().await?;
         self.parse_response(response).await
     }
 
@@ -339,7 +395,7 @@ impl KapiClient {
         name: &str,
     ) -> Result<StoredObject, ClientError> {
         let url = self.build_url(key, namespace, &format!("/{name}"));
-        let response = self.client.delete(&url).send().await?;
+        let response = self.client.delete(&url).timeout(self.request_timeout).send().await?;
         self.parse_response(response).await
     }
 
@@ -372,7 +428,7 @@ impl KapiClient {
         name: &str,
     ) -> Result<Option<Value>, ClientError> {
         let url = self.build_url(key, namespace, &format!("/{name}/status"));
-        let response = self.client.get(&url).send().await?;
+        let response = self.client.get(&url).timeout(self.request_timeout).send().await?;
         let body: Value = self.parse_response(response).await?;
         // Server returns the status value directly (not wrapped in {"status": ...}).
         // A JSON null means no status is set.
@@ -408,7 +464,8 @@ impl KapiClient {
     ) -> Result<StoredObject, ClientError> {
         let url = self.build_url(key, namespace, &format!("/{name}/status"));
         let body = serde_json::json!({ "status": status });
-        let response = self.client.put(&url).json(&body).send().await?;
+        let response =
+            self.client.put(&url).json(&body).timeout(self.request_timeout).send().await?;
         self.parse_response(response).await
     }
 

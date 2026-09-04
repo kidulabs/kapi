@@ -40,9 +40,37 @@ This command transitions from exploration to formal proposal creation. It captur
    - [any phasing or dependency considerations]
    ```
 
-   Ask the user: "Does this summary capture the explore session correctly? Should I proceed with creating proposals?"
+   Ask the user: "Does this summary capture the explore session correctly? Should I proceed with council review?"
 
-2. **Determine proposal structure**
+2. **Council review**
+
+   Before finalizing the proposal, run the plan through the council for critical review. This catches gaps, risks, and flaws that may have been missed during exploration.
+
+   Generate a prompt for the council that includes:
+   - The explore session summary (decisions, scope, phasing)
+   - Key architectural decisions with rationale
+   - Any concerns or trade-offs discussed
+
+   Dispatch to all three councillors in parallel using the council workflow:
+   ```
+   task(subagent_type='councillor-alpha', prompt=<review prompt>)
+   task(subagent_type='councillor-beta', prompt=<review prompt>)
+   task(subagent_type='councillor-gamma', prompt=<review prompt>)
+   ```
+
+   After collecting all councillor responses, synthesize them:
+   ```
+   task(subagent_type='council', prompt=<synthesis prompt with all councillor responses>)
+   ```
+
+   Present the council's consensus report to the user, highlighting:
+   - Critical issues (unanimous agreement)
+   - Key recommendations
+   - Areas of disagreement between councillors
+
+   Ask the user: "How would you like to address the council's feedback?" Work through any issues that need resolution before proceeding.
+
+3. **Determine proposal structure**
 
    Based on the scope and dependencies, decide whether to create:
    - A single proposal (if changes are tightly coupled)
@@ -65,7 +93,7 @@ This command transitions from exploration to formal proposal creation. It captur
 
    Ask the user: "Which proposal structure do you prefer?" or accept the recommendation.
 
-3. **Create each proposal using the openspec-propose skill**
+4. **Create each proposal using the openspec-propose skill**
 
    For each proposal in the agreed structure:
 
@@ -75,10 +103,10 @@ This command transitions from exploration to formal proposal creation. It captur
    Use the openspec-propose skill to create change "<name>" with the following context:
    
    **Proposal Summary**:
-   [Insert the proposal summary from step 2]
+   [Insert the proposal summary from step 3]
    
    **Key Decisions**:
-   [Insert key decisions from explore session]
+   [Insert key decisions from explore session, incorporating council feedback]
    
    **Scope**:
    [Insert scope from explore session]
@@ -98,7 +126,7 @@ This command transitions from exploration to formal proposal creation. It captur
    openspec status --change "<name>"
    ```
 
-4. **Show final summary**
+5. **Show final summary**
 
    After all proposals are created, present:
    ```
