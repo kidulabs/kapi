@@ -193,7 +193,7 @@ impl WorkQueue {
             let count = state.retry_count.get(&key).copied().unwrap_or(0);
             let delay = Self::next_backoff(count);
 
-            state.retry_count.insert(key.clone(), count);
+            state.retry_count.insert(key.clone(), count + 1);
 
             warn!(
                 kind = %key.key.kind,
@@ -373,6 +373,48 @@ mod tests {
         // Should NOT be available immediately.
         let result = timeout(Duration::from_millis(100), wq.get()).await;
         assert!(result.is_err(), "expected timeout — key should be in backoff");
+    }
+
+    #[tokio::test]
+    async fn test_done_failure_increments_retry_count() {
+        let wq = WorkQueue::new();
+        let k = test_key("retry-count-test");
+
+        // First failure cycle: retry count should be 1.
+        wq.add(k.clone()).await;
+        let got = wq.get().await;
+        wq.done(got, false).await;
+
+        {
+            let state = wq.state.lock().await;
+            assert_eq!(state.retry_count.get(&k), Some(&1), "first failure should set count to 1");
+        }
+
+        // Wait for the background requeue to fire (backoff is 1 s for count=0).
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+
+        // Second failure cycle: retry count should be 2.
+        wq.add(k.clone()).await;
+        let got = wq.get().await;
+        wq.done(got, false).await;
+
+        {
+            let state = wq.state.lock().await;
+            assert_eq!(state.retry_count.get(&k), Some(&2), "second failure should set count to 2");
+        }
+
+        // Wait for the background requeue to fire (backoff is 2 s for count=1).
+        tokio::time::sleep(Duration::from_millis(2200)).await;
+
+        // Third failure cycle: retry count should be 3.
+        wq.add(k.clone()).await;
+        let got = wq.get().await;
+        wq.done(got, false).await;
+
+        {
+            let state = wq.state.lock().await;
+            assert_eq!(state.retry_count.get(&k), Some(&3), "third failure should set count to 3");
+        }
     }
 
     #[tokio::test]

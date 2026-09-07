@@ -117,6 +117,20 @@ impl Controller {
 
         // Spawn watch task.
         let watch_handle = tokio::spawn(async move {
+            // Initial sync: list all existing objects (within scope) and
+            // enqueue every key so pre-existing resources are reconciled even
+            // if they never change while the watch stream is open. This runs
+            // once before the first watch attempt, and happens regardless of
+            // whether the watch stream can be opened.
+            Self::list_and_enqueue_all(
+                &watch_client,
+                &watch_key,
+                watch_ns.as_deref(),
+                &watch_filter,
+                &watch_queue,
+            )
+            .await;
+
             // Outer reconnect loop.
             loop {
                 // Open the watch stream.
@@ -166,25 +180,14 @@ impl Controller {
 
                 // Reconnect: list all objects (within scope) and enqueue
                 // every key so we don't miss changes.
-                match watch_client
-                    .list(
-                        &watch_key,
-                        watch_ns.as_deref(),
-                        &watch_filter_to_list_options(&watch_filter),
-                    )
-                    .await
-                {
-                    Ok(response) => {
-                        for obj in response.items {
-                            let qk =
-                                QueueKey::new(obj.key, obj.metadata.name, obj.metadata.namespace);
-                            watch_queue.add(qk).await;
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("list failed during reconnect: {e}");
-                    }
-                }
+                Self::list_and_enqueue_all(
+                    &watch_client,
+                    &watch_key,
+                    watch_ns.as_deref(),
+                    &watch_filter,
+                    &watch_queue,
+                )
+                .await;
 
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
@@ -215,6 +218,35 @@ impl Controller {
     // ------------------------------------------------------------------
     // Internal helpers
     // ------------------------------------------------------------------
+
+    /// Lists all objects matching the scope (kind, namespace, filter) and
+    /// enqueues every returned key into `queue`.
+    ///
+    /// Used both for the **initial sync** (before the first watch stream is
+    /// opened, so existing resources are reconciled on startup) and on
+    /// **reconnect** (so changes missed while disconnected are not lost).
+    ///
+    /// Failures are logged (warn) and swallowed — the caller retries on the
+    /// next watch/reconnect cycle.
+    async fn list_and_enqueue_all(
+        client: &KapiClient,
+        key: &ResourceKey,
+        namespace: Option<&str>,
+        filter: &WatchFilter,
+        queue: &WorkQueue,
+    ) {
+        match client.list(key, namespace, &watch_filter_to_list_options(filter)).await {
+            Ok(response) => {
+                for obj in response.items {
+                    let qk = QueueKey::new(obj.key, obj.metadata.name, obj.metadata.namespace);
+                    queue.add(qk).await;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("list failed while syncing existing objects: {e}");
+            }
+        }
+    }
 
     /// Fetches the object identified by `key` and runs the reconciler.
     ///
@@ -303,8 +335,8 @@ impl Controller {
 // Utility functions
 // ---------------------------------------------------------------------------
 
-/// Converts a [`WatchFilter`] into [`ListOptions`] for use in the reconnect
-/// list call.
+/// Converts a [`WatchFilter`] into [`ListOptions`] for use in the list call
+/// made during initial sync and reconnects.
 ///
 /// * `WatchFilter::All` → default options (no filtering).
 /// * `WatchFilter::FieldSelector(fs)` → sets `field_selector`.
@@ -366,8 +398,11 @@ async fn shutdown_or_pending(rx: &mut Option<broadcast::Receiver<()>>) {
 mod tests {
     use super::*;
     use crate::reconciler::ReconcileResult;
-    use kapi_core::{ObjectMeta, SystemMetadata, WatchEventType};
+    use kapi_core::{ListResponse, ObjectMeta, SystemMetadata, WatchEventType};
     use serde_json::Value;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     // -- should_enqueue ---------------------------------------------------
 
@@ -461,6 +496,176 @@ mod tests {
         assert_eq!(request.key, obj.key);
         assert_eq!(request.name, "test-obj");
         assert_eq!(request.namespace, Some("default".into()));
+    }
+
+    // -- Initial list on startup ------------------------------------------
+
+    /// A reconciler that counts how many times it was invoked.
+    struct CountingReconciler {
+        count: Arc<AtomicUsize>,
+    }
+
+    #[async_trait::async_trait]
+    impl Reconciler for CountingReconciler {
+        async fn reconcile(
+            &self,
+            _ctx: ReconcileContext,
+        ) -> Result<ReconcileResult, Box<dyn std::error::Error + Send + Sync>> {
+            self.count.fetch_add(1, Ordering::SeqCst);
+            Ok(Default::default())
+        }
+    }
+
+    /// Spawns a minimal HTTP server that serves:
+    /// - `GET .../{kind}` (list) → JSON `ListResponse` containing `items`
+    /// - `GET .../{kind}?watch=true` → SSE headers, then holds the connection
+    ///   open without ever sending events (watch stream stays pending)
+    /// - `GET .../{kind}/{name}` (get) → JSON `StoredObject`
+    ///
+    /// Returns the base URL of the server.
+    async fn spawn_mock_server(items: Vec<kapi_core::StoredObject>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let items = Arc::new(items);
+        tokio::spawn(async move {
+            loop {
+                let (socket, _) = match listener.accept().await {
+                    Ok(x) => x,
+                    Err(_) => return,
+                };
+                let items = items.clone();
+                tokio::spawn(async move { handle_mock_request(socket, items).await });
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    async fn handle_mock_request(mut socket: TcpStream, items: Arc<Vec<kapi_core::StoredObject>>) {
+        // Read the request head (small requests fit in a few reads).
+        let mut buf = Vec::with_capacity(4096);
+        let mut chunk = [0u8; 1024];
+        loop {
+            let n = match socket.read(&mut chunk).await {
+                Ok(0) | Err(_) => return,
+                Ok(n) => n,
+            };
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.windows(4).any(|w| w == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&buf);
+        let path = head.split_whitespace().nth(1).unwrap_or_default();
+
+        if path.contains("watch=true") {
+            // Respond with SSE headers and hold the connection open — the
+            // controller's watch stream stays pending with no events.
+            let resp = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n";
+            if socket.write_all(resp.as_bytes()).await.is_err() {
+                return;
+            }
+            let _ = socket.flush().await;
+            // Park forever, keeping the socket open.
+            std::future::pending::<()>().await;
+        }
+
+        if path.ends_with(&format!("/{}", "Widget")) {
+            // List request.
+            let body = serde_json::to_string(&ListResponse {
+                items: (*items).clone(),
+                continue_token: None,
+            })
+            .unwrap();
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = socket.write_all(resp.as_bytes()).await;
+            let _ = socket.flush().await;
+            return;
+        }
+
+        // Get request: `.../Widget/{name}`.
+        let name = path.rsplit('/').next().unwrap_or_default();
+        let obj = items.iter().find(|o| o.metadata.name == name);
+        let resp = match obj {
+            Some(obj) => {
+                let body = serde_json::to_string(obj).unwrap();
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                )
+            }
+            None => "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_string(),
+        };
+        let _ = socket.write_all(resp.as_bytes()).await;
+        let _ = socket.flush().await;
+    }
+
+    /// Verifies that existing resources are listed and enqueued when the
+    /// controller starts — i.e. before/during the watch stream opening —
+    /// so pre-existing objects are reconciled even if they never change
+    /// while the watch is open.
+    #[tokio::test]
+    async fn test_initial_list_on_startup() {
+        let key = test_key();
+        let items = vec![
+            make_stored_object("obj-a", Some("default")),
+            make_stored_object("obj-b", Some("default")),
+        ];
+        let base_url = spawn_mock_server(items).await;
+        let client = KapiClient::new(&base_url).unwrap();
+
+        let count = Arc::new(AtomicUsize::new(0));
+        let (shutdown_tx, shutdown_rx) = broadcast::channel::<()>(1);
+
+        let controller =
+            Controller::new(key, Arc::new(CountingReconciler { count: count.clone() }), client)
+                .shutdown_signal(shutdown_rx);
+
+        let handle = tokio::spawn(async move { controller.start().await });
+
+        // The two pre-existing objects must be reconciled purely from the
+        // initial list (the mock watch stream never emits any events).
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while count.load(Ordering::SeqCst) < 2 {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "controller did not reconcile pre-existing objects on startup"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+
+        shutdown_tx.send(()).unwrap();
+        handle.await.unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+
+    /// Directly verifies the helper used for initial sync and reconnect:
+    /// all listed objects are enqueued into the work queue.
+    #[tokio::test]
+    async fn test_list_and_enqueue_helper_populates_queue() {
+        let key = test_key();
+        let items = vec![
+            make_stored_object("obj-a", Some("default")),
+            make_stored_object("obj-b", Some("default")),
+        ];
+        let base_url = spawn_mock_server(items).await;
+        let client = KapiClient::new(&base_url).unwrap();
+
+        let queue = WorkQueue::new();
+        assert_eq!(queue.len().await, 0);
+
+        Controller::list_and_enqueue_all(&client, &key, None, &WatchFilter::All, &queue).await;
+
+        assert_eq!(queue.len().await, 2);
+        let first = queue.get().await;
+        assert_eq!(first.name, "obj-a");
+        let second = queue.get().await;
+        assert_eq!(second.name, "obj-b");
     }
 
     // ------------------------------------------------------------------
