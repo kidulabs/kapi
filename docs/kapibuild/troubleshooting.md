@@ -227,6 +227,23 @@ The controller file already exists. The command does not overwrite existing cont
 - Delete the existing file if you want to regenerate
 - Edit the existing file directly
 
+### api files that don't match Kapifile kinds
+
+`kapibuild api generate` and `kapibuild controller generate` resolve each
+`src/api/<group>/<version>/<file>.rs` by matching the file stem against the
+registered kinds in the Kapifile, case-insensitively: the stem and each
+registered kind are both lowercased before comparing. So
+`virtualmachine.rs` resolves to the registered `kind: VirtualMachine`, and
+`volume.rs` resolves to `kind: Volume`.
+
+The Kapifile is authoritative: the registered kind spelling is used for the
+wrapper struct, the `{Kind}Spec`/`{Kind}Status` names, and generated output.
+If a file's stem matches no registered kind, generation fails. The same
+happens when it matches several kinds (for example, both `VirtualMachine` and
+`Virtualmachine` are registered). In both cases generation stops with one
+error listing every problem file. Ambiguous matches are reported, never
+guessed: rename one of the registered kinds.
+
 ## How to Debug Issues
 
 ### 1. Enable Trace Logging

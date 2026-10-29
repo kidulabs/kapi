@@ -11,7 +11,7 @@ use anyhow::{Context, Result};
 use regex::Regex;
 use tracing::info;
 
-use crate::find_project_root;
+use crate::{Kapifile, KapifileResource, find_project_root};
 
 // ---------------------------------------------------------------------------
 // Public entry point
@@ -20,24 +20,28 @@ use crate::find_project_root;
 /// Execute the `kapibuild api generate` command.
 pub fn cmd_api_generate() -> Result<()> {
     let project_root = find_project_root()?;
+    cmd_api_generate_at(&project_root)
+}
 
-    let kapifile = read_kapifile(&project_root)?;
-    let resources = scan_api_dir(&project_root, &kapifile)?;
+/// Execute `kapibuild api generate` against an explicit project root.
+pub(crate) fn cmd_api_generate_at(project_root: &Path) -> Result<()> {
+    let kapifile = read_kapifile(project_root)?;
+    let resources = scan_api_dir(project_root, &kapifile)?;
     if resources.is_empty() {
         anyhow::bail!("no API resources found in api/ directory");
     }
 
     // Generate types/ wrapper files.
     for res in &resources {
-        let type_path = generate_type_file(&project_root, res)?;
+        let type_path = generate_type_file(project_root, res)?;
         info!("Generated wrapper: {}", type_path.display());
     }
 
     // Generate mod.rs files so the module tree compiles.
-    generate_mod_files(&project_root, &resources)?;
+    generate_mod_files(project_root, &resources)?;
 
     // Create and run helper project for schema generation.
-    let tmp = create_helper_project(&resources, &project_root)
+    let tmp = create_helper_project(&resources, project_root)
         .context("failed to create helper project")?;
 
     let manifest_path = tmp.path().join("Cargo.toml");
@@ -69,26 +73,6 @@ pub fn cmd_api_generate() -> Result<()> {
 // Kapifile reading
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, serde::Deserialize)]
-struct Kapifile {
-    #[allow(dead_code)]
-    domain: String,
-    #[allow(dead_code)]
-    version: String,
-    #[serde(default)]
-    resources: Vec<KapifileResource>,
-}
-
-#[derive(Debug, serde::Deserialize)]
-struct KapifileResource {
-    kind: String,
-    #[allow(dead_code)]
-    version: String,
-    scope: String,
-    #[serde(default)]
-    has_status: bool,
-}
-
 fn read_kapifile(project_root: &Path) -> Result<Kapifile> {
     let path = project_root.join("Kapifile");
     let content = std::fs::read_to_string(&path).context("failed to read Kapifile")?;
@@ -115,25 +99,59 @@ struct ResourceInfo {
     content: String,
 }
 
+/// Resolve a file stem (e.g. `"virtualmachine"`) to the Kapifile-registered
+/// kind (e.g. `"VirtualMachine"`).
+///
+/// Matching is case-insensitive on both sides: the stem's lowercase form is
+/// compared against each registered kind's lowercase form. This keeps
+/// single-word kinds (`volume.rs` → `Volume`) and hand-named files
+/// (`Volume.rs`) working, while also supporting multi-word camelCase kinds
+/// (`virtualmachine.rs` → `VirtualMachine`).
+///
+/// Returns an error if no registered kind matches, or if multiple registered
+/// kinds' lowercase forms collide for this stem (never picks one).
+pub(crate) fn resolve_kind<'a>(stem: &str, kapifile: &'a Kapifile) -> Result<&'a KapifileResource> {
+    let stem_lower = stem.to_lowercase();
+    let matches: Vec<&KapifileResource> =
+        kapifile.resources.iter().filter(|r| r.kind.to_lowercase() == stem_lower).collect();
+
+    match matches.len() {
+        0 => anyhow::bail!(
+            "no registered kind matches stem '{stem}'; add/fix the kind in the Kapifile"
+        ),
+        1 => Ok(matches[0]),
+        _ => {
+            let kinds: Vec<&str> = matches.iter().map(|r| r.kind.as_str()).collect();
+            anyhow::bail!(
+                "ambiguous: stem '{stem}' matches registered kinds {}; rename one of them",
+                kinds.join(", ")
+            )
+        }
+    }
+}
+
+/// Render `path` relative to `project_root` when possible, for stable messages.
+pub(crate) fn display_relative(project_root: &Path, path: &Path) -> String {
+    path.strip_prefix(project_root).unwrap_or(path).display().to_string()
+}
+
 /// Walk `api/` recursively and collect all resource files, matching them
 /// against entries in the Kapifile.
+///
+/// Resolution failures are collected across all files and reported once as an
+/// aggregate error instead of stopping at the first bad file.
 fn scan_api_dir(project_root: &Path, kapifile: &Kapifile) -> Result<Vec<ResourceInfo>> {
     let api_dir = project_root.join("src").join("api");
     if !api_dir.is_dir() {
         anyhow::bail!("api/ directory not found at '{}'", api_dir.display());
     }
 
-    // Build a map from kind → KapifileResource for quick lookup.
-    let mut resource_map: std::collections::HashMap<&str, &KapifileResource> =
-        std::collections::HashMap::new();
-    for r in &kapifile.resources {
-        resource_map.insert(r.kind.as_str(), r);
-    }
-
     let mut files = Vec::new();
     collect_rs_files(&api_dir, &mut files)?;
 
     let mut resources = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+
     for path in &files {
         // Get relative path from api/ dir.
         let relative = path
@@ -160,14 +178,20 @@ fn scan_api_dir(project_root: &Path, kapifile: &Kapifile) -> Result<Vec<Resource
         let kind_filename =
             components[2].as_os_str().to_str().context("non-UTF-8 filename")?.to_string();
 
-        // Extract kind from filename: "widget.rs" -> "Widget"
+        // Extract the stem from the filename: "widget.rs" -> "widget".
         let kind_stem = kind_filename.strip_suffix(".rs").context("file does not end with .rs")?;
-        let kind = capitalize_first(kind_stem);
 
-        // Look up Kapifile resource entry by kind.
-        let kapifile_entry = resource_map.get(kind.as_str()).with_context(|| {
-            format!("resource '{}' found in api/ but not registered in Kapifile", kind)
-        })?;
+        // Resolve the stem to its Kapifile-registered kind. The Kapifile is
+        // authoritative for the kind string (and thus the wrapper struct name,
+        // `{Kind}Spec`/`{Kind}Status` struct names, and generated output).
+        let kapifile_entry = match resolve_kind(kind_stem, kapifile) {
+            Ok(entry) => entry,
+            Err(err) => {
+                failures.push(format!("- {}: {err}", display_relative(project_root, path)));
+                continue;
+            }
+        };
+        let kind = kapifile_entry.kind.clone();
 
         let content = std::fs::read_to_string(path)
             .with_context(|| format!("failed to read '{}'", path.display()))?;
@@ -207,6 +231,15 @@ fn scan_api_dir(project_root: &Path, kapifile: &Kapifile) -> Result<Vec<Resource
         });
     }
 
+    if !failures.is_empty() {
+        failures.sort();
+        anyhow::bail!(
+            "{} api resource file(s) could not be matched to Kapifile registrations:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
+    }
+
     Ok(resources)
 }
 
@@ -224,15 +257,6 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<PathBuf>) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// Capitalize the first character of a string.
-pub(crate) fn capitalize_first(s: &str) -> String {
-    let mut chars = s.chars();
-    match chars.next() {
-        None => String::new(),
-        Some(first) => first.to_uppercase().to_string() + chars.as_str(),
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -730,14 +754,231 @@ fn prepare_resource_module(content: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
+    /// Build a Kapifile for tests. Each entry is `(kind, scope)`.
+    fn test_kapifile(entries: &[(&str, &str)]) -> Kapifile {
+        Kapifile {
+            domain: "kcloud.io".to_string(),
+            version: "v1".to_string(),
+            resources: entries
+                .iter()
+                .map(|(kind, scope)| KapifileResource {
+                    kind: (*kind).to_string(),
+                    version: "v1".to_string(),
+                    scope: (*scope).to_string(),
+                    has_status: true,
+                })
+                .collect(),
+        }
+    }
+
     #[test]
-    fn test_capitalize_first() {
-        assert_eq!(capitalize_first("widget"), "Widget");
-        assert_eq!(capitalize_first(""), "");
-        assert_eq!(capitalize_first("a"), "A");
-        assert_eq!(capitalize_first("Namespace"), "Namespace");
+    fn test_resolve_kind_multi_word() {
+        let kapifile = test_kapifile(&[("VirtualMachine", "Cluster")]);
+
+        let res = resolve_kind("virtualmachine", &kapifile).expect("multi-word kind resolves");
+        assert_eq!(res.kind, "VirtualMachine");
+    }
+
+    #[test]
+    fn test_resolve_kind_single_word_passthrough() {
+        let kapifile = test_kapifile(&[("Volume", "Cluster")]);
+
+        assert_eq!(resolve_kind("volume", &kapifile).expect("single word").kind, "Volume");
+        // Hand-named files keep resolving today, too.
+        assert_eq!(resolve_kind("Volume", &kapifile).expect("hand named").kind, "Volume");
+    }
+
+    #[test]
+    fn test_resolve_kind_ambiguous_is_an_error() {
+        let kapifile =
+            test_kapifile(&[("VirtualMachine", "Cluster"), ("Virtualmachine", "Namespaced")]);
+
+        let err = resolve_kind("virtualmachine", &kapifile).expect_err("must be ambiguous");
+        let msg = err.to_string();
+
+        assert!(msg.contains("ambiguous"), "message should say ambiguous: {msg}");
+        assert!(msg.contains("VirtualMachine"), "must list VirtualMachine: {msg}");
+        assert!(msg.contains("Virtualmachine"), "must list Virtualmachine: {msg}");
+        assert!(msg.contains("rename one of them"), "must tell user to rename: {msg}");
+    }
+
+    #[test]
+    fn test_resolve_kind_unusual_casing() {
+        // The registered kind's casing is authoritative, even when it is not
+        // plain PascalCase.
+        let kapifile = test_kapifile(&[("URLMapper", "Namespaced")]);
+
+        assert_eq!(resolve_kind("urlmapper", &kapifile).expect("unusual casing").kind, "URLMapper");
+    }
+
+    #[test]
+    fn test_resolve_kind_unregistered() {
+        let kapifile = test_kapifile(&[("Volume", "Cluster")]);
+
+        let err = resolve_kind("gizmo", &kapifile).expect_err("unregistered stem must fail");
+        let msg = err.to_string();
+        assert!(msg.contains("'gizmo'"), "must mention the stem: {msg}");
+        assert!(msg.contains("Kapifile"), "must mention the Kapifile: {msg}");
+    }
+
+    #[test]
+    fn test_scan_api_dir_aggregates_resolution_errors() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let root = tmp.path();
+
+        let api_dir = root.join("src").join("api").join("kcloud.io").join("v1");
+        std::fs::create_dir_all(&api_dir).expect("create api dir");
+        std::fs::write(api_dir.join("gizmo.rs"), "pub struct GizmoSpec {}\n").expect("write gizmo");
+        std::fs::write(api_dir.join("virtualmachine.rs"), "pub struct VirtualMachineSpec {}\n")
+            .expect("write virtualmachine");
+
+        let kapifile =
+            test_kapifile(&[("VirtualMachine", "Cluster"), ("Virtualmachine", "Namespaced")]);
+
+        let err = scan_api_dir(root, &kapifile).expect_err("both files are broken");
+        let msg = err.to_string();
+
+        assert!(
+            msg.contains("2 api resource file(s) could not be matched"),
+            "aggregate count: {msg}"
+        );
+        assert!(msg.contains("src/api/kcloud.io/v1/gizmo.rs"), "gizmo path: {msg}");
+        assert!(msg.contains("no registered kind matches stem 'gizmo'"), "gizmo reason: {msg}");
+        assert!(
+            msg.contains("src/api/kcloud.io/v1/virtualmachine.rs"),
+            "virtualmachine path: {msg}"
+        );
+        assert!(msg.contains("ambiguous"), "virtualmachine reason: {msg}");
+    }
+
+    #[test]
+    fn test_scan_api_dir_resolves_multi_word_kind() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let root = tmp.path();
+
+        let api_dir = root.join("src").join("api").join("kcloud.io").join("v1");
+        std::fs::create_dir_all(&api_dir).expect("create api dir");
+        std::fs::write(
+            api_dir.join("virtualmachine.rs"),
+            "pub struct VirtualMachineSpec {}\npub struct VirtualMachineStatus {}\n",
+        )
+        .expect("write api file");
+
+        let kapifile = test_kapifile(&[("VirtualMachine", "Cluster")]);
+        let resources = scan_api_dir(root, &kapifile).expect("scan succeeds");
+
+        assert_eq!(resources.len(), 1);
+        let res = &resources[0];
+        assert_eq!(res.kind, "VirtualMachine");
+        assert_eq!(res.spec_struct_name, "VirtualMachineSpec");
+        assert_eq!(res.status_struct_name.as_deref(), Some("VirtualMachineStatus"));
+    }
+
+    /// Snapshot every generated file (types, api mod files, schemas) so two
+    /// generation runs can be compared byte-for-byte.
+    fn snapshot_outputs(root: &Path) -> BTreeMap<String, Vec<u8>> {
+        fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
+            for entry in std::fs::read_dir(dir).expect("read generated dir") {
+                let path = entry.expect("dir entry").path();
+                if path.is_dir() {
+                    walk(&path, files);
+                } else {
+                    files.push(path);
+                }
+            }
+        }
+
+        let mut files = Vec::new();
+        walk(&root.join("src").join("types"), &mut files);
+        walk(&root.join("src").join("api"), &mut files);
+        walk(&root.join("schemas"), &mut files);
+
+        let mut snapshot = BTreeMap::new();
+        for path in files {
+            snapshot.insert(
+                display_relative(root, &path),
+                std::fs::read(&path).expect("read generated file"),
+            );
+        }
+        snapshot
+    }
+
+    #[test]
+    fn test_api_generate_multi_word_kind_end_to_end() {
+        let tmp = tempfile::tempdir().expect("temp dir");
+        let root = tmp.path();
+
+        std::fs::write(
+            root.join("Kapifile"),
+            "domain: kcloud.io\n\
+             version: v1\n\
+             resources:\n\
+             \x20 - kind: VirtualMachine\n\
+             \x20   version: v1\n\
+             \x20   scope: Cluster\n\
+             \x20   has_status: true\n",
+        )
+        .expect("write Kapifile");
+
+        let api_dir = root.join("src").join("api").join("kcloud.io").join("v1");
+        std::fs::create_dir_all(&api_dir).expect("create api dir");
+        std::fs::write(
+            api_dir.join("virtualmachine.rs"),
+            r#"use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
+
+/// VirtualMachineSpec defines the desired state of a VirtualMachine.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VirtualMachineSpec {
+    pub cpu_cores: u32,
+    pub memory_gb: u64,
+}
+
+/// VirtualMachineStatus defines the observed state of a VirtualMachine.
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct VirtualMachineStatus {
+    pub ready: bool,
+}
+"#,
+        )
+        .expect("write api file");
+
+        cmd_api_generate_at(root).expect("generation succeeds for multi-word kind");
+
+        // Wrapper type file.
+        let type_path =
+            root.join("src").join("types").join("kcloud_io").join("v1").join("virtualmachine.rs");
+        let type_code = std::fs::read_to_string(&type_path).expect("read generated type file");
+        assert!(type_code.contains("pub struct VirtualMachine {"), "wrapper struct name");
+        assert!(type_code.contains("pub spec: VirtualMachineSpec"), "spec type");
+        assert!(type_code.contains("pub status: Option<VirtualMachineStatus>"), "status type");
+        assert!(
+            type_code.contains("map.insert(\"targetKind\".into(), serde_json::Value::String(\"VirtualMachine\".to_string()));"),
+            "targetKind uses registered kind"
+        );
+
+        // Schema file.
+        let schema_path = root.join("schemas").join("kcloud.io_VirtualMachine.json");
+        let schema = std::fs::read_to_string(&schema_path).expect("read generated schema");
+        assert!(schema.contains("\"targetKind\": \"VirtualMachine\""), "schema targetKind");
+        assert!(schema.contains("\"cpuCores\""), "typed spec field with camelCase rename");
+        assert!(schema.contains("\"ready\""), "status field in status schema");
+        assert!(
+            schema.contains("desired state of a VirtualMachine"),
+            "doc comment description propagates"
+        );
+
+        // Second run must be idempotent: byte-identical outputs.
+        let first = snapshot_outputs(root);
+        cmd_api_generate_at(root).expect("second generation succeeds");
+        let second = snapshot_outputs(root);
+        assert_eq!(first, second, "regeneration must be byte-identical");
     }
 
     #[test]

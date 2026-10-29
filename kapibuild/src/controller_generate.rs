@@ -11,7 +11,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-use crate::generate::capitalize_first;
+use crate::generate::{display_relative, resolve_kind};
 use crate::{Kapifile, find_project_root};
 
 // ---------------------------------------------------------------------------
@@ -157,16 +157,18 @@ struct DiscoveredResource {
 }
 
 /// Scan `api/` directory and discover all resources.
-fn discover_resources(
-    project_root: &Path,
-    _kapifile: &Kapifile,
-) -> Result<Vec<DiscoveredResource>> {
+///
+/// File stems are resolved against the Kapifile so multi-word camelCase kinds
+/// (e.g. `virtualmachine.rs` → `VirtualMachine`) are discovered correctly.
+/// Resolution failures are collected across all files and reported once.
+fn discover_resources(project_root: &Path, kapifile: &Kapifile) -> Result<Vec<DiscoveredResource>> {
     let api_dir = project_root.join("src").join("api");
     if !api_dir.is_dir() {
         return Ok(Vec::new());
     }
 
     let mut resources = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
 
     // Walk api/<group>/<version>/<kind>.rs
     for group_entry in std::fs::read_dir(&api_dir).context("failed to read api directory")? {
@@ -192,15 +194,29 @@ fn discover_resources(
                 {
                     let stem =
                         path.file_stem().and_then(|s| s.to_str()).context("invalid filename")?;
-                    let kind = capitalize_first(stem);
-                    resources.push(DiscoveredResource {
-                        group: group.clone(),
-                        version: version.clone(),
-                        kind,
-                    });
+
+                    // Kapifile is authoritative for the kind string.
+                    match resolve_kind(stem, kapifile) {
+                        Ok(entry) => resources.push(DiscoveredResource {
+                            group: group.clone(),
+                            version: version.clone(),
+                            kind: entry.kind.clone(),
+                        }),
+                        Err(err) => failures
+                            .push(format!("- {}: {err}", display_relative(project_root, &path))),
+                    }
                 }
             }
         }
+    }
+
+    if !failures.is_empty() {
+        failures.sort();
+        anyhow::bail!(
+            "{} api resource file(s) could not be matched to Kapifile registrations:\n{}",
+            failures.len(),
+            failures.join("\n")
+        );
     }
 
     Ok(resources)
